@@ -1,6 +1,6 @@
 # GitHub releases
 
-Status checked 2026-09-06 against Pi 0.85.1 and the public Pi documentation. This document describes release mechanics; it does not authorize publishing a release.
+Status checked 2026-09-06 against Pi 0.85.1 and the public Pi documentation; the package contract was rechecked on 2026-09-30 against [Pi 0.99.1 package dependencies](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/docs/packages.md#declare-dependencies). This document describes release mechanics; it does not authorize publishing a release.
 
 ## Package contract
 
@@ -41,7 +41,7 @@ This patch release silently routes the exact native thinking-visibility status e
 
 ## Release `v0.1.2`
 
-This patch release accepts Pi 0.99.1 by allowlisting its SDK and bundled-CLI presentation signatures after the full real-host suite passed on that version; runtime behavior is unchanged. CI tests Pi 0.85.1 and 0.99.1. The package contract also satisfies Pi 0.99's host-provided dependency check: Pi packages are `"*"` peers and there are no runtime dependencies. Publish the immutable GitHub tag from the exact release commit; the owner publishes the npm package from the same commit.
+This patch release accepts Pi 0.99.1 by allowlisting its SDK and bundled-CLI presentation signatures after the full real-host suite passed on that version; runtime behavior is unchanged. CI re-verifies Pi 0.85.1 and 0.99.1. Publish the immutable GitHub tag and Release from the exact release commit; the owner publishes the npm package from the same commit.
 
 ## npm publication
 

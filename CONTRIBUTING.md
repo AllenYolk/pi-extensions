@@ -8,7 +8,7 @@ Implement one tested behavior at a time. Tests exercise configuration loading, a
 
 Run `npm run check` and, for rendering changes, `npm run benchmark` with the same Node/Pi/workload as the baseline. Record what was measured. The CLI probes need uv and Python 3.12; use `uv python install 3.12`.
 
-CI runs the tested Pi versions on Linux/macOS and Node 22.19.0/24.12.0. The upstream-version job detects release drift; it does not certify a new host. Add a host signature only after real CLI, rendering, replay, expansion, errors, and repeated lifecycle checks pass on that exact version.
+CI re-verifies the most recent tested Pi versions on Linux/macOS and Node 22.19.0/24.12.0. The upstream-version job detects release drift; it does not certify a new host. Add a host signature only after real CLI, rendering, replay, expansion, errors, and repeated lifecycle checks pass on that exact version.
 
 Independent review covers standards and the spec separately. Resolve release-blocking findings with regression evidence before marking a candidate ready. A green mocked test is not evidence of real-host compatibility.
 
