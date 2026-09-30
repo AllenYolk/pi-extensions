@@ -15,10 +15,10 @@ The packed artifact is still checked because it catches accidental files, depend
 pi install git:github.com/AllenYolk/pi-minimal-display
 
 # Pin one immutable release
-pi install git:github.com/AllenYolk/pi-minimal-display@v0.1.1
+pi install git:github.com/AllenYolk/pi-minimal-display@v0.1.2
 
 # One-run trial
-pi -e git:github.com/AllenYolk/pi-minimal-display@v0.1.1
+pi -e git:github.com/AllenYolk/pi-minimal-display@v0.1.2
 
 pi remove git:github.com/AllenYolk/pi-minimal-display
 ```
@@ -39,6 +39,10 @@ GitHub release descriptions can be edited, but release tags are treated as immut
 
 This patch release silently routes the exact native thinking-visibility status emitted by Pi's toggle action while preserving native state, persistence, repaint and unrelated status messages. It adds the matching host signatures and real-host regression coverage. Publish the immutable GitHub tag and public npm package from the exact release commit.
 
+## Release `v0.1.2`
+
+This patch release accepts Pi 0.99.1 by allowlisting its SDK and bundled-CLI presentation signatures after the full real-host suite passed on that version; runtime behavior is unchanged. CI tests Pi 0.85.1 and 0.99.1. The package contract also satisfies Pi 0.99's host-provided dependency check: Pi packages are `"*"` peers and there are no runtime dependencies. Publish the immutable GitHub tag from the exact release commit; the owner publishes the npm package from the same commit.
+
 ## npm publication
 
-`@allenyolk/pi-minimal-display@0.1.1` is a public scoped npm package. npm registry tarballs are immutable: once a `name@version` has been published, fixes require a new version even if the old one is unpublished. See [npm scoped public packages](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/) and the [npm unpublish policy](https://docs.npmjs.com/policies/unpublish/).
+`@allenyolk/pi-minimal-display@0.1.2` is a public scoped npm package. npm registry tarballs are immutable: once a `name@version` has been published, fixes require a new version even if the old one is unpublished. See [npm scoped public packages](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/) and the [npm unpublish policy](https://docs.npmjs.com/policies/unpublish/).

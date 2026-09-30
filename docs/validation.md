@@ -1,6 +1,14 @@
 # Validation
 
-Current release candidate: `v0.1.1` for GitHub and npm. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+Current release candidate: `v0.1.2` for GitHub and npm. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+
+## Pi 0.99.1 host
+
+Issue #26 adds Pi 0.99.1 as a tested host without changing the fingerprint mechanism or runtime behavior. The v0.1.1 adapter failed closed on Pi 0.99.1 because two fingerprints changed: the bundled `AssistantMessageComponent.updateContent` only by a minifier rename, and `InteractiveMode.showStatus` in both the SDK and the bundle, which now renders through `ThemedText` so notices recolor after theme changes. The adapter only shadows `showStatus` during the two native toggle actions; the other five methods are byte-identical to the Pi 0.85.1 signatures.
+
+With development dependencies on Pi/Tui 0.99.1 and the v0.1.1 allowlist, `npm run check` passed only 8/41, and every failure was the fail-closed gate. With the 0.99.1 SDK and bundled-CLI signatures it passes 41/41 on Pi 0.99.1 and on Pi 0.85.1 without test changes, on macOS arm64 and Node 24.18.0. Pi 0.99.1 needs no extra test-only package. The CLI and packaged-artifact probes run under Pi 0.99's default `system` theme; compact cards use the same theme keys as native tool cards. On the synthetic 320-call benchmark, Pi 0.99.1 renders the same 320/5,560 compact collapsed/expanded lines as Pi 0.85.1, with 0.377/0.340 ms compact and 0.285/0.205 ms native medians. Pi 0.99's native rendering is faster than 0.85.1's on this workload, so these numbers support no plugin speed claim.
+
+CI now tests Pi 0.85.1 and 0.99.1. Pi 0.85.0 left CI; its signatures remain allowlisted from the v0.1.1 evidence.
 
 ## Host compatibility
 
@@ -114,4 +122,4 @@ npm run benchmark -- work/upstream-large-session.jsonl
 
 ## Certification limits
 
-Pi 0.85.0 and 0.85.1 are tested hosts. A future Pi version is accepted only while its presentation seam matches an allowlisted tested signature; matching is compatibility evidence, not full release certification. The historical [four-job CI matrix](https://github.com/AllenYolk/pi-minimal-display/actions/runs/33959587401) passed on Linux/macOS with Node 22.19.0/24.12.0 at commit `bc3c8b2`; current release evidence is recorded in issue #22. Windows and alternative Pi runtimes are not tested by this candidate.
+Pi 0.85.1 and 0.99.1 are tested hosts; Pi 0.85.0 was tested through v0.1.1 and its signatures remain allowlisted. A future Pi version is accepted only while its presentation seam matches an allowlisted tested signature; matching is compatibility evidence, not full release certification. The historical [four-job CI matrix](https://github.com/AllenYolk/pi-minimal-display/actions/runs/33959587401) passed on Linux/macOS with Node 22.19.0/24.12.0 at commit `bc3c8b2`; current release evidence is recorded in issue #26. Windows and alternative Pi runtimes are not tested by this candidate.

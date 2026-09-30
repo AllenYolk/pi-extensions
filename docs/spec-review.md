@@ -1,6 +1,6 @@
 # Specification review
 
-Status: Review direction approved by the owner on 2026-09-05. The authoritative implementation contract is the GitHub spec issue. Issue #24 additionally requires Pi's native thinking-visibility toggle status to be silent, with the same action-scoped semantics as issue #16.
+Status: Review direction approved by the owner on 2026-09-05. The authoritative implementation contract is the GitHub spec issue. Issue #24 additionally requires Pi's native thinking-visibility toggle status to be silent, with the same action-scoped semantics as issue #16. Issue #26 accepts Pi 0.99.1 by allowlisting its tested signatures under the unchanged ADR 0001 mechanism; the owner narrowed CI tested hosts to Pi 0.85.1 and 0.99.1 and authorized GitHub `v0.1.2`, with npm publication performed by the owner.
 
 The owner selected [silent native expansion (#16)](https://github.com/AllenYolk/pi-minimal-display/issues/16): preserve Pi's native two-state setter and repaint, but suppress only the exact mode notification emitted synchronously by that action. Do not route it to Starship or globally filter matching transcript text. [Issue #24](https://github.com/AllenYolk/pi-minimal-display/issues/24) applies the same rule to native thinking-visibility toggles.
 
