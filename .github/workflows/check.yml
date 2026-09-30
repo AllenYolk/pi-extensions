@@ -15,7 +15,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         node: [22.19.0, 24.12.0]
-        pi: [0.85.0, 0.85.1]
+        pi: [0.85.1, 0.99.1]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -28,8 +28,8 @@ jobs:
       - run: uv python install 3.12
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Select tested Pi host
-        if: matrix.pi == '0.85.0'
-        run: npm install --ignore-scripts --no-save --package-lock=false --no-audit --no-fund @earendil-works/pi-coding-agent@0.85.0 @earendil-works/pi-tui@0.85.0 @earendil-works/pi-server@0.85.0
+        if: matrix.pi == '0.85.1'
+        run: npm install --ignore-scripts --no-save --package-lock=false --no-audit --no-fund @earendil-works/pi-coding-agent@0.85.1 @earendil-works/pi-tui@0.85.1
       - run: npm run check
       - run: npm run benchmark
 

@@ -11,7 +11,7 @@ Failed tools are named in the summary, even while other calls are pending. Click
 
 Summaries use the current Pi theme and native tool-card padding/backgrounds. Failure takes precedence over pending work when selecting a background. Colored padding is clickable; the preceding blank line is not. Startup, new, resumed and forked sessions automatically begin minimal; `/reload` preserves Pi's current global expansion state. The existing tool shortcut (Ctrl+O by default) remains a two-state minimal/expanded toggle, including when rebound. This toggle is intentionally silent instead of inserting `Tool output: expanded/collapsed` into the transcript; the changed card detail is its feedback. Pi's native thinking-visibility shortcut (Ctrl+T by default) is likewise silent; the changed assistant presentation is its feedback. `/minimal-display` only reports status and is never required to activate the extension.
 
-Status: `v0.1.1` release candidate for GitHub and npm. The runtime adapter is tested on Pi 0.85.0 and 0.85.1. It accepts hosts whose patched presentation methods match a tested signature, so unrelated Pi releases do not require a plugin update; incompatible hosts stay native and display a diagnostic. Compatibility results and limitations live in [validation](docs/validation.md).
+Status: `v0.1.2` release candidate for GitHub and npm. The runtime adapter is tested on Pi 0.85.0, 0.85.1 and 0.99.1; CI re-verifies 0.85.1 and 0.99.1. It accepts hosts whose patched presentation methods match a tested signature, so unrelated Pi releases do not require a plugin update; incompatible hosts stay native and display a diagnostic. Compatibility results and limitations live in [validation](docs/validation.md).
 
 ## Install from GitHub
 
@@ -24,13 +24,13 @@ pi install git:github.com/AllenYolk/pi-minimal-display
 Or pin an immutable release; pinned refs do not advance during Pi updates:
 
 ```sh
-pi install git:github.com/AllenYolk/pi-minimal-display@v0.1.1
+pi install git:github.com/AllenYolk/pi-minimal-display@v0.1.2
 ```
 
 For one run without changing settings:
 
 ```sh
-pi -e git:github.com/AllenYolk/pi-minimal-display@v0.1.1
+pi -e git:github.com/AllenYolk/pi-minimal-display@v0.1.2
 ```
 
 ## Try local source in an isolated profile
