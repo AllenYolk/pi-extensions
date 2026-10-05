@@ -4,8 +4,9 @@ Status: the source migration is published in [AllenYolk/pi-extensions](https://g
 including the original commit history, archive refs and PR-review workflow. The first npm
 releases from this repository, pi-delete 0.3.2 and pi-minimal-display 0.1.3, were published on
 2026-10-05; [the publish run](https://github.com/AllenYolk/pi-extensions/actions/runs/37294136121)
-and both npm Repository links were verified. The two old repositories have not been deleted;
-retirement remains a separate owner-authorized step.
+and both npm Repository links were verified. After the owner's authorization, the two old
+repositories were deleted on 2026-10-05; their complete Git bundles were verified before
+deletion, and the original commit/tag objects and discussion archives remain preserved.
 
 ## Why
 
