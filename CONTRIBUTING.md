@@ -61,9 +61,11 @@ of real-host compatibility.
 
 ## Pull request review
 
-OpenCodeReview runs when a PR opens, receives commits, reopens or becomes ready for review.
-Owners, members and collaborators can rerun it by commenting `/ocr`; other comments do not
-cancel an active review. The workflow uses the trusted base checkout, reads the PR diff from
+OpenCodeReview runs automatically only when a PR first opens. Pushing commits, reopening a
+PR or marking it ready does not start another review. Owners, members and collaborators can
+request a full re-review by commenting `/ocr`, including when the head was already covered
+by a checkpoint; other comments do not cancel an active review. The workflow uses the
+trusted base checkout, reads the PR diff from
 Git objects and never installs or executes the PR's code. It keeps a sticky summary and adds
 new inline findings without deleting earlier discussion.
 

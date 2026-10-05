@@ -29,7 +29,7 @@ concurrency:
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened]
   issue_comment:
     types: [created]
 
@@ -98,6 +98,7 @@ jobs:
           sticky_summary: 'true'
           incremental: 'true'
           checkpoint_range: 'true'
+          full_review: ${{ github.event_name == 'issue_comment' && 'true' || 'false' }}
           route_severity_below: 'low'
           route_categories: 'style,documentation'
           effort: 'medium'
