@@ -24,7 +24,7 @@ pi install npm:@allenyolk/pi-minimal-display
 Pin an immutable npm version when updates should not arrive automatically:
 
 ```sh
-pi install npm:@allenyolk/pi-minimal-display@0.1.3
+pi install npm:@allenyolk/pi-minimal-display@0.1.2
 ```
 
 Or take it from the [pi-extensions collection](../../README.md#install), which also enables `@allenyolk/pi-delete` unless you narrow it with a resource filter:
@@ -36,17 +36,17 @@ pi install git:github.com/AllenYolk/pi-extensions
 For one run without changing settings:
 
 ```sh
-pi -e npm:@allenyolk/pi-minimal-display@0.1.3
+pi -e npm:@allenyolk/pi-minimal-display
 ```
 
 Pick one route. Installing from both npm and the collection loads this extension twice.
 
 ## Try local source in an isolated profile
 
-From this repository, using your existing Pi installation:
+From the repository root, using your existing Pi installation:
 
 ```sh
-PI_CODING_AGENT_DIR="$(mktemp -d)" pi -e ./src/index.ts
+PI_CODING_AGENT_DIR="$(mktemp -d)" pi -e ./packages/pi-minimal-display/src/index.ts
 ```
 
 This profile is separate from your normal configuration and credentials. To test normal conversations you will need to configure that profile's provider separately. There is no installation hook or runtime dependency to install for this extension. Pi loads the TypeScript entry directly.
@@ -54,7 +54,7 @@ This profile is separate from your normal configuration and credentials. To test
 For a local package installation into a profile you have chosen:
 
 ```sh
-pi install /absolute/path/to/pi-minimal-display
+pi install /absolute/path/to/pi-extensions/packages/pi-minimal-display
 ```
 
 The repository, packed artifact and npm package all point to `src/index.ts`. No generated `dist/` is required for Pi loading; npm publication is not required for GitHub installation.

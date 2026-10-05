@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: Apache-2.0
+# Adapted from fangwei123456/spikingjelly .github/workflows/ocr-review.yml.
+# OpenCodeReview PR review for high-confidence, actionable findings.
+
+name: OpenCodeReview PR Review
+
+concurrency:
+  # Do not let an unrelated PR comment cancel an active review.
+  group: >-
+    ${{
+      (
+        github.event_name == 'pull_request_target'
+        || (
+          github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && github.event.comment.user.type != 'Bot'
+          && (
+            github.event.comment.author_association == 'MEMBER'
+            || github.event.comment.author_association == 'OWNER'
+            || github.event.comment.author_association == 'COLLABORATOR'
+          )
+          && startsWith(github.event.comment.body, '/ocr')
+        )
+      )
+      && format('ocr-{0}', github.event.pull_request.number || github.event.issue.number)
+      || format('noop-{0}', github.run_id)
+    }}
+  cancel-in-progress: true
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    if: >-
+      github.event_name == 'pull_request_target'
+      || (
+        github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && github.event.comment.user.type != 'Bot'
+        && (
+          github.event.comment.author_association == 'MEMBER'
+          || github.event.comment.author_association == 'OWNER'
+          || github.event.comment.author_association == 'COLLABORATOR'
+        )
+        && startsWith(github.event.comment.body, '/ocr')
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Resolve PR refs
+        if: github.event_name == 'issue_comment'
+        id: pr-context
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput('base_ref', pullRequest.base.ref);
+            core.setOutput('head_sha', pullRequest.head.sha);
+
+      - name: Enable OCR completion guard
+        run: echo "$GITHUB_WORKSPACE/.github/scripts" >> "$GITHUB_PATH"
+
+      - name: Run OpenCodeReview
+        uses: alibaba/open-code-review@bccbc15f785269400735d5255540c231e6c02b6d # v1.12.9
+        env:
+          OCR_NO_UPDATE: '1'
+        with:
+          llm_url: ${{ secrets.OCR_LLM_URL }}
+          llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          llm_model: ${{ secrets.OCR_LLM_MODEL }}
+          llm_use_anthropic: 'false'
+          llm_extra_body: '{"thinking":{"type":"adaptive"},"reasoning_split":true}'
+          llm_reasoning_effort: 'medium'
+          background: |
+            Review AllenYolk/pi-extensions, an npm workspace containing independent Pi extensions.
+            Read AGENTS.md, CONTRIBUTING.md and CONTEXT.md, then the affected package's README and architecture decisions. The packages keep separate commands, configuration, runtime state and tested host versions; the root manifest also supports filtered Git collection installation.
+            Prioritize concrete bugs, security or session-data loss, broken package loading or publication, incorrect runtime patch ownership/disposal, changed model context or serialized session data, and violations of explicit supported contracts.
+            Report at most eight distinct, high-confidence findings. Each must identify a supported trigger, its consequence and one primary fix; report one finding per root cause and stay silent when evidence is inconclusive.
+            Do not report style, naming, formatting, speculative abstractions or future compatibility, unmeasured micro-optimizations, or extra tests/docs unless an explicit contract is broken. Preserve the package's documented native fallback on incompatible Pi hosts.
+            Do not execute repository code, install its dependencies or request access to secrets. Test and benchmark findings must break CI, invalidate a measurement or change documented behavior.
+          base_ref: ${{ steps.pr-context.outputs.base_ref }}
+          head_sha: ${{ steps.pr-context.outputs.head_sha }}
+          ocr_version: '1.12.11'
+          node_version: '24.12.0'
+          sticky_summary: 'true'
+          incremental: 'true'
+          checkpoint_range: 'true'
+          route_severity_below: 'low'
+          route_categories: 'style,documentation'
+          effort: 'medium'
+          stream_progress: 'true'

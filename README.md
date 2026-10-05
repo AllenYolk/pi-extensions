@@ -1,12 +1,14 @@
 # Pi Extensions
 
-Source repository for two independent Pi extensions. They share this repository and its
-engineering setup; they share no runtime code and neither depends on the other.
+[![Check](https://github.com/AllenYolk/pi-extensions/actions/workflows/check.yml/badge.svg)](https://github.com/AllenYolk/pi-extensions/actions/workflows/check.yml)
+
+AllenYolk's personal [Pi](https://pi.dev) extensions. Each package solves one focused problem
+and can be installed, updated and used independently.
 
 | Package | What it does |
 | --- | --- |
-| [`@allenyolk/pi-delete`](packages/pi-delete) | `/delete` removes the current session and exits, optionally cascading to the sessions forked or spawned from it. Adds a subtree delete to Pi's session picker. |
-| [`@allenyolk/pi-minimal-display`](packages/pi-minimal-display) | Compact, expandable tool cards with reversible presentation patches and native expansion. |
+| [`@allenyolk/pi-delete`](packages/pi-delete/README.md) | Delete the current session and exit, optionally including its descendants; delete a subtree from Pi's session picker. |
+| [`@allenyolk/pi-minimal-display`](packages/pi-minimal-display/README.md) | Group tool activity into compact cards, with native details available on expansion. |
 
 ## Install
 
@@ -43,6 +45,18 @@ that ref — `pi update --extensions` reconciles the checkout but does not move 
 
 Each package README documents its own configuration, behaviour and recovery.
 
+## Repository layout
+
+```text
+packages/pi-delete/           Package, README, source and tests
+packages/pi-minimal-display/  Package, README, source and tests
+test/                        Installation and coexistence checks
+docs/                        Contributor conventions and archived history
+```
+
+The root is a private npm workspace, not a third npm package. Packages keep their own
+versions, licenses and manifests; they share no runtime code and neither depends on the other.
+
 ## Development
 
 ```sh
@@ -62,10 +76,16 @@ different hosts stay installed side by side. TypeScript is shared at the root.
 Versions are managed with [Changesets](.changeset/README.md); only the packages a change
 affects get a bump. Publishing runs from a manually triggered workflow on `main`.
 
+Pull requests run the checks above and receive an OpenCodeReview review. Maintainers can
+comment `/ocr` to rerun it after changes. Automated findings supplement the checks and human
+review; see [CONTRIBUTING.md](CONTRIBUTING.md#pull-request-review) for setup and review rules.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the issue, review and release gates,
 [CONTEXT.md](CONTEXT.md) for the shared vocabulary, and [docs/migration.md](docs/migration.md)
 for why this repository exists and what the move away from two repositories cost.
 
 ## License
 
-MIT, copyright AllenYolk. Pi and its dependencies retain their respective licenses.
+Extension packages: [MIT](LICENSE), copyright AllenYolk. The OCR workflow, completion guard
+and guard regression test adapted from [SpikingJelly](https://github.com/fangwei123456/spikingjelly)
+retain [Apache-2.0](LICENSES/Apache-2.0.txt). Pi and its dependencies retain their own licenses.

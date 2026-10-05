@@ -31,6 +31,23 @@ Independent review covers standards and the spec separately. Resolve release-blo
 with regression evidence before marking a candidate ready. A green mocked test is not evidence
 of real-host compatibility.
 
+## Pull request review
+
+OpenCodeReview runs when a PR opens, receives commits, reopens or becomes ready for review.
+Owners, members and collaborators can rerun it by commenting `/ocr`; other comments do not
+cancel an active review. The workflow uses the trusted base checkout, reads the PR diff from
+Git objects and never installs or executes the PR's code. It keeps a sticky summary and adds
+new inline findings without deleting earlier discussion.
+
+Configure repository Secrets `OCR_LLM_URL`, `OCR_LLM_AUTH_TOKEN` and `OCR_LLM_MODEL` for the
+OpenAI-compatible model endpoint. The workflow requests concrete, actionable findings and
+keeps style or documentation notes in the summary. The completion guard from SpikingJelly
+allows useful partial findings through, but fails an incomplete review with no findings.
+Partial findings are not evidence that the entire PR was reviewed.
+
+ChatGPT review can be enabled separately in the owner's GitHub integration. Automated
+reviews supplement behavior checks and the independent Standards/Spec release review.
+
 ## Release checklist
 
 - Add a changeset for the packages the change actually affects, and no others.

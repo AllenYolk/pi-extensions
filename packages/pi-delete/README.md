@@ -79,10 +79,10 @@ Or take it from the [pi-extensions collection](../../README.md#install), which a
 pi install git:github.com/AllenYolk/pi-extensions
 ```
 
-Or from a checkout, without installing:
+Or from the repository root, without installing:
 
 ```sh
-pi -e ./src/index.ts
+pi -e ./packages/pi-delete/src/index.ts
 ```
 
 Pick one route. Installing from both npm and the collection loads this extension twice.
