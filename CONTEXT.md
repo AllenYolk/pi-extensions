@@ -20,12 +20,13 @@ entries. Distinct from installing a package from npm.
 the same link for a subagent session and for one forked by hand, so the two are
 indistinguishable.
 
-**Cascade**: Deleting a session together with its whole descendant subtree, within one
-project's session directory. A session forked into another project keeps its own files.
+**Cascade**: Deleting a session and its descendants from the session listing supplied by
+the caller. `/delete` uses the current project's session directory; the picker plans against
+its selected current/all listing. Apply the active-session rule for the relevant entrypoint.
 
-**Active session**: The session the running Pi instance is writing to. It is never deleted,
-neither when the picker cursor is on it nor when it sits below the node being cascaded; in the
-second case it is held back and the rest still go.
+**Active session**: The session the running Pi instance is writing to. Picker deletion keeps
+it out of the targets, whether selected directly or present among descendants. The `/delete`
+command instead deliberately schedules it for removal during session shutdown.
 
 **Pending deletion**: Files chosen for deletion but removed during Pi's shutdown, after the
 session file's last write, so nothing recreates them on the way out.
@@ -52,3 +53,25 @@ enabled.
 
 **Retained detail**: The command, text blocks, images, structured details, and truncation
 references available to Pi. It excludes content Pi has already discarded.
+
+## Code and state ownership
+
+Paths below are relative to `packages/` unless stated otherwise.
+
+| Area | Owner | Boundary |
+| --- | --- | --- |
+| Delete command and pending shutdown targets | `pi-delete/src/index.ts` | Registers `/delete`, collects the choice and applies queued deletion during shutdown. |
+| Descendant traversal and picker target planning | `pi-delete/src/descendants.ts` | Derives targets from Pi session listings, handles cycles and excludes the active picker session. |
+| File removal and failure reporting | `pi-delete/src/delete-sessions.ts` | Prefers `trash`, falls back to unlink and reports surviving files. |
+| Session-picker patches | `pi-delete/src/selector-patch.ts` | Owns selector/header wrappers, native-shape checks and picker refresh after mutation. |
+| Display activation and configuration | `pi-minimal-display/src/index.ts`, `pi-minimal-display/src/config.ts` | The entry owns the disposer/status; config is read from Pi's actual agent directory. |
+| Display projection and private host access | `pi-minimal-display/src/presentation.ts` | Owns fingerprint checks and presentation/mouse/expansion wrappers; execution and saved data remain Pi-owned. |
+| Collection/package boundaries | Repository-root manifest, `test/` and `.github/workflows/` | Aggregate installation, independent-package checks, coexistence and shared development/release tooling. |
+
+Pi session records and parent links are the source of ancestry; the plugins do not maintain
+a separate persistent session index. Pi also owns thinking visibility, global tool expansion
+and tool results; compact cards are a projection of that state.
+
+The display entry passes the host modules into its adapter so patched components are the
+ones the CLI is using. A bundled host copy or a direct built-ESM load can create a second set
+of classes and bypass that ownership boundary.

@@ -1,7 +1,8 @@
 # Releasing
 
-Status rechecked 2026-10-05 against [Pi 0.99.1 package dependencies](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/docs/packages.md#declare-dependencies).
-This document describes release mechanics; it does not authorize publishing a release.
+Read package manifests and registry metadata for current versions, and the workflows for
+toolchain pins. This document describes release mechanics; it does not authorize publishing
+a release. Repository-only documentation and CI changes do not trigger npm publication.
 
 ## Package contract
 
@@ -50,13 +51,20 @@ scoped package tag cannot be used as a git ref — pin the collection by commit 
 [Changesets](../.changeset/README.md) manages the two packages independently. `fixed` and
 `linked` are both empty, so a change to one package never bumps the other.
 
+Add a changeset when an affected package's published behavior, source, metadata or packaged
+README changes; select only that package and the appropriate patch/minor/major intent.
+Root documentation, tests and tooling-only changes can omit a changeset. Versions belong in
+each package's `package.json`; Changesets also updates its changelog and the root lockfile.
+
 ```sh
 npm run changeset          # describe the change and pick the affected packages
 npm run version-packages   # apply pending changesets and refresh the root lockfile
 ```
 
-The version bump is a pull request. Merge it only after Standards and Spec review pass
-independently.
+Develop the feature or fix with its release intent first, then apply pending changesets in
+a version PR. Review the generated diff, run the complete checks and inspect both actual
+package tarballs. Merge only after the independent Standards and Spec review gates in
+CONTRIBUTING.md are satisfied; bumping metadata alone is not a release.
 
 ## Publishing
 
@@ -66,24 +74,57 @@ must have been applied in the reviewed version PR. It publishes with `changeset 
 [trusted publishing](https://docs.npmjs.com/trusted-publishers/) over OIDC, so no npm token is
 stored in this repository.
 
-Before the first publication from this repository, bind each existing npm package to it as a
-trusted publisher:
+Both npm packages are bound to this repository through GitHub Actions trusted publishing.
+When inspecting or repairing that configuration, the expected values are:
 
 - `@allenyolk/pi-delete` → `AllenYolk/pi-extensions`, workflow filename `publish.yml`
 - `@allenyolk/pi-minimal-display` → same repository and workflow
 
-Allow `npm publish` in each trusted publisher's settings. After publication, the workflow
-pushes the package tags and creates their GitHub releases; retrying the same commit completes
-missing publication records without replacing existing tags or versions.
+Leave Environment name empty, matching the workflow's lack of a GitHub environment, and
+allow `npm publish`. Keep credentials in the existing secret/trust mechanisms; do not add an
+npm token to source or replace the owner's trust settings as a troubleshooting shortcut.
+
+After the owner authorizes the package versions and release commit:
+
+1. Confirm the candidate's full SHA is on `main`, its complete `Check` push run succeeded,
+   and all pending changesets have been applied.
+2. Open GitHub Actions → **Publish packages** → **Run workflow**, select `main` and enter
+   that full SHA; alternatively dispatch the same workflow with `gh`:
+
+   ```sh
+   gh workflow run publish.yml --repo AllenYolk/pi-extensions --ref main -f "commit=$release_sha"
+   ```
+
+   Set `release_sha` to the approved, CI-tested commit; dispatching is the publication step.
+3. Monitor the run and its final package summary; the workflow publishes missing versions,
+   pushes package tags and creates the corresponding GitHub Releases.
+4. Verify each intended version exists on npm with the expected `latest` tag,
+   `repository.url` and `repository.directory`, plus a non-draft GitHub Release/tag on the
+   intended source commit; a green workflow alone does not prove registry visibility.
+
+Use fresh registry reads when checking propagation; cached metadata can temporarily show an
+older `latest` value:
+
+```sh
+npm view @allenyolk/pi-delete version repository dist-tags --prefer-online --json
+npm view @allenyolk/pi-minimal-display version repository dist-tags --prefer-online --json
+gh release list --repo AllenYolk/pi-extensions
+```
+
+Also check the npm package page's Repository link points at this repository. Existing npm
+users keep the same source declarations; once approved for their profile, normal Pi package
+updates fetch the new versions without moving the display configuration.
 
 npm registry tarballs are immutable: once `name@version` is published, a fix needs a new
 version even if the old one is unpublished. See
 [npm scoped public packages](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/)
 and the [npm unpublish policy](https://docs.npmjs.com/policies/unpublish/).
 
-If one package publishes and the other fails, republish only the missing one from the same
-commit. Never move or reuse a published version, and keep the old repositories until both
-packages are confirmed published.
+On a partial failure, inspect the failed step and registry state before retrying the same
+approved SHA: Changesets skips versions already published, and the workflow completes missing
+tags/Releases. Changed package content requires a new version; never move a published tag or
+reuse a version. Registry/trust/2FA failures need the owner's account action when agent access
+is unavailable. Repository retirement is separate from publication.
 
 ## Release history before this repository
 
