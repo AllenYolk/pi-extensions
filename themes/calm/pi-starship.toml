@@ -6,7 +6,7 @@ $brand$model\
 ([ · ](#8793ad)$directory)\
 ([ · ](#8793ad)$git_branch)\
 ( $git_status)\
-${fill}\
+${fill} \
 ($context[ · ](#8793ad))\
 ($cache[ · ](#8793ad))\
 $tokens\
