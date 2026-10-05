@@ -1,0 +1,51 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tested-host:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [22.19.0, 24.12.0]
+        pi: [0.85.1, 0.99.1]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - run: uv python install 3.12
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Select tested Pi host
+        if: matrix.pi == '0.85.1'
+        run: npm install --ignore-scripts --no-save --package-lock=false --no-audit --no-fund @earendil-works/pi-coding-agent@0.85.1 @earendil-works/pi-tui@0.85.1
+      - run: npm run check
+      - run: npm run benchmark
+
+  upstream-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.12.0
+      - name: Report certification drift without widening support
+        run: |
+          current=$(npm view @earendil-works/pi-coding-agent version)
+          tested=$(node -p "require('./package.json').devDependencies['@earendil-works/pi-coding-agent']")
+          echo "Published Pi: $current; latest tested Pi: $tested" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$current" != "$tested" ]; then
+            echo "::warning::A newer Pi release requires an explicit compatibility investigation. It is not tested by this job."
+          fi
