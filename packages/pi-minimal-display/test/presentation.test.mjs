@@ -6,7 +6,7 @@ import * as Pi from '@earendil-works/pi-coding-agent';
 import * as Tui from '@earendil-works/pi-tui';
 import { installPresentation as install } from '../dist/presentation.js';
 import { loadConfig } from '../dist/config.js';
-import { theme } from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+import { theme } from './pi-host.mjs';
 import { stripVTControlCharacters } from 'node:util';
 
 initTheme('dark');

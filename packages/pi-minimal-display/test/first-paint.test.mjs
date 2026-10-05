@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { test } from 'node:test';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { piCli } from './pi-host.mjs';
 
 for (const mode of ['regular', 'fullscreen']) for (const scenario of ['fresh', 'resume']) {
   test(`${mode} ${scenario} shows minimal before any command or key input`, { timeout: 30000 }, () => {
@@ -20,7 +21,7 @@ for (const mode of ['regular', 'fullscreen']) for (const scenario of ['fresh', '
       for (const name of names) session.appendMessage({ role: 'toolResult', toolCallId: name, toolName: name, content: [{ type: 'text', text: 'FIRST_PAINT_RAW_OUTPUT' }], isError: false, timestamp: 2 });
       sessionArgs.push('--session', session.getSessionFile());
     }
-    const result = spawnSync('uv', ['run', '--no-project', '--python', '3.12', 'python', resolve('test/pty.py'), process.execPath, resolve('node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'), '--offline', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-extensions', '--tui-mode', mode, ...sessionArgs, '-e', resolve('src/index.ts'), '-e', resolve('test/fixtures/first-paint.ts')], {
+    const result = spawnSync('uv', ['run', '--no-project', '--python', '3.12', 'python', resolve('test/pty.py'), process.execPath, piCli, '--offline', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-extensions', '--tui-mode', mode, ...sessionArgs, '-e', resolve('src/index.ts'), '-e', resolve('test/fixtures/first-paint.ts')], {
       cwd: profile,
       env: { ...process.env, PI_CODING_AGENT_DIR: profile, PI_OFFLINE: '1', PI_FIRST_PAINT_SCENARIO: scenario, PI_FIRST_PAINT_MESSAGE: JSON.stringify(message), PI_FIRST_PAINT_EXPECT: JSON.stringify([...names.map(name => `${name} ×1`), 'succeeded']) },
       encoding: 'utf8', timeout: 25000, maxBuffer: 2 * 1024 * 1024,

@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as Pi from '@earendil-works/pi-coding-agent';
 import * as Tui from '@earendil-works/pi-tui';
-import { theme } from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+import { theme } from './pi-host.mjs';
 import { loadConfig } from '../dist/config.js';
 import { installPresentation } from '../dist/presentation.js';
 

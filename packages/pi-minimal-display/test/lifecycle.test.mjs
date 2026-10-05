@@ -6,7 +6,7 @@ import minimalDisplay from '../dist/index.js';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SessionManager, initTheme } from '@earendil-works/pi-coding-agent';
-import { theme } from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+import { theme } from './pi-host.mjs';
 
 initTheme('dark');
 
@@ -69,7 +69,7 @@ test('a third-party wrapper cannot keep a disposed session alive through its dia
     import * as Pi from '@earendil-works/pi-coding-agent';
     import * as Tui from '@earendil-works/pi-tui';
     import { installPresentation } from './dist/presentation.js';
-    import { theme } from './node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+    import { theme } from './test/pi-host.mjs';
     import { loadConfig } from './dist/config.js';
     Pi.initTheme('dark');
     function wrap(installed) { return function(width) { return installed.call(this, width); }; }

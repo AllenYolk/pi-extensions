@@ -1,0 +1,39 @@
+{
+  "name": "pi-extensions",
+  "private": true,
+  "description": "Source repository for the @allenyolk Pi extension packages.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AllenYolk/pi-extensions.git"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "pi": {
+    "extensions": [
+      "./packages/pi-delete/src/index.ts",
+      "./packages/pi-minimal-display/src/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "npm --workspaces run typecheck",
+    "test": "npm --workspaces run test && node --test test/*.test.mjs",
+    "check": "npm --workspaces run check && node --test test/*.test.mjs",
+    "benchmark": "npm --workspace @allenyolk/pi-minimal-display run benchmark",
+    "changeset": "changeset",
+    "version-packages": "changeset version && npm install --package-lock-only --ignore-scripts",
+    "publish-packages": "changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3",
+    "@earendil-works/pi-coding-agent": "0.99.1",
+    "@earendil-works/pi-tui": "0.99.1",
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

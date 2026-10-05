@@ -7,7 +7,8 @@
   "description": "Delete Pi sessions with their subagent/fork subtree \u2014 /delete on exit, ctrl+d then t in the picker.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AllenYolk/pi-delete.git"
+    "url": "git+https://github.com/AllenYolk/pi-extensions.git",
+    "directory": "packages/pi-delete"
   },
   "type": "module",
   "license": "MIT",
@@ -43,8 +44,6 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1",
-    "@types/node": "24.10.1",
-    "typescript": "5.9.3"
+    "@earendil-works/pi-coding-agent": "0.87.1"
   }
 }

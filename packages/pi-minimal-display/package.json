@@ -1,16 +1,36 @@
 {
   "name": "@allenyolk/pi-minimal-display",
   "version": "0.1.2",
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "Compact, expandable Pi tool cards with reversible presentation patches.",
   "type": "module",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/AllenYolk/pi-minimal-display.git" },
-  "files": ["src", "README.md", "LICENSE"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AllenYolk/pi-extensions.git",
+    "directory": "packages/pi-minimal-display"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": "./src/index.ts",
-  "pi": { "extensions": ["./src/index.ts"] },
-  "keywords": ["pi-package", "pi", "tool-rendering"],
-  "engines": { "node": ">=22.19.0" },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "tool-rendering"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
@@ -24,8 +44,6 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.99.1",
-    "@earendil-works/pi-tui": "0.99.1",
-    "@types/node": "24.10.1",
-    "typescript": "5.9.3"
+    "@earendil-works/pi-tui": "0.99.1"
   }
 }
