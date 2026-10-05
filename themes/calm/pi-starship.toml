@@ -5,7 +5,7 @@ $brand$model\
 ([ · ](#8793ad)$thinking)\
 ([ · ](#8793ad)$directory)\
 ([ · ](#8793ad)$git_branch)\
-( $git_status)\
+$git_status\
 ${fill} \
 ($context[ · ](#8793ad))\
 ($cache[ · ](#8793ad))\
@@ -13,19 +13,19 @@ $tokens\
 ([ · ](#8793ad)$cost)"""
 
 [brand]
-format = "[$symbol ]($style)"
+format = "[$symbol   ]($style)"
 symbol = "π"
 style = "#9db1da"
 
 [model]
 format = "[$model]($style)"
 symbol = ""
-style = "#c7a6ed"
+style = "#abc4e2"
 
 [thinking]
 format = "[$level]($style)"
 symbol = ""
-style = "#c7a6ed"
+style = "#c5afd9"
 
 [directory]
 format = "[$path]($style)"
@@ -42,7 +42,7 @@ symbol = ""
 style = "#a6c895"
 
 [git_status]
-format = "[$all_status( $ahead_behind)]($style)"
+format = '( [\($all_status\)]($style))( [\($ahead_behind\)]($style))'
 style = "red"
 
 [fill]
