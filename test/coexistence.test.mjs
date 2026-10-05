@@ -58,7 +58,8 @@ test('/delete cascades the whole descendant subtree when chosen', { timeout: 120
   const { tree } = driveTree('cascade', 'main', [
     { expect: loaded, send: '/delete\r' },
     { expect: cascadeOffered, send: '\u001b[B' },
-    { expect: '(auto)', send: '\r' },
+    // Selection can repaint only menu rows, leaving the footer untouched on Linux.
+    { expect: cascadeOffered, send: '\r' },
   ]);
   assert.equal(surviving(tree.sessions), 0, 'cascade removes the session and all descendants');
 });
