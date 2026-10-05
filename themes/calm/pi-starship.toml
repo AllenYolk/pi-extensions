@@ -1,0 +1,104 @@
+# Native Pi modules with Starship-compatible format and style syntax.
+# calm changes the existing footer; native editing remains unchanged.
+format = """
+$brand$model\
+([ · ](#8793ad)$thinking)\
+([ · ](#8793ad)$directory)\
+([ · ](#8793ad)$git_branch)\
+$git_status\
+${fill} \
+($context[ · ](#8793ad))\
+($cache[ · ](#8793ad))\
+$tokens\
+([ · ](#8793ad)$cost)"""
+
+[brand]
+format = "[$symbol   ]($style)"
+symbol = "π"
+style = "#9db1da"
+
+[model]
+format = "[$model]($style)"
+symbol = ""
+style = "#abc4e2"
+
+[thinking]
+format = "[$level]($style)"
+symbol = ""
+style = "#c5afd9"
+
+[directory]
+format = "[$path]($style)"
+symbol = ""
+style = "#8bbfcf"
+truncation_length = 1
+fish_style_pwd_dir_length = 1
+truncate_to_repo = true
+home_symbol = "~"
+
+[git_branch]
+format = "[$branch]($style)"
+symbol = ""
+style = "#a6c895"
+
+[git_status]
+format = '( [\($all_status\)]($style))( [\($ahead_behind\)]($style))'
+style = "red"
+
+[fill]
+symbol = " "
+style = "none"
+
+[context]
+format = "[ctx $percentage]($style)"
+symbol = ""
+
+[[context.display]]
+threshold = 0
+style = "#b0bfd6"
+hidden = true
+
+[[context.display]]
+threshold = 30
+style = "#b0bfd6"
+hidden = false
+
+[[context.display]]
+threshold = 60
+style = "yellow"
+hidden = false
+
+[[context.display]]
+threshold = 80
+style = "red"
+hidden = false
+
+[cache]
+format = "([CH$rate]($style))"
+symbol = ""
+style = "#b0bfd6"
+disabled = false
+
+[tokens]
+format = "[↑$input]($style)[ · ](#8793ad)[↓$output]($style)"
+symbol = ""
+style = "#b0bfd6"
+
+[cost]
+format = '[\$$cost( $subscription)]($style)'
+symbol = ""
+
+[[cost.display]]
+threshold = 0
+style = "#b0bfd6"
+hidden = true
+
+[[cost.display]]
+threshold = 1
+style = "yellow"
+hidden = false
+
+[[cost.display]]
+threshold = 5
+style = "red"
+hidden = false
