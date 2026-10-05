@@ -9,8 +9,8 @@ message and tool colors are unchanged.
 The footer removes model/thinking/directory pictograms, distinguishes the blue model
 label from lavender thinking text, abbreviates parent directories without shortening
 the final name, uses muted dots between fields, and retains Git status symbols and context/cache/token/cost
-information. The branch has no pictogram; status counts use parenthesized suffixes such
-as `master (⇣1)` or `master (!1) (⇣1)`. Optional fields carry their separator only when
+information. The branch has no pictogram; worktree and ahead/behind counts share one
+parenthesized suffix, such as `master (⇣1)` or `master (!1⇣1)`. Optional fields carry their separator only when
 visible. Cache hit rate is enabled;
 context and cost keep their visibility thresholds and warning colors.
 
