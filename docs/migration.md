@@ -1,7 +1,9 @@
 # Migration to one source repository
 
-Status: phases one to three are implemented in this repository. Publishing and the deletion
-of the two old repositories are gated on the owner's review and are not done.
+Status: the source migration is published in [AllenYolk/pi-extensions](https://github.com/AllenYolk/pi-extensions),
+including the original commit history, archive refs and PR-review workflow. npm publication
+and deletion of the two old repositories remain pending the owner's authorization and the
+release checks below.
 
 ## Why
 
