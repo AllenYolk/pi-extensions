@@ -72,11 +72,20 @@ This is not available in the picker that `pi --resume` opens at startup. That pi
 pi install npm:@allenyolk/pi-delete
 ```
 
+Or take it from the [pi-extensions collection](../../README.md#install), which also enables
+`@allenyolk/pi-minimal-display` unless you narrow it with a resource filter:
+
+```sh
+pi install git:github.com/AllenYolk/pi-extensions
+```
+
 Or from a checkout, without installing:
 
 ```sh
 pi -e ./src/index.ts
 ```
+
+Pick one route. Installing from both npm and the collection loads this extension twice.
 
 ## Behavior
 
@@ -96,14 +105,16 @@ That class is public; the fields the patch drives (`sessionList`, `currentSessio
 
 ## Development
 
+From the repository root, which installs the workspace and this package's pinned Pi host:
+
 ```sh
 npm ci --ignore-scripts
-npm run check
+npm --workspace @allenyolk/pi-delete run check
 ```
 
-Tests cover descendant collection (including cycles in `parentSessionPath`), the rule that keeps the active session out of a cascade, and the trash/unlink/report path.
+Tests cover descendant collection (including cycles in `parentSessionPath`), the rule that keeps the active session out of a cascade, and the trash/unlink/report path. The repository's `test/` checks drive `/delete`, the cascade, cancellation and the picker's active-session rule through a real TUI in a PTY, with `@allenyolk/pi-minimal-display` loaded alongside.
 
-`npm run sandbox` builds a throwaway profile with a four-session tree and prints the commands to open Pi against it, so the interactive flow can be exercised without touching real sessions. Both surfaces were verified this way against Pi 0.87.1 by driving a real TUI in a PTY: `/delete` (cascade, current-only, cancel, leaf, ephemeral) and the picker key (cascade, native single delete still intact, cancel, leaf, active-session refusal, active-session-as-descendant, and `t` still reaching the search box outside the confirmation).
+`npm --workspace @allenyolk/pi-delete run sandbox` builds a throwaway profile with a four-session tree and prints the commands to open Pi against it, so the interactive flow can be exercised by hand without touching real sessions. Both surfaces were verified this way against Pi 0.87.1 by driving a real TUI in a PTY: `/delete` (cascade, current-only, cancel, leaf, ephemeral) and the picker key (cascade, native single delete still intact, cancel, leaf, active-session refusal, active-session-as-descendant, and `t` still reaching the search box outside the confirmation).
 
 `test/keyprobe.py` prints what a terminal actually sends for a key, which is how keybinding questions get settled rather than guessed.
 

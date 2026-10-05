@@ -13,25 +13,33 @@ Summaries use the current Pi theme and native tool-card padding/backgrounds. Fai
 
 Status: `v0.1.2` release candidate for GitHub and npm. The runtime adapter is tested on Pi 0.85.0, 0.85.1 and 0.99.1; CI re-verifies 0.85.1 and 0.99.1. It accepts hosts whose patched presentation methods match a tested signature, so unrelated Pi releases do not require a plugin update; incompatible hosts stay native and display a diagnostic. Compatibility results and limitations live in [validation](docs/validation.md).
 
-## Install from GitHub
+## Install
 
-Follow the default branch and receive compatible updates with `pi update --extensions` or `pi update --all`:
+The npm package is the recommended route; it versions and updates independently of the other extension in this repository:
 
 ```sh
-pi install git:github.com/AllenYolk/pi-minimal-display
+pi install npm:@allenyolk/pi-minimal-display
 ```
 
-Or pin an immutable release; pinned refs do not advance during Pi updates:
+Pin an immutable npm version when updates should not arrive automatically:
 
 ```sh
-pi install git:github.com/AllenYolk/pi-minimal-display@v0.1.2
+pi install npm:@allenyolk/pi-minimal-display@0.1.2
+```
+
+Or take it from the [pi-extensions collection](../../README.md#install), which also enables `@allenyolk/pi-delete` unless you narrow it with a resource filter:
+
+```sh
+pi install git:github.com/AllenYolk/pi-extensions
 ```
 
 For one run without changing settings:
 
 ```sh
-pi -e git:github.com/AllenYolk/pi-minimal-display@v0.1.2
+pi -e npm:@allenyolk/pi-minimal-display@0.1.2
 ```
+
+Pick one route. Installing from both npm and the collection loads this extension twice.
 
 ## Try local source in an isolated profile
 
@@ -94,23 +102,25 @@ This extension temporarily patches Pi's in-memory container rendering, mouse rou
 
 Installation checks required exports/descriptors and fingerprints of the host methods it patches, not the Pi version string. Shutdown and reload dispose owned patches; a runtime presentation failure disables the adapter and reports the fallback. Do not run it alongside `pi-tool-display`, `pi-tool-compact-display`, or `pi-compact-display`. Known tool-owner conflicts and prior modifications to the patched methods are rejected. Arbitrary third-party prototype patch combinations are not supported.
 
-To recover, restart Pi without this extension. Remove the same source used for installation—for example `pi remove git:github.com/AllenYolk/pi-minimal-display` or the pinned source—then restart. The configuration file can be kept. Running `pi --no-extensions` provides a diagnostic session with all auto-discovered extensions disabled.
+To recover, restart Pi without this extension. Remove the same source used for installation—for example `pi remove npm:@allenyolk/pi-minimal-display`, or the collection source if that is how it was installed—then restart. The configuration file can be kept. Running `pi --no-extensions` provides a diagnostic session with all auto-discovered extensions disabled.
 
 ## Development
 
 Prerequisites: Node >=22.19.0, npm, and [uv](https://docs.astral.sh/uv/) for the standard-library Python PTY test harness on macOS/Linux.
 
+From the repository root, which installs the workspace and this package's pinned Pi host:
+
 ```sh
 npm ci --ignore-scripts
 uv python install 3.12
-npm run check
-npm run benchmark
-npm pack --ignore-scripts
+npm --workspace @allenyolk/pi-minimal-display run check
+npm --workspace @allenyolk/pi-minimal-display run benchmark
+npm --workspace @allenyolk/pi-minimal-display exec -- npm pack --ignore-scripts
 ```
 
 `npm run check` includes type checking, configuration/component regressions, real InteractiveMode replay/keyboard/mouse/image checks, a bundled Pi CLI probe with ten reloads, and an actual packed-artifact load. Tests use disposable directories under ignored `work/` and never alter the daily Pi profile.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for issue, review, and release gates. The authoritative contract is [issue #1](https://github.com/AllenYolk/pi-minimal-display/issues/1).
+See [CONTRIBUTING.md](../../CONTRIBUTING.md) for issue, review, and release gates. The authoritative contract is [pi-minimal-display#1](../../docs/archive/pi-minimal-display.md), archived from the retired repository.
 
 ## License and provenance
 

@@ -1,15 +1,15 @@
 # Issue tracker: GitHub
 
-Issues and feature specs live in GitHub Issues for AllenYolk/pi-minimal-display. Use gh from this repository and check git remote -v when resolving the target.
+Issues and feature specs live in GitHub Issues for AllenYolk/pi-extensions. Use gh from this repository and check git remote -v when resolving the target.
 
 ## Operations
 
-- Create: gh issue create --repo AllenYolk/pi-minimal-display --title "..." --body-file <file>
-- Read: gh issue view <number> --repo AllenYolk/pi-minimal-display --comments
-- List: gh issue list --repo AllenYolk/pi-minimal-display --state open --json number,title,labels,assignees
-- Comment: gh issue comment <number> --repo AllenYolk/pi-minimal-display --body-file <file>
-- Triage: gh issue edit <number> --repo AllenYolk/pi-minimal-display --add-label <label> (or --remove-label)
-- Close: gh issue close <number> --repo AllenYolk/pi-minimal-display after acceptance and validation are recorded.
+- Create: gh issue create --repo AllenYolk/pi-extensions --title "..." --body-file <file>
+- Read: gh issue view <number> --repo AllenYolk/pi-extensions --comments
+- List: gh issue list --repo AllenYolk/pi-extensions --state open --json number,title,labels,assignees
+- Comment: gh issue comment <number> --repo AllenYolk/pi-extensions --body-file <file>
+- Triage: gh issue edit <number> --repo AllenYolk/pi-extensions --add-label <label> (or --remove-label)
+- Close: gh issue close <number> --repo AllenYolk/pi-extensions after acceptance and validation are recorded.
 
 Use body files for multiline Markdown. Store temporary bodies under work/; do not commit logs, credentials, or private session contents.
 
