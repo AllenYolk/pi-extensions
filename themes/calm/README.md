@@ -1,14 +1,16 @@
 # calm
 
 An understated Pi theme with optional configuration for `@narumitw/pi-starship`.
-All seven thinking levels use the same gray-purple editor border, so `max` does not
+All seven thinking levels use the same soft-violet editor border, so `max` does not
 look like an error. Pi still owns the compact editor, its embedded Working indicator,
 input, shortcuts, history, completion, paste and selection. Bash, error, warning,
 message and tool colors are unchanged.
 
 The footer removes model/thinking/directory pictograms, gives model and thinking the
 same color, abbreviates parent directories without shortening the final name, and
-retains Git symbols and context/cache/token/cost information. Cache hit rate is enabled;
+uses muted dots between fields and retains Git status symbols and context/cache/token/cost
+information. The branch has no pictogram; status counts stay beside its name. Optional
+fields carry their separator only when visible. Cache hit rate is enabled;
 context and cost keep their visibility thresholds and warning colors.
 
 ## Use

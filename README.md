@@ -47,7 +47,7 @@ Each package README documents its own configuration, behaviour and recovery.
 
 ## Theme presets
 
-[calm](themes/calm/README.md) keeps Pi's native compact editor with a gray-purple border
+[calm](themes/calm/README.md) keeps Pi's native compact editor with a soft-violet border
 and offers an optional, understated `@narumitw/pi-starship` configuration. It is one
 self-contained theme unit with its own upstream license; copy and activate its files
 explicitly. No new npm package or collection manifest entry is added.

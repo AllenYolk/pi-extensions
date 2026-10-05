@@ -1,35 +1,48 @@
 # Native Pi modules with Starship-compatible format and style syntax.
 # calm changes the existing footer; native editing remains unchanged.
-format = "$brand$model$thinking$directory$git_branch$git_status${fill}$context$cache$tokens$cost"
+format = """
+$brand$model\
+([ · ](#8793ad)$thinking)\
+([ · ](#8793ad)$directory)\
+([ · ](#8793ad)$git_branch)\
+( $git_status)\
+${fill}\
+($context[ · ](#8793ad))\
+($cache[ · ](#8793ad))\
+$tokens\
+([ · ](#8793ad)$cost)"""
 
 [brand]
 format = "[$symbol ]($style)"
 symbol = "π"
-style = "#9398ad"
+style = "#9db1da"
 
 [model]
-format = "[$model ]($style)"
+format = "[$model]($style)"
 symbol = ""
-style = "#b7b0d1"
+style = "#c7a6ed"
 
 [thinking]
-format = "[· $level ]($style)"
+format = "[$level]($style)"
 symbol = ""
-style = "#b7b0d1"
+style = "#c7a6ed"
 
 [directory]
-format = "[$path ]($style)"
+format = "[$path]($style)"
 symbol = ""
-style = "#a4a8bb"
+style = "#8bbfcf"
 truncation_length = 1
 fish_style_pwd_dir_length = 1
 truncate_to_repo = true
 home_symbol = "~"
 
 [git_branch]
-style = "#b7b0d1"
+format = "[$branch]($style)"
+symbol = ""
+style = "#a6c895"
 
 [git_status]
+format = "[$all_status( $ahead_behind)]($style)"
 style = "red"
 
 [fill]
@@ -37,17 +50,17 @@ symbol = " "
 style = "none"
 
 [context]
-format = "[ctx $percentage ]($style)"
+format = "[ctx $percentage]($style)"
 symbol = ""
 
 [[context.display]]
 threshold = 0
-style = "#a4a8bb"
+style = "#b0bfd6"
 hidden = true
 
 [[context.display]]
 threshold = 30
-style = "#a4a8bb"
+style = "#b0bfd6"
 hidden = false
 
 [[context.display]]
@@ -61,23 +74,23 @@ style = "red"
 hidden = false
 
 [cache]
-format = "([CH$rate ]($style))"
+format = "([CH$rate]($style))"
 symbol = ""
-style = "#a4a8bb"
+style = "#b0bfd6"
 disabled = false
 
 [tokens]
-format = "[↑$input ↓$output ]($style)"
+format = "[↑$input]($style)[ · ](#8793ad)[↓$output]($style)"
 symbol = ""
-style = "#a4a8bb"
+style = "#b0bfd6"
 
 [cost]
-format = '[\$$cost( $subscription) ]($style)'
+format = '[\$$cost( $subscription)]($style)'
 symbol = ""
 
 [[cost.display]]
 threshold = 0
-style = "#a4a8bb"
+style = "#b0bfd6"
 hidden = true
 
 [[cost.display]]
