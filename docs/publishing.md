@@ -61,15 +61,20 @@ independently.
 ## Publishing
 
 The release workflow is `workflow_dispatch` only, and it refuses to run on anything but a
-`main` commit whose CI run succeeded. It publishes with `changeset publish` using npm
+`main` commit whose complete `Check` workflow succeeded for that exact SHA. Pending changesets
+must have been applied in the reviewed version PR. It publishes with `changeset publish` using npm
 [trusted publishing](https://docs.npmjs.com/trusted-publishers/) over OIDC, so no npm token is
 stored in this repository.
 
 Before the first publication from this repository, bind each existing npm package to it as a
 trusted publisher:
 
-- `@allenyolk/pi-delete` → `AllenYolk/pi-extensions`, workflow `.github/workflows/publish.yml`
+- `@allenyolk/pi-delete` → `AllenYolk/pi-extensions`, workflow filename `publish.yml`
 - `@allenyolk/pi-minimal-display` → same repository and workflow
+
+Allow `npm publish` in each trusted publisher's settings. After publication, the workflow
+pushes the package tags and creates their GitHub releases; retrying the same commit completes
+missing publication records without replacing existing tags or versions.
 
 npm registry tarballs are immutable: once `name@version` is published, a fix needs a new
 version even if the old one is unpublished. See

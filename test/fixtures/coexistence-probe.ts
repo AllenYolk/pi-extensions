@@ -19,11 +19,25 @@ export default function probe(pi: ExtensionAPI) {
   const pristineSelector = SessionSelectorComponent.prototype.handleInput;
   const key = Symbol.for("pi-extensions/coexistence-probe");
   const store = globalThis as typeof globalThis & {
-    [key]?: { round: number; pristineRender: typeof pristineRender };
+    [key]?: { round: number; pristineRender: typeof pristineRender; pristineSelector: typeof pristineSelector };
   };
-  const run = (store[key] ??= { round: 0, pristineRender });
+  const run = (store[key] ??= { round: 0, pristineRender, pristineSelector });
   // A reload re-imports this module, so only the first capture is pristine.
-  const restored = pristineRender === run.pristineRender;
+  const restored = pristineRender === run.pristineRender && pristineSelector === run.pristineSelector;
+  let report: Record<string, unknown> | undefined;
+
+  pi.on("session_shutdown", () => {
+    if (!report) return;
+    try {
+      assert.equal(Container.prototype.render, run.pristineRender, "presentation patch survived shutdown");
+      assert.equal(SessionSelectorComponent.prototype.handleInput, run.pristineSelector, "picker patch survived shutdown");
+      report.shutdownRestored = true;
+    } catch (error) {
+      report.passed = false;
+      report.error = String(error);
+    }
+    writeFileSync(process.env.PI_COEXISTENCE_RESULT!, JSON.stringify(report));
+  });
 
   pi.registerCommand("coexistence-probe", {
     description: "Isolated collection test harness; not part of any published package",
@@ -84,15 +98,7 @@ export default function probe(pi: ExtensionAPI) {
           process.stdout.write("\nPI_COEXISTENCE_READY\n");
           return;
         }
-        writeFileSync(
-          destination,
-          JSON.stringify({
-            passed: true,
-            reloads: run.round,
-            groupedCalls: calls.length,
-            collapsed,
-          }),
-        );
+        report = { passed: true, reloads: run.round, groupedCalls: calls.length, collapsed };
       } catch (error) {
         writeFileSync(destination, JSON.stringify({ passed: false, error: String(error) }));
       }

@@ -22,7 +22,7 @@ Each package keeps its own certified Pi version as a development dependency, and
 resolve the host the package itself resolves. Do not change a package's Pi version to make a
 check pass, and do not add a shared Pi version that silently retargets a package check.
 
-CI re-verifies each package on its own certified hosts across Linux/macOS and Node
+CI re-verifies each package on its latest tested host across Linux/macOS and Node
 22.19.0/24.12.0. The upstream-version job detects release drift; it does not certify a new
 host. Add a host signature only after real CLI, rendering, replay, expansion, errors, and
 repeated lifecycle checks pass on that exact version.

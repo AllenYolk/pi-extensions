@@ -111,6 +111,7 @@ test('both extensions install, group, expand and restore across repeated reloads
   assert.equal(result.status, 0, `${result.stderr}\n${result.stdout.slice(-3000)}`);
   const report = JSON.parse(readFileSync(resultFile, 'utf8'));
   assert.equal(report.passed, true, report.error);
+  assert.equal(report.shutdownRestored, true, 'both patches must be restored on final shutdown');
   assert.equal(report.reloads, reloads);
   assert.equal(report.groupedCalls, 3);
   assert.match(report.collapsed, /bash ×3/);

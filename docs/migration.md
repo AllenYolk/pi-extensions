@@ -40,8 +40,9 @@ Existing npm installations need no action.
 - One root lockfile and npm workspaces. TypeScript and `@types/node` are shared at the root;
   each package keeps the Pi development dependency version it certifies.
 - The display tests resolved their Pi host through a fixed `./node_modules` path. That only
-  held in a standalone repository, so they now walk up to whichever copy the package itself
-  resolves — otherwise workspace hoisting would silently test the wrong host.
+  held in a standalone repository, so they now use Node's native resolver to find the host
+  the package imports. CI runs only the latest tested host for each package; older results
+  remain historical evidence rather than additional CI combinations.
 - Root `test/` covers the two behaviours only the collection has: git collection
   installation with resource filtering, and both extensions loaded in one session.
 - No install lifecycle scripts, so a git installation that omits development dependencies

@@ -13,8 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Each package is verified on the Pi versions it certifies, and only those: pi-delete is
-  # certified on 0.87.1, pi-minimal-display on 0.85.1 and 0.99.1.
+  # Verify each package on its latest tested Pi host.
   package:
     strategy:
       fail-fast: false
@@ -24,7 +23,6 @@ jobs:
         target:
           - { name: "@allenyolk/pi-delete", dir: pi-delete, pi: "0.87.1", benchmark: false }
           - { name: "@allenyolk/pi-minimal-display", dir: pi-minimal-display, pi: "0.99.1", benchmark: true }
-          - { name: "@allenyolk/pi-minimal-display", dir: pi-minimal-display, pi: "0.85.1", benchmark: true }
     name: ${{ matrix.target.dir }} on Pi ${{ matrix.target.pi }} (${{ matrix.os }}, node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
@@ -37,26 +35,11 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - run: uv python install 3.12
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Install the certified host next to the package when it is not the locked one
-        run: |
-          set -euo pipefail
-          locked=$(node -p "require('./packages/${{ matrix.target.dir }}/package.json').devDependencies['@earendil-works/pi-coding-agent']")
-          if [ "$locked" = "${{ matrix.target.pi }}" ]; then
-            echo "Already on the locked host ${{ matrix.target.pi }}."
-            exit 0
-          fi
-          # Installing into the package directory puts the host where the package resolves it
-          # first, so the lockfile and the other package stay untouched.
-          npm install --prefix "packages/${{ matrix.target.dir }}" --ignore-scripts --no-save \
-            --package-lock=false --no-audit --no-fund \
-            "@earendil-works/pi-coding-agent@${{ matrix.target.pi }}" \
-            "@earendil-works/pi-tui@${{ matrix.target.pi }}"
       - run: npm --workspace "${{ matrix.target.name }}" run check
       - if: matrix.target.benchmark
         run: npm --workspace "${{ matrix.target.name }}" run benchmark
 
-  # The collection checks need both packages loaded at once, so they run against the locked
-  # workspace rather than a substituted host.
+  # Verify installation and coexistence on the root workspace's Pi host.
   collection:
     strategy:
       fail-fast: false
@@ -68,6 +51,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
@@ -75,9 +60,6 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - run: uv python install 3.12
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      # The installation checks clone this repository over loopback HTTP, so the commit under
-      # test must be a real commit rather than a detached merge ref.
-      - run: git config user.email ci@example.com && git config user.name CI
       - run: node --test test/*.test.mjs
 
   upstream-version:

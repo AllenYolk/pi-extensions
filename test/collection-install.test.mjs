@@ -2,27 +2,10 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { drivePi, git, profile, repoRoot, runPi, serveRepository, writeSettings } from './pi-collection.mjs';
+import { activated, git, profile, repoRoot, runPi, serveRepository, workspace } from './pi-collection.mjs';
 
 const served = await serveRepository('served-');
 after(() => served.close());
-
-/** Start the real CLI against a profile and report which extensions activated. */
-function activated(agent) {
-  const resultFile = join(agent, 'loaded.json');
-  const result = drivePi(
-    ['-e', join(repoRoot, 'test/fixtures/loaded-probe.ts'),
-     '--offline', '--no-session', '--no-context-files', '--no-skills', '--no-prompt-templates'],
-    [{ expect: '[Extensions]', send: '/loaded-probe\r' }],
-    { PI_CODING_AGENT_DIR: agent, PI_LOADED_PROBE_RESULT: resultFile },
-    45,
-  );
-  assert.equal(result.error, undefined, result.error?.message);
-  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout.slice(-3000)}`);
-  const report = JSON.parse(readFileSync(resultFile, 'utf8'));
-  assert.equal(report.hasUI, true);
-  return { delete: report.delete, display: report.display };
-}
 
 const declared = (agent) => JSON.parse(readFileSync(join(agent, 'settings.json'), 'utf8')).packages ?? [];
 
@@ -35,6 +18,7 @@ function clonePath(agent) {
 }
 
 test('the git collection installs and loads both extensions from source', { timeout: 300000 }, () => {
+  assert.equal(git(served.bare, 'rev-parse', 'main'), git(repoRoot, 'rev-parse', 'HEAD'));
   const agent = profile('install-root-');
   const install = runPi(agent, ['install', served.url]);
   assert.equal(install.status, 0, install.stderr);
@@ -54,6 +38,23 @@ test('the git collection installs and loads both extensions from source', { time
   assert.deepEqual(activated(agent), { delete: true, display: true });
 });
 
+test('a detached checkout serves the exact reviewed commit without a local main', async () => {
+  const scratch = workspace('detached-');
+  git(scratch, 'clone', '--quiet', '--no-local', repoRoot, 'checkout');
+  const checkout = join(scratch, 'checkout');
+  git(checkout, 'checkout', '--quiet', '--detach');
+  for (const branch of git(checkout, 'for-each-ref', '--format=%(refname)', 'refs/heads').split('\n')) {
+    if (branch) git(checkout, 'update-ref', '-d', branch);
+  }
+  const detached = await serveRepository('served-detached-', checkout);
+  try {
+    git(scratch, 'clone', '--quiet', detached.url, 'restored');
+    assert.equal(git(join(scratch, 'restored'), 'rev-parse', 'HEAD'), git(checkout, 'rev-parse', 'HEAD'));
+  } finally {
+    detached.close();
+  }
+});
+
 test('a resource filter narrows the collection to one extension', { timeout: 300000 }, () => {
   for (const [only, expected] of [
     ['packages/pi-delete/src/index.ts', { delete: true, display: false }],
@@ -61,11 +62,11 @@ test('a resource filter narrows the collection to one extension', { timeout: 300
   ]) {
     const agent = profile(`filter-${only.includes('pi-delete') ? 'delete' : 'display'}-`);
     assert.equal(runPi(agent, ['install', served.url]).status, 0);
-    writeSettings(agent, {
+    writeFileSync(join(agent, 'settings.json'), JSON.stringify({
       theme: 'dark',
       showCacheMissNotices: false,
       packages: [{ source: served.url, extensions: [only] }],
-    });
+    }));
     assert.deepEqual(activated(agent), expected, `filter ${only}`);
   }
 });

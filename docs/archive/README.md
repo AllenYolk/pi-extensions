@@ -39,8 +39,8 @@ bundles carry every branch, tag and `refs/pull/*` ref. Both verify as complete h
 and restore into an empty directory with refs identical to the mirror:
 
 ```sh
-git clone pi-delete-all-refs.bundle pi-delete
-git clone pi-minimal-display-all-refs.bundle pi-minimal-display
+git clone --mirror pi-delete-all-refs.bundle pi-delete.git
+git clone --mirror pi-minimal-display-all-refs.bundle pi-minimal-display.git
 ```
 
 The bundles and the raw GitHub metadata JSON are delivered separately from this repository;

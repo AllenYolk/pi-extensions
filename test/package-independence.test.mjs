@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { drivePi, profile, repoRoot, runPi, workspace } from './pi-collection.mjs';
+import { activated, profile, repoRoot, runPi, workspace } from './pi-collection.mjs';
 
 /** Pack a package and unpack the real artifact, so what is installed is what npm would ship. */
 function unpackedArtifact(directory) {
@@ -19,22 +19,7 @@ function unpackedArtifact(directory) {
     encoding: 'utf8', timeout: 120000,
   });
   assert.equal(extract.status, 0, extract.stderr);
-  return { dir: target, manifest: JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')), artifact };
-}
-
-function activated(agent) {
-  const resultFile = join(agent, 'loaded.json');
-  const result = drivePi(
-    ['-e', join(repoRoot, 'test/fixtures/loaded-probe.ts'),
-     '--offline', '--no-session', '--no-context-files', '--no-skills', '--no-prompt-templates'],
-    [{ expect: '[Extensions]', send: '/loaded-probe\r' }],
-    { PI_CODING_AGENT_DIR: agent, PI_LOADED_PROBE_RESULT: resultFile },
-    45,
-  );
-  assert.equal(result.error, undefined, result.error?.message);
-  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout.slice(-3000)}`);
-  const report = JSON.parse(readFileSync(resultFile, 'utf8'));
-  return { delete: report.delete, display: report.display };
+  return { dir: target, manifest: JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')) };
 }
 
 // Pi records a local package as a path relative to the settings file, and identifies it by

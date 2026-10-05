@@ -1,31 +1,17 @@
-// Shared setup for the collection checks: a Pi host both packages can load, disposable
-// profiles, synthetic session trees, and a loopback git transport. The host is resolved by
-// walking up from this directory so the checks follow npm's actual workspace layout
-// instead of a fixed path that hoisting can invalidate.
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
-import { createServer, connect } from 'node:net';
 import { once } from 'node:events';
+import { createInterface } from 'node:readline';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 export const repoRoot = dirname(testDir);
 
-function packageDir(name) {
-  let dir = testDir;
-  for (;;) {
-    const candidate = join(dir, 'node_modules', name);
-    if (existsSync(candidate)) return candidate;
-    const parent = dirname(dir);
-    if (parent === dir) throw new Error(`${name} is not installed above ${testDir}`);
-    dir = parent;
-  }
-}
-
-export const piHostDir = packageDir('@earendil-works/pi-coding-agent');
-export const piCli = join(piHostDir, 'dist/bundle/cli.js');
+const piHostDir = dirname(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))));
+const piCli = join(piHostDir, 'dist/bundle/cli.js');
 export const deleteEntry = join(repoRoot, 'packages/pi-delete/src/index.ts');
 export const displayEntry = join(repoRoot, 'packages/pi-minimal-display/src/index.ts');
 const driver = join(testDir, 'pty-drive.py');
@@ -58,8 +44,20 @@ export function profile(prefix, settings = {}) {
   return dir;
 }
 
-export function writeSettings(agentDir, settings) {
-  writeFileSync(join(agentDir, 'settings.json'), JSON.stringify(settings, null, 2));
+export function activated(agent) {
+  const resultFile = join(agent, 'loaded.json');
+  const result = drivePi(
+    ['-e', join(testDir, 'fixtures/loaded-probe.ts'),
+     '--offline', '--no-session', '--no-context-files', '--no-skills', '--no-prompt-templates'],
+    [{ expect: '[Extensions]', send: '/loaded-probe\r' }],
+    { PI_CODING_AGENT_DIR: agent, PI_LOADED_PROBE_RESULT: resultFile },
+    45,
+  );
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 0, `${result.stderr}\n${result.stdout.slice(-3000)}`);
+  const report = JSON.parse(readFileSync(resultFile, 'utf8'));
+  assert.equal(report.hasUI, true);
+  return { delete: report.delete, display: report.display };
 }
 
 /**
@@ -141,52 +139,49 @@ export function git(cwd, ...args) {
  * HTTP keeps the check offline and independent of any hosting account. The server runs in
  * its own process because the checks drive Pi with spawnSync, which blocks this event loop.
  */
-export async function serveRepository(prefix) {
+export async function serveRepository(prefix, source = repoRoot) {
   const dir = workspace(prefix);
   const bare = join(dir, 'AllenYolk/pi-extensions.git');
   mkdirSync(dirname(bare), { recursive: true });
-  git(dir, 'clone', '--bare', '--quiet', repoRoot, bare);
+  git(dir, 'clone', '--bare', '--quiet', source, bare);
+  // Serve the reviewed checkout, including detached PR merge commits, rather than its main.
+  git(bare, 'update-ref', 'refs/heads/main', git(source, 'rev-parse', 'HEAD'));
   git(bare, 'symbolic-ref', 'HEAD', 'refs/heads/main');
   // Dumb HTTP reads static files, so every ref change has to be republished.
   const publish = () => git(bare, 'update-server-info');
   publish();
 
-  const port = await freePort();
+  const python = spawnSync('uv', ['python', 'find', '3.12'], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(python.status, 0, python.stderr);
   const server = spawn(
-    'uv',
-    ['run', '--no-project', '--python', '3.12', 'python', '-m', 'http.server',
-     String(port), '--bind', '127.0.0.1', '--directory', dir],
-    { stdio: 'ignore', detached: false },
+    python.stdout.trim(),
+    ['-u', '-c', `
+from functools import partial
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+import sys
+server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=sys.argv[1]))
+print(server.server_port, flush=True)
+server.serve_forever()
+`, dir],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
   );
-  server.unref();
-  await waitForPort(port);
-
-  return {
-    bare,
-    publish,
-    url: `http://127.0.0.1:${port}/AllenYolk/pi-extensions.git`,
-    close: () => server.kill('SIGKILL'),
-  };
-}
-
-async function freePort() {
-  const probe = createServer();
-  probe.listen(0, '127.0.0.1');
-  await once(probe, 'listening');
-  const { port } = probe.address();
-  await new Promise(done => probe.close(done));
-  return port;
-}
-
-async function waitForPort(port, attempts = 100) {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const reachable = await new Promise(done => {
-      const socket = connect(port, '127.0.0.1');
-      socket.once('connect', () => { socket.destroy(); done(true); });
-      socket.once('error', () => done(false));
-    });
-    if (reachable) return;
-    await new Promise(done => setTimeout(done, 100));
+  const lines = createInterface({ input: server.stdout });
+  try {
+    const [port] = await Promise.race([
+      once(lines, 'line', { signal: AbortSignal.timeout(10000) }),
+      once(server, 'exit').then(([code]) => { throw new Error(`the git transport exited (${code}) before listening`); }),
+    ]);
+    return {
+      bare,
+      publish,
+      url: `http://127.0.0.1:${port}/AllenYolk/pi-extensions.git`,
+      close: () => server.kill('SIGTERM'),
+    };
+  } catch (error) {
+    server.kill('SIGTERM');
+    throw error;
+  } finally {
+    lines.close();
+    server.stdout.destroy();
   }
-  throw new Error(`the git transport never came up on port ${port}`);
 }
