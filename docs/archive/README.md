@@ -48,31 +48,34 @@ they contain the same information this directory renders as prose.
 
 ## Archived refs
 
-Old branches and tags are kept under `archive/<repository>/…` so the two projects cannot
-collide on same-named tags such as `v0.1.0`. Pull-request heads become
+Historical branch tips and release tags are kept as tags under `archive/<repository>/…`,
+so only `main` needs to remain a branch and same-named original releases cannot collide.
+On 2026-10-05 the frozen archive branches were converted to same-named lightweight tags
+at identical commit objects; original annotated release-tag objects remain unchanged.
+Pull-request heads become
 `archive/<repository>/pull-<number>` tags, which preserves the pull-request to commit
 mapping that GitHub's `refs/pull/*` provided.
 
 | Archived ref | Kind | Commit | Original ref |
 | --- | --- | --- | --- |
-| `archive/pi-delete/main` | branch | `47f2acb` | `refs/heads/main` |
+| `archive/pi-delete/main` | tag (original branch tip) | `47f2acb` | `refs/heads/main` |
 | `archive/pi-delete/v0.1.0` | annotated tag (`63612bc`) | `20573d6` | `refs/tags/v0.1.0` |
 | `archive/pi-delete/v0.2.0` | annotated tag (`15514c7`) | `c1b05c6` | `refs/tags/v0.2.0` |
 | `archive/pi-delete/v0.3.0` | annotated tag (`2036403`) | `83bb68b` | `refs/tags/v0.3.0` |
 | `archive/pi-delete/v0.3.1` | annotated tag (`b29d5fc`) | `47f2acb` | `refs/tags/v0.3.1` |
-| `archive/pi-minimal-display/feat/config-contract` | branch | `b7956b3` | `refs/heads/feat/config-contract` |
-| `archive/pi-minimal-display/feat/native-summary-cards` | branch | `8dad308` | `refs/heads/feat/native-summary-cards` |
-| `archive/pi-minimal-display/feat/turn-presentation` | branch | `abfe85e` | `refs/heads/feat/turn-presentation` |
-| `archive/pi-minimal-display/fix/native-expanded-details` | branch | `324ee3d` | `refs/heads/fix/native-expanded-details` |
-| `archive/pi-minimal-display/fix/native-hidden-thinking` | branch | `1aede41` | `refs/heads/fix/native-hidden-thinking` |
-| `archive/pi-minimal-display/fix/ordered-tool-groups` | branch | `c878c95` | `refs/heads/fix/ordered-tool-groups` |
-| `archive/pi-minimal-display/fix/pi-0.99-host-26` | branch | `2b552a0` | `refs/heads/fix/pi-0.99-host-26` |
-| `archive/pi-minimal-display/fix/quiet-tool-toggle` | branch | `2080bea` | `refs/heads/fix/quiet-tool-toggle` |
-| `archive/pi-minimal-display/main` | branch | `310e361` | `refs/heads/main` |
-| `archive/pi-minimal-display/refactor/native-thinking-config` | branch | `7c59205` | `refs/heads/refactor/native-thinking-config` |
-| `archive/pi-minimal-display/refactor/presentation-disposer` | branch | `a158d7d` | `refs/heads/refactor/presentation-disposer` |
-| `archive/pi-minimal-display/release/0.1.0` | branch | `7f69a46` | `refs/heads/release/0.1.0` |
-| `archive/pi-minimal-display/test/release-candidate` | branch | `a65066a` | `refs/heads/test/release-candidate` |
+| `archive/pi-minimal-display/feat/config-contract` | tag (original branch tip) | `b7956b3` | `refs/heads/feat/config-contract` |
+| `archive/pi-minimal-display/feat/native-summary-cards` | tag (original branch tip) | `8dad308` | `refs/heads/feat/native-summary-cards` |
+| `archive/pi-minimal-display/feat/turn-presentation` | tag (original branch tip) | `abfe85e` | `refs/heads/feat/turn-presentation` |
+| `archive/pi-minimal-display/fix/native-expanded-details` | tag (original branch tip) | `324ee3d` | `refs/heads/fix/native-expanded-details` |
+| `archive/pi-minimal-display/fix/native-hidden-thinking` | tag (original branch tip) | `1aede41` | `refs/heads/fix/native-hidden-thinking` |
+| `archive/pi-minimal-display/fix/ordered-tool-groups` | tag (original branch tip) | `c878c95` | `refs/heads/fix/ordered-tool-groups` |
+| `archive/pi-minimal-display/fix/pi-0.99-host-26` | tag (original branch tip) | `2b552a0` | `refs/heads/fix/pi-0.99-host-26` |
+| `archive/pi-minimal-display/fix/quiet-tool-toggle` | tag (original branch tip) | `2080bea` | `refs/heads/fix/quiet-tool-toggle` |
+| `archive/pi-minimal-display/main` | tag (original branch tip) | `310e361` | `refs/heads/main` |
+| `archive/pi-minimal-display/refactor/native-thinking-config` | tag (original branch tip) | `7c59205` | `refs/heads/refactor/native-thinking-config` |
+| `archive/pi-minimal-display/refactor/presentation-disposer` | tag (original branch tip) | `a158d7d` | `refs/heads/refactor/presentation-disposer` |
+| `archive/pi-minimal-display/release/0.1.0` | tag (original branch tip) | `7f69a46` | `refs/heads/release/0.1.0` |
+| `archive/pi-minimal-display/test/release-candidate` | tag (original branch tip) | `a65066a` | `refs/heads/test/release-candidate` |
 | `archive/pi-minimal-display/pull-11` | tag | `c878c95` | `refs/pull/11/head` |
 | `archive/pi-minimal-display/pull-13` | tag | `324ee3d` | `refs/pull/13/head` |
 | `archive/pi-minimal-display/pull-15` | tag | `8dad308` | `refs/pull/15/head` |

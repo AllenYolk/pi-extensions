@@ -36,7 +36,8 @@ Existing npm installations need no action.
   comments, reviews, releases and labels. See [docs/archive](archive/README.md).
 - Import both main branches with `git subtree add` without `--squash`, so commits keep their
   original SHAs, authors and dates and stay connected to `main`.
-- Keep old branches and tags as `archive/<repository>/…` refs.
+- Preserve original branch tips and release tags under `archive/<repository>/…` tags;
+  branch cleanup leaves `main` as the only active branch without changing historical objects.
 - Treat archive refs as historical snapshots, not active development branches; preserve their
   commit/tag objects and the old issue-number namespace.
 - Render the archived discussions as readable Markdown, rewriting bare `#N` references so
