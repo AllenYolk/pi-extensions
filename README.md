@@ -80,7 +80,7 @@ Pull requests run the checks above and receive an OpenCodeReview review. Maintai
 comment `/ocr` to rerun it after changes. Automated findings supplement the checks and human
 review; see [CONTRIBUTING.md](CONTRIBUTING.md#pull-request-review) for setup and review rules.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the issue, review and release gates,
+Agents start with [AGENTS.md](AGENTS.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for the issue, review and release gates,
 [CONTEXT.md](CONTEXT.md) for the shared vocabulary, and [docs/migration.md](docs/migration.md)
 for why this repository exists and what the move away from two repositories cost.
 

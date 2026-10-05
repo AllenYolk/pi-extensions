@@ -1,9 +1,11 @@
 # Migration to one source repository
 
 Status: the source migration is published in [AllenYolk/pi-extensions](https://github.com/AllenYolk/pi-extensions),
-including the original commit history, archive refs and PR-review workflow. npm publication
-and deletion of the two old repositories remain pending the owner's authorization and the
-release checks below.
+including the original commit history, archive refs and PR-review workflow. The first npm
+releases from this repository, pi-delete 0.3.2 and pi-minimal-display 0.1.3, were published on
+2026-10-05; [the publish run](https://github.com/AllenYolk/pi-extensions/actions/runs/37294136121)
+and both npm Repository links were verified. The two old repositories have not been deleted;
+retirement remains a separate owner-authorized step.
 
 ## Why
 
@@ -34,6 +36,8 @@ Existing npm installations need no action.
 - Import both main branches with `git subtree add` without `--squash`, so commits keep their
   original SHAs, authors and dates and stay connected to `main`.
 - Keep old branches and tags as `archive/<repository>/…` refs.
+- Treat archive refs as historical snapshots, not active development branches; preserve their
+  commit/tag objects and the old issue-number namespace.
 - Render the archived discussions as readable Markdown, rewriting bare `#N` references so
   they cannot resolve against this repository's own issues.
 
