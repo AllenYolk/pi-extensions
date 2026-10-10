@@ -62,7 +62,7 @@ export default function probe(pi: ExtensionAPI) {
         failGroup.addChild(callB);
         const failOutput = failGroup.render(80).join('\n');
         assert.match(stripVTControlCharacters(failOutput), /completed · 1 failed: bash/);
-        assert.match(failOutput, /48;2;72;60;42/); // Dark amber failure card background
+        assert.match(failOutput, /(?:48;2;72;60;42|48;5;58)/); // Dark amber failure card background (TrueColor or 256-color)
 
         if (capturedInteractiveMode) {
           const errMessage = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'CLI retry failure 429' };

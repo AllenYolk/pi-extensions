@@ -61,8 +61,9 @@ test('card colors follow current dark/light themes and pending stays distinct fr
       assert.match(text, /1 failed: bash/);
       second.updateResult({ content: [], isError: false });
       const mixed = transcript.render(80);
-      const amber = name === 'dark' ? '\x1b[48;2;72;60;42m' : '\x1b[48;2;241;230;206m';
-      const warning = name === 'dark' ? '\x1b[38;2;229;194;116m' : '\x1b[38;2;121;87;21m';
+      const colorMode = theme.getColorMode();
+      const amber = Tui.backgroundAnsi(Tui.parseColor(name === 'dark' ? '#483c2a' : '#f1e6ce'), colorMode);
+      const warning = Tui.foregroundAnsi(Tui.parseColor(name === 'dark' ? '#e5c274' : '#795715'), colorMode);
       assert.equal(mixed[1], `${amber}${' '.repeat(80)}\x1b[49m`);
       assert.ok(mixed.join('\n').includes(warning));
       assert.match(mixed.map(stripVTControlCharacters).join(' '), /completed · 1 failed: bash/);
