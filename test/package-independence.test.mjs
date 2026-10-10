@@ -12,7 +12,8 @@ function unpackedArtifact(directory) {
     cwd: join(repoRoot, 'packages', directory), encoding: 'utf8', timeout: 120000,
   });
   assert.equal(pack.status, 0, pack.stderr);
-  const artifact = JSON.parse(pack.stdout)[0];
+  const parsed = JSON.parse(pack.stdout);
+  const artifact = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
   const target = join(scratch, 'unpacked');
   mkdirSync(target);
   const extract = spawnSync('tar', ['-xzf', join(scratch, artifact.filename), '-C', target, '--strip-components=1'], {

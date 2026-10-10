@@ -38,7 +38,7 @@ test('summary cards use native padding, theme and separate count/status lines', 
   } finally { dispose(); }
 });
 
-test('card colors follow current dark/light themes and failures win over pending work', () => {
+test('card colors follow current dark/light themes and pending stays distinct from completed failures', () => {
   const dispose = installPresentation(config, Pi.VERSION, () => {});
   try {
     const transcript = new Container();
@@ -53,12 +53,20 @@ test('card colors follow current dark/light themes and failures win over pending
       second.updateResult({ content: [], isError: false }, true);
       assert.equal(transcript.render(80)[1], theme.bg('toolPendingBg', ' '.repeat(80)));
       first.updateResult({ content: [], isError: true });
-      assert.equal(transcript.render(80)[1], theme.bg('toolErrorBg', ' '.repeat(80)));
+      assert.equal(transcript.render(80)[1], theme.bg('toolPendingBg', ' '.repeat(80)));
       const narrow = transcript.render(20);
       assert.ok(narrow.every(line => visibleWidth(line) <= 20));
       const text = narrow.map(stripVTControlCharacters).join(' ').replace(/\s+/g, ' ');
-      assert.match(text, /failed: bash/);
       assert.match(text, /1 pending/);
+      assert.match(text, /1 failed: bash/);
+      second.updateResult({ content: [], isError: false });
+      const mixed = transcript.render(80);
+      const amber = name === 'dark' ? '\x1b[48;2;72;60;42m' : '\x1b[48;2;241;230;206m';
+      const warning = name === 'dark' ? '\x1b[38;2;229;194;116m' : '\x1b[38;2;121;87;21m';
+      assert.equal(mixed[1], `${amber}${' '.repeat(80)}\x1b[49m`);
+      assert.ok(mixed.join('\n').includes(warning));
+      assert.match(mixed.map(stripVTControlCharacters).join(' '), /completed · 1 failed: bash/);
+      assert.doesNotMatch(mixed.join('\n'), /toolErrorBg|succeeded/);
     }
   } finally { dispose(); initTheme('dark'); }
 });
@@ -370,7 +378,7 @@ test('direct transcript changes and user/skill boundaries preserve native cards 
     pending.updateResult({ content: [{ type: 'text', text: 'partial' }], isError: false }, true);
     const unknown = tool('custom', 'native', 'NATIVE RESULT');
     transcript.children.push(first, pending, unknown);
-    assert.match(transcript.render(80).join('\n'), /bash ×2[\s\S]*failed: bash; 1 pending/);
+    assert.match(stripVTControlCharacters(transcript.render(80).join('\n')), /bash ×2[\s\S]*1 pending · 1 failed: bash/);
     assert.match(transcript.render(80).join('\n'), /NATIVE RESULT/);
     transcript.children.splice(1, 0, new UserMessageComponent('next'));
     assert.equal((transcript.render(80).join('\n').match(/bash ×1/g) ?? []).length, 2);

@@ -2,9 +2,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export type Mode = 'native' | 'count_only' | 'lines';
+export type ModelErrors = 'compact' | 'native';
 export interface Config {
   grouping: boolean;
   default: Mode;
+  modelErrors: ModelErrors;
   tools: Record<string, Mode>;
   bash: { maxCommandChars: number; outputLines: number };
 }
@@ -18,10 +20,14 @@ function mode(value: unknown): asserts value is Mode {
   if (value !== 'native' && value !== 'count_only' && value !== 'lines') throw new Error('mode must be native, count_only, or lines');
 }
 
+function modelErrors(value: unknown): asserts value is ModelErrors {
+  if (value !== 'compact' && value !== 'native') throw new Error('modelErrors must be compact or native');
+}
+
 export function loadConfig(agentDir: string): { config?: Config; diagnostic?: string } {
   const path = join(agentDir, 'extensions', 'pi-minimal-display', 'config.json');
   const defaults: Config = {
-    grouping: true, default: 'count_only',
+    grouping: true, default: 'count_only', modelErrors: 'compact',
     tools: { read: 'count_only', grep: 'count_only', find: 'count_only', ls: 'count_only', bash: 'lines', edit: 'lines', write: 'lines', ask_user_question: 'native', plan_mode_question: 'native', plan_mode_complete: 'native' },
     bash: { maxCommandChars: 120, outputLines: 0 },
   };
@@ -29,11 +35,12 @@ export function loadConfig(agentDir: string): { config?: Config; diagnostic?: st
   try {
     raw = record(JSON.parse(readFileSync(path, 'utf8')), 'config');
     for (const key of Object.keys(raw)) {
-      if (!['grouping', 'hideThinking', 'default', 'tools', 'bash'].includes(key)) throw new Error(`unknown field ${key}`);
+      if (!['grouping', 'hideThinking', 'default', 'modelErrors', 'tools', 'bash'].includes(key)) throw new Error(`unknown field ${key}`);
     }
     if ('grouping' in raw && typeof raw.grouping !== 'boolean') throw new Error('grouping must be boolean');
     if ('hideThinking' in raw && typeof raw.hideThinking !== 'boolean') throw new Error('hideThinking must be boolean');
     if ('default' in raw) mode(raw.default);
+    if ('modelErrors' in raw) modelErrors(raw.modelErrors);
     if ('tools' in raw) {
       for (const [name, value] of Object.entries(record(raw.tools, 'tools'))) {
         if (!name.trim() || name !== name.trim() || ['__proto__', 'constructor', 'prototype'].includes(name)) throw new Error(`invalid tool name ${name}`);

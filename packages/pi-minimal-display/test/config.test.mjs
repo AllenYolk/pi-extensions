@@ -11,6 +11,7 @@ test('ordinary tools default to compact while known interactive tools remain nat
   const result = loadConfig(agentDir);
   assert.equal(result.diagnostic, undefined);
   assert.equal(result.config.grouping, true);
+  assert.equal(result.config.modelErrors, 'compact');
   assert.equal(result.config.tools.read, 'count_only');
   assert.equal(result.config.tools.bash, 'lines');
   assert.equal(result.config.default, 'count_only');
@@ -22,9 +23,10 @@ test('config file follows the supplied profile and supports exact tool overrides
   const agentDir = mkdtempSync('work/config-');
   const dir = join(agentDir, 'extensions/pi-minimal-display');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'config.json'), JSON.stringify({ default: 'native', tools: { read: 'native', web_search: 'count_only', ask_user_question: 'count_only' }, hideThinking: false }));
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ default: 'native', modelErrors: 'native', tools: { read: 'native', web_search: 'count_only', ask_user_question: 'count_only' }, hideThinking: false }));
   const { config, diagnostic } = loadConfig(agentDir);
   assert.equal(diagnostic, undefined);
+  assert.equal(config.modelErrors, 'native');
   assert.equal(config.tools.read, 'native');
   assert.equal(config.tools.web_search, 'count_only');
   assert.equal(config.tools.bash, 'lines');
@@ -34,7 +36,7 @@ test('config file follows the supplied profile and supports exact tool overrides
 });
 
 test('invalid configuration falls back entirely with an actionable path', () => {
-  for (const raw of ['{', 'null', '[]', 'true', '{"grouping":"false"}', '{"hideThinking":"false"}', '{"hideThnking":true}', '{"tools":{"bash":"invisible"}}', '{"tools":null}', '{"bash":{"outputLines":-1}}', '{"bash":{"maxCommandChars":0}}', '{"bash":{"outputLines":1.5}}']) {
+  for (const raw of ['{', 'null', '[]', 'true', '{"grouping":"false"}', '{"hideThinking":"false"}', '{"hideThnking":true}', '{"modelErrors":"hidden"}', '{"tools":{"bash":"invisible"}}', '{"tools":null}', '{"bash":{"outputLines":-1}}', '{"bash":{"maxCommandChars":0}}', '{"bash":{"outputLines":1.5}}']) {
     const agentDir = mkdtempSync('work/config-');
     const dir = join(agentDir, 'extensions/pi-minimal-display');
     mkdirSync(dir, { recursive: true });

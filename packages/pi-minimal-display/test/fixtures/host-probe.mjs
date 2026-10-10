@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { stripVTControlCharacters } from 'node:util';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -189,10 +190,10 @@ try {
   assert.match(render(), /LIVE_PARTIAL_RESULT/);
   mode.defaultEditor.handleInput(expandInput);
   await mode.handleEvent({ type: 'tool_execution_end', toolCallId: 'live-failure', toolName: 'bash', result: { content: [text('FAILURE DETAIL')] }, isError: true });
-  assert.match(render(), /bash ×2[\s\S]*failed: bash; 1 pending/);
+  assert.match(stripVTControlCharacters(render()), /bash ×2[\s\S]*1 pending · 1 failed: bash/);
   const aborted = { ...pending, stopReason: 'aborted' };
   await mode.handleEvent({ type: 'message_end', message: aborted });
-  assert.match(render(), /bash ×2[\s\S]*failed: bash/);
+  assert.match(stripVTControlCharacters(render()), /bash ×2[\s\S]*completed · 2 failed: bash/);
   assert.doesNotMatch(render(), /\d+ pending/);
   mode.defaultEditor.handleInput(expandInput);
   assert.match(render(), /FAILURE DETAIL/);

@@ -7,11 +7,11 @@ bash ×3 read ×4 edit ×1
 succeeded · ctrl+o to expand
 ```
 
-Failed tools are named in the summary, even while other calls are pending. Click a group or use Pi's configured tool-expansion shortcut to inspect its retained native details. Execution, tool definitions, model context, and saved conversation data are unchanged.
+A finished call that failed is named and counted in the summary, even while other calls are pending. Pending work keeps the pending card. Once every call has finished, a group with any failure uses a dark amber card on dark themes and a light amber card on light themes, for example `completed · 1 failed: codemode`. Later success does not erase that failure, and the count is calls, not tool names. Click a group or use Pi's configured tool-expansion shortcut to inspect its retained native details. Execution, tool definitions, model context, and saved conversation data are unchanged.
 
-Summaries use the current Pi theme and native tool-card padding/backgrounds. Failure takes precedence over pending work when selecting a background. Colored padding is clickable; the preceding blank line is not. Startup, new, resumed and forked sessions automatically begin minimal; `/reload` preserves Pi's current global expansion state. The existing tool shortcut (Ctrl+O by default) remains a two-state minimal/expanded toggle, including when rebound. This toggle is intentionally silent instead of inserting `Tool output: expanded/collapsed` into the transcript; the changed card detail is its feedback. Pi's native thinking-visibility shortcut (Ctrl+T by default) is likewise silent; the changed assistant presentation is its feedback. `/minimal-display` only reports status and is never required to activate the extension.
+Summaries use the current Pi theme and native tool-card padding/backgrounds. Colored padding is clickable; the preceding blank line is not. Startup, new, resumed and forked sessions automatically begin minimal; `/reload` preserves Pi's current global expansion state. The existing tool shortcut (Ctrl+O by default) remains a two-state minimal/expanded toggle, including when rebound. This toggle is intentionally silent instead of inserting `Tool output: expanded/collapsed` into the transcript; the changed card detail is its feedback. Pi's native thinking-visibility shortcut (Ctrl+T by default) is likewise silent; the changed assistant presentation is its feedback. `/minimal-display` only reports status and is never required to activate the extension.
 
-Status: `0.1.3` release candidate, the first release from the merged repository; runtime behaviour is unchanged from `0.1.2`. The runtime adapter was tested on Pi 0.85.0, 0.85.1 and 0.99.1; CI now re-verifies only the latest tested host, 0.99.1. It accepts hosts whose patched presentation methods match a tested signature, so unrelated Pi releases do not require a plugin update; incompatible hosts stay native and display a diagnostic. Compatibility results and limitations live in [validation](docs/validation.md).
+Status: `0.2.0` release candidate. Adds compact completed-failure cards with local failure counts and expandable model-request error folding. Tool-card compatibility remains tested on Pi 0.85.0, 0.85.1 and 0.99.1. This change was checked on Pi 0.99.1 and 1.1.0; the package's latest development host, and the host CI re-verifies, is 1.1.0. It accepts hosts whose patched presentation methods match a tested signature, so unrelated Pi releases do not require a plugin update; incompatible hosts stay native and display a diagnostic. A model-event seam that does not match falls back to native model errors without disabling tool cards. Compatibility results and limitations live in [validation](docs/validation.md).
 
 ## Install
 
@@ -67,6 +67,7 @@ Create `extensions/pi-minimal-display/config.json` under Pi's actual agent direc
 {
   "grouping": true,
   "default": "count_only",
+  "modelErrors": "compact",
   "tools": {
     "read": "count_only",
     "grep": "count_only",
@@ -90,7 +91,20 @@ Create `extensions/pi-minimal-display/config.json` under Pi's actual agent direc
 - Ordinary tools default to count-only, including `readSeek_edit`, `readSeek_grep` and future tool names. Counts identify actual registered names, not renderer titles. Explicit `default` and `tools` values remain authoritative; existing configurations explicitly setting `default: "native"` are not overwritten. To keep the pre-rc.3 unknown-tool behavior, set that value explicitly.
 - `maxCommandChars` accepts integers 8–500, measured in Unicode code points; the preview also fits the terminal width. `outputLines` accepts integers 0–50. Neither changes actual arguments or results.
 - Thinking visibility belongs only to Pi's native `hideThinkingBlock` setting in its regular settings file; this plugin never adds a second setting. Visible thinking remains native and splits adjacent tool groups. When Pi hides thinking, the compact presentation also omits Pi's `Thinking...` placeholder, and hidden-only blocks do not split adjacent managed tools. Visible assistant text still does.
+- `modelErrors` is `compact` or `native`. `compact` is the default and does not follow `default` or `grouping`. `native` leaves model errors unchanged while tool cards still compact. An invalid value disables compact display for that runtime, as with any other invalid field.
 - Older configs may still contain `hideThinking`; it is accepted only for migration and ignored. Remove it after moving the choice to Pi's native setting.
+
+## Model request errors
+
+Consecutive pure model errors are projected at render time into a single-line block, separate from tool groups. A pure error has `stopReason: "error"`, no response content, and its original error string:
+
+```text
+▸ model request · 2 errors · ctrl+o to expand
+▸ model request · resumed · 2 errors · ctrl+o to expand
+▸ model request · stopped · 3 errors · ctrl+o to expand
+```
+
+Model request blocks default to closed, keeping the transcript compact. When followed by a successful assistant reply, the block marks `resumed`. If execution stopped without recovery, `stopped` appears with the title highlighted in red; clicking the header or pressing Ctrl+O expands every original error in order. Historical and reloaded sessions are projected identically at render time without modifying saved session files. Cancelling or a partial response stays native. Error text is not summarized, rewritten, or deduplicated.
 
 Changes take effect after `/reload` or restart. `/minimal-display` shows status and the configuration path. Unknown keys, invalid types, malformed JSON, or unreadable configuration disable compact display for that runtime and report the file path.
 

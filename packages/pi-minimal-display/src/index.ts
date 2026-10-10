@@ -24,7 +24,8 @@ export default function minimalDisplay(pi: Pi.ExtensionAPI): void {
       dispose = installPresentation(config, Pi.VERSION, report, { pi: Pi, tui: Tui, ui: ctx.ui, session: ctx.sessionManager });
       if (dispose) {
         if (event.reason !== 'reload') ctx.ui.setToolsExpanded(false);
-      status = `Active on Pi ${Pi.VERSION}; grouping=${config.grouping}; thinking follows Pi`;
+        const modelFallback = status === 'Native display (no interactive session)' ? '' : `\n${status}`;
+        status = `Active on Pi ${Pi.VERSION}; grouping=${config.grouping}; modelErrors=${config.modelErrors}; thinking follows Pi${modelFallback}`;
       }
     } catch (error) {
       dispose?.();
