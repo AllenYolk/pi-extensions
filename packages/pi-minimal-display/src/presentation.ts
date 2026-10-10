@@ -356,6 +356,17 @@ export function installPresentation(config: Config, version: unknown, report: (m
     return { start, end };
   }
 
+  // Pi showError appends Spacer + this notice after auto_retry_end. It is not saved, so reload never shows it.
+  function skipHostRetryNotice(source: readonly Component[], end: number): number {
+    const noticeAt = (index: number) => {
+      const build = (source[index] as { build?: unknown } | undefined)?.build;
+      return typeof build === 'function' && /^Error: Retry failed after \d+ attempts:/.test(displayText(build()));
+    };
+    if (noticeAt(end + 1)) return end + 1;
+    if (noticeAt(end + 2)) return end + 2;
+    return end;
+  }
+
   function ensureTranscriptChains(source: readonly Component[]): void {
     if (!modelEvents) return;
     for (let i = 0; i < source.length; i++) {
@@ -420,7 +431,12 @@ export function installPresentation(config: Config, version: unknown, report: (m
         const styledTitle = colorsReady
           ? `${paintFg(palette.muted, arrow, theme)} ${paintFg(titleColor, titleText, theme)}${paintFg(palette.muted, suffixText, theme)}`
           : `${arrow} ${titleText}${suffixText}`;
-        const header = new Text(styledTitle, 1, 0, colorsReady ? paintBg(palette.eventBg, theme) : undefined);
+        const rawCause = !expanded && (chain.phase === 'stopped' || chain.phase === 'awaiting-stop')
+          ? displayText(chain.messages[chain.messages.length - 1]?.errorMessage).replace(/\s+/g, ' ').trim()
+          : '';
+        const cause = rawCause ? truncateToWidth(`Error: ${rawCause}`, Math.max(1, width - 2)) : '';
+        const styledCause = cause && colorsReady ? paintFg(palette.text, cause, theme) : cause;
+        const header = new Text(styledCause ? `${styledTitle}\n${styledCause}` : styledTitle, 1, 0, colorsReady ? paintBg(palette.eventBg, theme) : undefined);
         const region = new MouseRegion(header, event => {
           if (!active || event.type !== 'click' || event.button !== 'left') return undefined;
           chain.expanded = !chain.expanded;
@@ -484,7 +500,7 @@ export function installPresentation(config: Config, version: unknown, report: (m
           if (span && span.start === i) {
             members = undefined;
             projected.push(modelBlock(chain));
-            i = span.end;
+            i = skipHostRetryNotice(source, span.end);
             continue;
           }
         }

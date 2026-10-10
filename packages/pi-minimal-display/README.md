@@ -11,7 +11,7 @@ A finished call that failed is named and counted in the summary, even while othe
 
 Summaries use the current Pi theme and native tool-card padding/backgrounds. Colored padding is clickable; the preceding blank line is not. Startup, new, resumed and forked sessions automatically begin minimal; `/reload` preserves Pi's current global expansion state. The existing tool shortcut (Ctrl+O by default) remains a two-state minimal/expanded toggle, including when rebound. This toggle is intentionally silent instead of inserting `Tool output: expanded/collapsed` into the transcript; the changed card detail is its feedback. Pi's native thinking-visibility shortcut (Ctrl+T by default) is likewise silent; the changed assistant presentation is its feedback. `/minimal-display` only reports status and is never required to activate the extension.
 
-Status: `0.2.0` release candidate. Adds compact completed-failure cards with local failure counts and expandable model-request error folding. Tool-card compatibility remains tested on Pi 0.85.0, 0.85.1 and 0.99.1. This change was checked on Pi 0.99.1 and 1.1.0; the package's latest development host, and the host CI re-verifies, is 1.1.0. It accepts hosts whose patched presentation methods match a tested signature, so unrelated Pi releases do not require a plugin update; incompatible hosts stay native and display a diagnostic. A model-event seam that does not match falls back to native model errors without disabling tool cards. Compatibility results and limitations live in [validation](docs/validation.md).
+Status: `0.2.1`. Adds compact completed-failure cards with local failure counts and expandable model-request error folding. Tool-card compatibility remains tested on Pi 0.85.0, 0.85.1 and 0.99.1. This change was checked on Pi 0.99.1 and 1.1.0; the package's latest development host, and the host CI re-verifies, is 1.1.0. It accepts hosts whose patched presentation methods match a tested signature, so unrelated Pi releases do not require a plugin update; incompatible hosts stay native and display a diagnostic. A model-event seam that does not match falls back to native model errors without disabling tool cards. Compatibility results and limitations live in [validation](docs/validation.md).
 
 ## Install
 
@@ -102,9 +102,10 @@ Consecutive pure model errors are projected at render time into a single-line bl
 ▸ model request · 2 errors · ctrl+o to expand
 ▸ model request · resumed · 2 errors · ctrl+o to expand
 ▸ model request · stopped · 3 errors · ctrl+o to expand
+Error: 503 model unavailable
 ```
 
-Model request blocks default to closed, keeping the transcript compact. When followed by a successful assistant reply, the block marks `resumed`. If execution stopped without recovery, `stopped` appears with the title highlighted in red; clicking the header or pressing Ctrl+O expands every original error in order. Historical and reloaded sessions are projected identically at render time without modifying saved session files. Cancelling or a partial response stays native. Error text is not summarized, rewritten, or deduplicated.
+Model request blocks default to closed, keeping the transcript compact. When followed by a successful assistant reply, the block marks `resumed`. If execution stopped without recovery, `stopped` appears with the title highlighted in red, and the closed block shows the last error on one line. Clicking the header or pressing Ctrl+O expands every original error in order, without rewriting it. Historical and reloaded sessions use the same projection and do not keep Pi's unsaved `Retry failed after N attempts` notice. Cancelling or a partial response stays native.
 
 Changes take effect after `/reload` or restart. `/minimal-display` shows status and the configuration path. Unknown keys, invalid types, malformed JSON, or unreadable configuration disable compact display for that runtime and report the file path.
 

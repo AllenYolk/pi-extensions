@@ -97,8 +97,9 @@ test('final retry failure expands every cause and an unrelated saved error stays
     await box.mode.handleEvent({ type: 'agent_settled', aborted: false });
     const output = box.render();
     assert.match(output, /model request · stopped · 2 errors · ctrl\+o to expand/);
+    assert.match(output, /Error: 502 request id: live-2/);
     assert.doesNotMatch(output, /request id: live-1/);
-    assert.equal((output.match(/Retry failed after 1 attempts/g) ?? []).length, 1);
+    assert.doesNotMatch(output, /Retry failed after/);
     const rawLines = box.mode.chatContainer.render(100);
     const headerLine = rawLines.find(line => stripVTControlCharacters(line).includes('model request · stopped · 2 errors'));
     assert.ok(headerLine, 'stopped header line must exist');
@@ -113,6 +114,7 @@ test('final retry failure expands every cause and an unrelated saved error stays
     assert.match(expandedOutput, /request id: live-1/);
     assert.match(expandedOutput, /request id: live-2/);
     assert.match(expandedOutput, /historical gateway 500/);
+    assert.doesNotMatch(expandedOutput, /Retry failed after/);
   } finally { await close(box); }
 });
 
@@ -157,8 +159,12 @@ test('historical unrecovered pure errors are projected as stopped, closed by def
     // Matches the user screenshot: 4 errors stopped before the next user prompt, closed by default:
     const initialOutput = box.render();
     assert.match(initialOutput, /model request · stopped · 4 errors · ctrl\+o to expand/);
+    assert.match(initialOutput, /Error: OpenAI API error \(500\): encrypted content verification failure/);
     assert.doesNotMatch(initialOutput, /rate limit exceeded/);
-    assert.doesNotMatch(initialOutput, /encrypted content verification failure/);
+    const narrow = stripVTControlCharacters(box.mode.chatContainer.render(40).join('\n'));
+    assert.equal((narrow.match(/Error:/g) ?? []).length, 1);
+    assert.match(narrow, /\.\.\./);
+    assert.doesNotMatch(narrow, /encrypted content verification failure/);
 
     // Toggle expand via click
     const lines = box.mode.chatContainer.render(100);
@@ -179,8 +185,8 @@ test('historical unrecovered pure errors are projected as stopped, closed by def
     // Collapsed back:
     const collapsedOutput = box.render();
     assert.match(collapsedOutput, /model request · stopped · 4 errors · ctrl\+o to expand/);
+    assert.match(collapsedOutput, /Error: OpenAI API error \(500\): encrypted content verification failure/);
     assert.doesNotMatch(collapsedOutput, /rate limit exceeded/);
-    assert.doesNotMatch(collapsedOutput, /encrypted content verification failure/);
     assert.match(collapsedOutput, /first prompt/);
     assert.match(collapsedOutput, /second prompt/);
   } finally { await close(box); }
@@ -250,6 +256,26 @@ test('the real session retry loop folds provider failures without changing saved
     if (compact.dispose) await close(compact);
     if (native) await close(native);
   }
+});
+
+test('a live retry failure folds every provider error and omits the unsaved retry summary', async () => {
+  const box = await harness({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 0, maxAgentDelayMs: 0 } });
+  try {
+    box.session.modelRuntime.registerProvider('fixture', { apiKey: 'test', api: 'openai-responses', baseUrl: fixtureModel.baseUrl, models: [fixtureModel] });
+    await box.session.setModel(fixtureModel);
+    let calls = 0;
+    box.session.agent.streamFunction = () => scripted(errorMessage(`503 model_unavailable request id: fail-${++calls}`), true);
+    box.mode.subscribeToAgent();
+    await box.session.prompt('fail please');
+    const output = box.render();
+    assert.match(output, /model request · stopped · 4 errors/);
+    assert.match(output, /Error: 503 model_unavailable request id: fail-4/);
+    assert.doesNotMatch(output, /fail-1|Retry failed after/);
+    box.mode.setToolsExpanded(true);
+    const expanded = box.render();
+    for (const id of ['fail-1', 'fail-2', 'fail-3', 'fail-4']) assert.match(expanded, new RegExp(id));
+    assert.doesNotMatch(expanded, /Retry failed after/);
+  } finally { await close(box); }
 });
 
 test('cancelling a live retry leaves the native error instead of a stopped request', async () => {

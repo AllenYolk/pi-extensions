@@ -1,6 +1,6 @@
 # Validation
 
-Current release candidate: `0.2.0`. Adds completed-failure cards with local failure counts and render-time model-request event folding. The display package's development host is Pi 1.1.0, so CI re-verifies that host; the same change also passed the package check on Pi 0.99.1 before the host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+Current release: `0.2.1`. Adds completed-failure cards with local failure counts and render-time model-request event folding. The display package's development host is Pi 1.1.0, so CI re-verifies that host; the same change also passed the package check on Pi 0.99.1 before the host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
 
 ## Pi 0.99.1 host
 

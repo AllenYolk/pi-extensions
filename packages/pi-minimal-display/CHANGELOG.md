@@ -1,5 +1,11 @@
 # @allenyolk/pi-minimal-display
 
+## 0.2.1
+
+### Patch Changes
+
+- Show the last saved error on one line inside a closed stopped model-request block, and omit Pi's unsaved retry-failure notice.
+
 ## 0.2.0
 
 ### Minor Changes
