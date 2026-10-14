@@ -1,6 +1,10 @@
 # Validation
 
-Current release: `0.2.1`. Adds completed-failure cards with local failure counts and render-time model-request event folding. The display package's development host is Pi 1.1.0, so CI re-verifies that host; the same change also passed the package check on Pi 0.99.1 before the host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+Current release: `0.2.2`. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds completed-failure cards with local failure counts and render-time model-request event folding. The display package's development host is Pi 1.2.0, so CI re-verifies that host; the same change also passed the package check on Pi 0.99.1 and 1.1.0 before the host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+
+## Pi 1.2.0 host
+
+On Pi 1.2.0 the tool-card seam and `abortRetry` matched the 1.1.0 signatures, but `InteractiveMode.handleEvent` changed in the SDK and bundle, so model-request folding fell back to native errors with `Model-request presentation is incompatible (Pi 1.2.0 retry events)`. The only source change in `handleEvent` passes a border color to the compaction status indicator; `auto_retry_start`/`auto_retry_end`/`agent_settled` handling and `AgentSession` retry emission are unchanged. With development dependencies on Pi/Tui 1.2.0, `npm run check` failed 13/49 before and passed 49/49 after adding the two 1.2.0 `handleEvent` signatures, on macOS arm64 and Node 24.18.0; the bundled CLI hashes match the installed Pi 1.2.0 release. The synthetic 320-call benchmark renders the same 320/5,560 compact and 3,640/5,560 native collapsed/expanded lines on 1.1.0 and 1.2.0; medians stay within run-to-run noise (compact 0.383/0.420 ms versus 0.413/0.419 ms).
 
 ## Pi 0.99.1 host
 

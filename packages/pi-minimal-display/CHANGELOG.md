@@ -1,5 +1,11 @@
 # @allenyolk/pi-minimal-display
 
+## 0.2.2
+
+### Patch Changes
+
+- Accept Pi 1.2.0's model-request event handler, so retry folding stays active instead of falling back to native model errors. Tool cards were already compatible; runtime behavior is unchanged.
+
 ## 0.2.1
 
 ### Patch Changes
