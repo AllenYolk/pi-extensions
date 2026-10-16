@@ -72,17 +72,66 @@ test('card colors follow current dark/light themes and pending stays distinct fr
   } finally { dispose(); initTheme('dark'); }
 });
 
-test('ordinary registered names compact without guessing labels and interactive tools stay native', () => {
+test('ordinary registered names compact without guessing labels and plan-mode controls stay native', () => {
   const dispose = installPresentation(config, Pi.VERSION, () => {});
   try {
     const transcript = new Container();
-    for (const name of ['bash', 'edit', 'grep', 'readSeek_edit', 'readSeek_grep', 'future_tool']) transcript.addChild(tool(name, name, 'HIDDEN ORDINARY RESULT'));
-    for (const name of ['ask_user_question', 'plan_mode_question', 'plan_mode_complete', 'custom']) transcript.addChild(tool(name, name, `VISIBLE_${name}`));
+    for (const name of ['bash', 'edit', 'grep', 'readSeek_edit', 'readSeek_grep', 'future_tool', 'ask_user_question']) transcript.addChild(tool(name, name, 'HIDDEN ORDINARY RESULT'));
+    for (const name of ['plan_mode_question', 'plan_mode_complete', 'custom']) transcript.addChild(tool(name, name, `VISIBLE_${name}`));
     const text = stripVTControlCharacters(transcript.render(180).join('\n'));
-    assert.match(text, /bash ×1 edit ×1 grep ×1 readSeek_edit ×1 readSeek_grep ×1 future_tool ×1/);
+    assert.match(text, /bash ×1 edit ×1 grep ×1 readSeek_edit ×1 readSeek_grep ×1 future_tool ×1 ask_user_question ×1/);
     assert.doesNotMatch(text, /HIDDEN ORDINARY RESULT/);
-    for (const name of ['ask_user_question', 'plan_mode_question', 'plan_mode_complete', 'custom']) assert.match(text, new RegExp(`VISIBLE_${name}`));
+    for (const name of ['plan_mode_question', 'plan_mode_complete', 'custom']) assert.match(text, new RegExp(`VISIBLE_${name}`));
   } finally { dispose(); }
+});
+
+test('questionnaire arguments and answers compact, expand natively and survive disposal unchanged', () => {
+  // rpiv-ask-user-question uses a separate ui.custom view and no tool-card renderers.
+  const args = { questions: [{ question: 'QUESTION_TEXT', options: [{ label: 'OPTION_TEXT', description: 'LONG_DESCRIPTION '.repeat(30) }] }] };
+  const result = { content: [{ type: 'text', text: 'ANSWER_TEXT' }], details: { answers: [{ question: 'QUESTION_TEXT', answer: 'OPTION_TEXT' }] }, isError: false };
+  const call = new ToolExecutionComponent('ask_user_question', 'question', args, {}, undefined, ui, process.cwd());
+  const transcript = new Container();
+  transcript.addChild(call);
+  const pendingNative = transcript.render(80);
+  const before = JSON.stringify({ args, result });
+  let dispose = installPresentation(config, Pi.VERSION, () => {});
+  try {
+    const pending = stripVTControlCharacters(transcript.render(80).join('\n'));
+    assert.match(pending, /ask_user_question ×1[\s\S]*1 pending/);
+    assert.doesNotMatch(pending, /QUESTION_TEXT|OPTION_TEXT|LONG_DESCRIPTION/);
+    call.updateResult(result);
+    const collapsed = stripVTControlCharacters(transcript.render(80).join('\n'));
+    assert.match(collapsed, /ask_user_question ×1[\s\S]*succeeded/);
+    assert.doesNotMatch(collapsed, /QUESTION_TEXT|OPTION_TEXT|ANSWER_TEXT/);
+    assert.equal(transcript.handleMouse({ type: 'click', button: 'left', x: 2, y: 2, width: 80, height: 5 })?.handled, true);
+    const expanded = transcript.render(80);
+    assert.match(expanded.join('\n'), /QUESTION_TEXT/);
+    assert.match(expanded.join('\n'), /ANSWER_TEXT/);
+    call.setExpanded(false);
+    call.updateResult({ ...result, isError: true });
+    assert.match(stripVTControlCharacters(transcript.render(80).join('\n')), /completed · 1 failed: ask_user_question/);
+    call.updateResult(result);
+    assert.equal(JSON.stringify({ args, result }), before);
+    dispose();
+    dispose = undefined;
+    call.setExpanded(true);
+    assert.deepEqual(transcript.render(80), expanded);
+    call.updateResult({ content: [], isError: false }, true);
+    call.setExpanded(false);
+    assert.deepEqual(transcript.render(80), pendingNative);
+  } finally { dispose?.(); }
+});
+
+test('explicit native questionnaire mode keeps arguments and answers visible', () => {
+  const settings = { ...config, tools: { ...config.tools, ask_user_question: 'native' } };
+  const transcript = new Container();
+  const call = new ToolExecutionComponent('ask_user_question', 'native-question', { question: 'NATIVE_QUESTION' }, {}, undefined, ui, process.cwd());
+  call.updateResult({ content: [{ type: 'text', text: 'NATIVE_ANSWER' }], isError: false });
+  transcript.addChild(call);
+  const native = transcript.render(80);
+  const dispose = installPresentation(settings, Pi.VERSION, () => {});
+  try { assert.deepEqual(transcript.render(80), native); }
+  finally { dispose(); }
 });
 
 test('all colored padding is clickable, the leading gap is not, including after resize', () => {
