@@ -6,7 +6,7 @@ import { loadConfig } from '../dist/config.js';
 
 mkdirSync('work', { recursive: true });
 
-test('ordinary tools default to compact while known interactive tools remain native', () => {
+test('ordinary tools and questionnaires default to compact while plan-mode controls remain native', () => {
   const agentDir = mkdtempSync('work/config-');
   const result = loadConfig(agentDir);
   assert.equal(result.diagnostic, undefined);
@@ -15,8 +15,17 @@ test('ordinary tools default to compact while known interactive tools remain nat
   assert.equal(result.config.tools.read, 'count_only');
   assert.equal(result.config.tools.bash, 'lines');
   assert.equal(result.config.default, 'count_only');
-  for (const name of ['ask_user_question', 'plan_mode_question', 'plan_mode_complete']) assert.equal(result.config.tools[name], 'native');
+  assert.equal(result.config.tools.ask_user_question, 'count_only');
+  for (const name of ['plan_mode_question', 'plan_mode_complete']) assert.equal(result.config.tools[name], 'native');
   assert.equal(result.config.bash.maxCommandChars, 120);
+});
+
+test('an explicit native questionnaire override is preserved', () => {
+  const agentDir = mkdtempSync('work/config-');
+  const dir = join(agentDir, 'extensions/pi-minimal-display');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ tools: { ask_user_question: 'native' } }));
+  assert.equal(loadConfig(agentDir).config.tools.ask_user_question, 'native');
 });
 
 test('config file follows the supplied profile and supports exact tool overrides', () => {

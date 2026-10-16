@@ -1,5 +1,11 @@
 # @allenyolk/pi-minimal-display
 
+## 0.2.3
+
+### Patch Changes
+
+- Compact ask_user_question tool cards by default so questionnaire arguments and answers do not fill the collapsed transcript. Keep native details available on expansion and preserve explicit native overrides and the questionnaire's separate interactive view.
+
 ## 0.2.2
 
 ### Patch Changes

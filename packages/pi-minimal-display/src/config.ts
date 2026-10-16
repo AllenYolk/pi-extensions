@@ -28,7 +28,7 @@ export function loadConfig(agentDir: string): { config?: Config; diagnostic?: st
   const path = join(agentDir, 'extensions', 'pi-minimal-display', 'config.json');
   const defaults: Config = {
     grouping: true, default: 'count_only', modelErrors: 'compact',
-    tools: { read: 'count_only', grep: 'count_only', find: 'count_only', ls: 'count_only', bash: 'lines', edit: 'lines', write: 'lines', ask_user_question: 'native', plan_mode_question: 'native', plan_mode_complete: 'native' },
+    tools: { read: 'count_only', grep: 'count_only', find: 'count_only', ls: 'count_only', bash: 'lines', edit: 'lines', write: 'lines', ask_user_question: 'count_only', plan_mode_question: 'native', plan_mode_complete: 'native' },
     bash: { maxCommandChars: 120, outputLines: 0 },
   };
   let raw: Record<string, unknown>;

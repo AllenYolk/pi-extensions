@@ -45,6 +45,17 @@ export default function probe(pi: ExtensionAPI) {
         for (const call of calls) call.setExpanded(true);
         assert.match(transcript.render(80).join('\n'), /probe-output/);
         assert.doesNotMatch(transcript.render(80).join('\n'), /Retained data/);
+        const questionnaire = new Container();
+        const question = new ToolExecutionComponent('ask_user_question', 'question', { questions: [{ question: 'CLI_QUESTION', options: [{ label: 'CLI_OPTION' }] }] }, {}, undefined, { requestRender() {} } as never, ctx.cwd);
+        questionnaire.addChild(question);
+        assert.match(stripVTControlCharacters(questionnaire.render(80).join('\n')), /ask_user_question ×1[\s\S]*1 pending/);
+        assert.doesNotMatch(questionnaire.render(80).join('\n'), /CLI_QUESTION|CLI_OPTION/);
+        question.updateResult({ content: [{ type: 'text', text: 'CLI_ANSWER' }], isError: false });
+        assert.match(stripVTControlCharacters(questionnaire.render(80).join('\n')), /ask_user_question ×1[\s\S]*succeeded/);
+        assert.doesNotMatch(questionnaire.render(80).join('\n'), /CLI_ANSWER/);
+        question.setExpanded(true);
+        assert.match(questionnaire.render(80).join('\n'), /CLI_QUESTION/);
+        assert.match(questionnaire.render(80).join('\n'), /CLI_ANSWER/);
         const message = { role: 'assistant', content: [{ type: 'thinking', thinking: 'hidden thinking' }, { type: 'text', text: 'visible text' }], stopReason: 'stop' } as const;
         const component = new AssistantMessageComponent(message as never);
         assert.match(component.render(80).join('\n'), /hidden thinking/);

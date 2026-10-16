@@ -11,7 +11,7 @@ A finished call that failed is named and counted in the summary, even while othe
 
 Summaries use the current Pi theme and native tool-card padding/backgrounds. Colored padding is clickable; the preceding blank line is not. Startup, new, resumed and forked sessions automatically begin minimal; `/reload` preserves Pi's current global expansion state. The existing tool shortcut (Ctrl+O by default) remains a two-state minimal/expanded toggle, including when rebound. This toggle is intentionally silent instead of inserting `Tool output: expanded/collapsed` into the transcript; the changed card detail is its feedback. Pi's native thinking-visibility shortcut (Ctrl+T by default) is likewise silent; the changed assistant presentation is its feedback. `/minimal-display` only reports status and is never required to activate the extension.
 
-Status: `0.2.2`. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds compact completed-failure cards with local failure counts and expandable model-request error folding. Tool-card compatibility remains tested on Pi 0.85.0, 0.85.1 and 0.99.1. This change was checked on Pi 0.99.1, 1.1.0 and 1.2.0; the package's latest development host, and the host CI re-verifies, is 1.2.0. It accepts hosts whose patched presentation methods match a tested signature, so unrelated Pi releases do not require a plugin update; incompatible hosts stay native and display a diagnostic. A model-event seam that does not match falls back to native model errors without disabling tool cards. Compatibility results and limitations live in [validation](docs/validation.md).
+Status: `0.2.3`. Questionnaire tool cards now compact by default while their separate answer UI stays interactive. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds compact completed-failure cards with local failure counts and expandable model-request error folding. Tool-card compatibility remains tested on Pi 0.85.0, 0.85.1 and 0.99.1. The model-event compatibility change was checked on Pi 0.99.1, 1.1.0 and 1.2.0; the package's latest development host, and the host CI re-verifies, is 1.2.0. It accepts hosts whose patched presentation methods match a tested signature, so unrelated Pi releases do not require a plugin update; incompatible hosts stay native and display a diagnostic. A model-event seam that does not match falls back to native model errors without disabling tool cards. Compatibility results and limitations live in [validation](docs/validation.md).
 
 ## Install
 
@@ -76,7 +76,7 @@ Create `extensions/pi-minimal-display/config.json` under Pi's actual agent direc
     "bash": "lines",
     "edit": "lines",
     "write": "lines",
-    "ask_user_question": "native",
+    "ask_user_question": "count_only",
     "plan_mode_question": "native",
     "plan_mode_complete": "native"
   },
@@ -84,8 +84,9 @@ Create `extensions/pi-minimal-display/config.json` under Pi's actual agent direc
 }
 ```
 
-- `native`: preserve Pi's existing tool presentation. The three known interactive tools above use this by default; add other interactive tools by their actual registered names when needed.
+- `native`: preserve Pi's existing tool presentation. `plan_mode_question` and `plan_mode_complete` use this by default; add other interactive tools by their actual registered names when needed.
 - `count_only`: compact count/status, with retained native details on expansion.
+- `ask_user_question` defaults to `count_only`, including calls from `@juicesharp/rpiv-ask-user-question`. Its question/option arguments and answer text stay out of collapsed cards; expand to inspect Pi's native details. The questionnaire's separate interactive view remains available while answering. Existing explicit `tools.ask_user_question: "native"` overrides are respected; remove that override or set it to `"count_only"` to compact those cards.
 - `lines`: joins the same group as count-only tools. When `grouping` is false, also shows a short command/path preview. Bash can show up to `outputLines` text lines.
 - Tool overrides use exact names; defaults for other built-ins remain in effect. There is no MCP discovery or gateway-name guessing.
 - Ordinary tools default to count-only, including `readSeek_edit`, `readSeek_grep` and future tool names. Counts identify actual registered names, not renderer titles. Explicit `default` and `tools` values remain authoritative; existing configurations explicitly setting `default: "native"` are not overwritten. To keep the pre-rc.3 unknown-tool behavior, set that value explicitly.
