@@ -89,7 +89,7 @@ function patchHeaderHint(header: object): (() => void) | undefined {
 }
 
 async function runCascade(selector: Selector, targets: string[]): Promise<void> {
-  const failures = await deleteSessionFiles(targets);
+  const failures = deleteSessionFiles(targets);
   const failed = new Set(failures.map((f) => f.path));
   const gone = new Set(targets.filter((p) => !failed.has(p)));
 

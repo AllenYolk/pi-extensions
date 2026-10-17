@@ -89,7 +89,7 @@ Pick one route. Installing from both npm and the collection loads this extension
 
 ## Behavior
 
-Deletion happens during Pi's shutdown, after the session file's last write, so nothing recreates it on the way out. Files go to the `trash` CLI when it exists and are unlinked otherwise. A file that resists both is reported to stderr after exit; the remaining files are still deleted.
+Deletion happens when the Pi process exits, after Pi and every extension have finished shutting down, so nothing recreates the files on the way out — including a subagent transcript that pi-subagents writes while aborting a running child. Files go to the `trash` CLI when it exists and are unlinked otherwise. A file that resists both is reported to stderr after exit; the remaining files are still deleted.
 
 Cascade covers the whole descendant subtree at any depth, but only within the current project's session directory. A session forked into a different project keeps its own files — that separation is deliberate, so a cascade never reaches across projects.
 

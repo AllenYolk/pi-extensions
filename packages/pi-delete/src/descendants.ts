@@ -72,12 +72,17 @@ export async function withTaskSessions(
 ): Promise<SessionInfo[]> {
   const pool = [...sessions];
   const owners = [rootPath, ...collectDescendants(sessions, rootPath).map((d) => d.session.path)];
-  // Grows while it is walked, so tasks of tasks are scanned too; each level is
-  // a deeper directory, so the walk ends.
+  // Grows while it is walked, so tasks of tasks are scanned too; each accepted
+  // task is one directory deeper than its owner, so the walk ends.
   for (let i = 0; i < owners.length; i++) {
     const owner = owners[i]!;
     if (isHeld(owner)) continue;
-    for (const task of await listDir(taskDir(owner))) {
+    const dir = taskDir(owner);
+    const realDir = canonicalize(dir);
+    for (const task of await listDir(dir)) {
+      // Only files directly in `dir`: a host that listed more would turn
+      // unrelated sessions into deletion targets.
+      if (canonicalize(dirname(task.path)) !== realDir) continue;
       pool.push({ ...task, parentSessionPath: owner });
       owners.push(task.path);
     }

@@ -138,3 +138,12 @@ test("a held-back live session keeps its own tasks while the rest go", async () 
     "/s/root/tasks/a.jsonl",
   ]);
 });
+
+test("a listing that reaches outside the task dir adds nothing", async () => {
+  const listed = [session("/s/root.jsonl"), session("/s/other.jsonl")];
+  const pool = await withTaskSessions(listed, "/s/root.jsonl", async () => [
+    session("/s/other.jsonl"),
+    session("/s/root/tasks/nested/deep.jsonl"),
+  ]);
+  assert.deepEqual(collectDescendants(pool, "/s/root.jsonl"), []);
+});

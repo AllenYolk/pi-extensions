@@ -5,6 +5,7 @@
 ### Patch Changes
 
 - Cascade deletes now include the subagent sessions pi-subagents keeps in `<session>/tasks/`, which Pi's listing never shows, and remove the emptied directories. The active session keeps its own subagent sessions.
+- `/delete` now removes its targets at process exit, after every extension's shutdown handler, so a transcript written while pi-subagents aborts a running child cannot survive the cascade.
 
 ## 0.3.2
 

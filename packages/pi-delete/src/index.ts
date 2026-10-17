@@ -14,7 +14,6 @@ function describe({ session, depth }: DescendantEntry): string {
 }
 
 export default function sessionDelete(pi: Pi.ExtensionAPI): void {
-  let pending: string[] = [];
   let disposeCascade: (() => void) | undefined;
 
   pi.on("session_start", (_event, ctx) => {
@@ -26,16 +25,9 @@ export default function sessionDelete(pi: Pi.ExtensionAPI): void {
     );
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", () => {
     disposeCascade?.();
     disposeCascade = undefined;
-    const targets = pending;
-    pending = [];
-    const failures = await deleteSessionFiles(targets);
-    if (failures.length > 0) {
-      const lines = failures.map((f) => `  ${f.path}: ${f.error}`).join("\n");
-      console.error(`pi-delete: ${failures.length} file(s) could not be deleted:\n${lines}`);
-    }
   });
 
   pi.registerCommand("delete", {
@@ -71,10 +63,20 @@ export default function sessionDelete(pi: Pi.ExtensionAPI): void {
       );
       if (choice === undefined || choice === cancel) return;
 
-      pending =
+      const targets =
         choice === deleteTree
           ? [current, ...descendants.map((d) => d.session.path)]
           : [current];
+      // At exit, not in our shutdown handler: other extensions' handlers may
+      // still write these files (pi-subagents aborting a running child), and
+      // their order relative to ours is not ours to choose.
+      process.once("exit", () => {
+        const failures = deleteSessionFiles(targets);
+        if (failures.length > 0) {
+          const lines = failures.map((f) => `  ${f.path}: ${f.error}`).join("\n");
+          console.error(`pi-delete: ${failures.length} file(s) could not be deleted:\n${lines}`);
+        }
+      });
       ctx.shutdown();
     },
   });

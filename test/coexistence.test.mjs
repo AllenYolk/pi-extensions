@@ -11,13 +11,13 @@ const isolation = ['--offline', '--no-context-files', '--no-skills', '--no-promp
 const surviving = (dir) => readdirSync(dir).filter(name => name.endsWith('.jsonl')).length;
 
 /** Open one session of a fresh synthetic tree and replay a key script against it. */
-function driveTree(name, active, script) {
+function driveTree(name, active, script, { args = [], env = {} } = {}) {
   const agent = profile(`${name}-`);
   const tree = sessionTree(join(agent, 'tree'));
   const result = drivePi(
-    [...entries, ...isolation, '--session', tree[active], '--session-dir', tree.sessions],
+    [...entries, ...args, ...isolation, '--session', tree[active], '--session-dir', tree.sessions],
     script,
-    { PI_CODING_AGENT_DIR: agent },
+    { PI_CODING_AGENT_DIR: agent, ...(typeof env === 'function' ? env(tree) : env) },
     60,
     tree.proj,
   );
@@ -63,6 +63,19 @@ test('/delete cascades the whole descendant subtree when chosen', { timeout: 120
   ]);
   assert.equal(surviving(tree.sessions), 0, 'cascade removes the session and all descendants');
   assert.deepEqual(readdirSync(tree.sessions), [], 'hidden subagent sessions and their emptied directories go too');
+});
+
+test('/delete removes subagent transcripts after other extensions finish shutting down', { timeout: 120000 }, () => {
+  // pi-subagents aborts running children from its own shutdown handler, which may run after ours.
+  const { tree } = driveTree('late-write', 'main', [
+    { expect: loaded, send: '/delete\r' },
+    { expect: cascadeOffered, send: '\u001b[B' },
+    { expect: cascadeOffered, send: '\r' },
+  ], {
+    args: ['-e', join(repoRoot, 'test/fixtures/late-writer.ts')],
+    env: (tree) => ({ PI_LATE_WRITE: tree.mainTask }),
+  });
+  assert.deepEqual(readdirSync(tree.sessions), [], 'a transcript written during shutdown must not survive');
 });
 
 test('the picker refuses ctrl+d on the active session', { timeout: 120000 }, () => {
