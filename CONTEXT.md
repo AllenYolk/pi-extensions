@@ -18,7 +18,8 @@ entries. Distinct from installing a package from npm.
 
 **Descendant**: A session whose `parentSessionPath` chain reaches another session. Pi records
 the same link for a subagent session and for one forked by hand, so the two are
-indistinguishable.
+indistinguishable. Sessions that pi-subagents keeps in `<session>/tasks/` are also descendants
+of that session; their header names the parent's ID, so the directory decides the link.
 
 **Cascade**: Deleting a session and its descendants from the session listing supplied by
 the caller. `/delete` uses the current project's session directory; the picker plans against
@@ -26,9 +27,9 @@ its selected current/all listing. Apply the active-session rule for the relevant
 
 **Active session**: The session the running Pi instance is writing to. Picker deletion keeps
 it out of the targets, whether selected directly or present among descendants. The `/delete`
-command instead deliberately schedules it for removal during session shutdown.
+command instead deliberately schedules it for removal at process exit.
 
-**Pending deletion**: Files chosen for deletion but removed during Pi's shutdown, after the
+**Pending deletion**: Files chosen for deletion but removed at process exit, after the
 session file's last write, so nothing recreates them on the way out.
 
 ## Tool presentation
@@ -60,7 +61,7 @@ Paths below are relative to `packages/` unless stated otherwise.
 
 | Area | Owner | Boundary |
 | --- | --- | --- |
-| Delete command and pending shutdown targets | `pi-delete/src/index.ts` | Registers `/delete`, collects the choice and applies queued deletion during shutdown. |
+| Delete command and pending deletion | `pi-delete/src/index.ts` | Registers `/delete`, collects the choice and deletes the targets at process exit. |
 | Descendant traversal and picker target planning | `pi-delete/src/descendants.ts` | Derives targets from Pi session listings, handles cycles and excludes the active picker session. |
 | File removal and failure reporting | `pi-delete/src/delete-sessions.ts` | Prefers `trash`, falls back to unlink and reports surviving files. |
 | Session-picker patches | `pi-delete/src/selector-patch.ts` | Owns selector/header wrappers, native-shape checks and picker refresh after mutation. |

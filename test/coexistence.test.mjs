@@ -11,13 +11,13 @@ const isolation = ['--offline', '--no-context-files', '--no-skills', '--no-promp
 const surviving = (dir) => readdirSync(dir).filter(name => name.endsWith('.jsonl')).length;
 
 /** Open one session of a fresh synthetic tree and replay a key script against it. */
-function driveTree(name, active, script) {
+function driveTree(name, active, script, { args = [], env = {} } = {}) {
   const agent = profile(`${name}-`);
   const tree = sessionTree(join(agent, 'tree'));
   const result = drivePi(
-    [...entries, ...isolation, '--session', tree[active], '--session-dir', tree.sessions],
+    [...entries, ...args, ...isolation, '--session', tree[active], '--session-dir', tree.sessions],
     script,
-    { PI_CODING_AGENT_DIR: agent },
+    { PI_CODING_AGENT_DIR: agent, ...(typeof env === 'function' ? env(tree) : env) },
     60,
     tree.proj,
   );
@@ -28,7 +28,7 @@ function driveTree(name, active, script) {
 
 // `[Extensions]` is the first startup output that proves Pi loaded both entries.
 const loaded = '[Extensions]';
-const cascadeOffered = 'Delete current + 3 descendants';
+const cascadeOffered = 'Delete current + 5 descendants';
 const exitPi = { expect: '(auto)', send: '\u0004' };
 
 test('cancelling /delete keeps every session in the tree', { timeout: 120000 }, () => {
@@ -38,7 +38,7 @@ test('cancelling /delete keeps every session in the tree', { timeout: 120000 }, 
     exitPi,
   ]);
   assert.equal(surviving(tree.sessions), 4, 'cancel must not delete anything');
-  assert.ok(existsSync(tree.main));
+  assert.deepEqual([tree.main, tree.mainTask, tree.childATask].map(existsSync), [true, true, true]);
 });
 
 test('/delete removes only the current session by default', { timeout: 120000 }, () => {
@@ -48,8 +48,8 @@ test('/delete removes only the current session by default', { timeout: 120000 },
   ]);
   assert.equal(existsSync(tree.main), false, 'the current session must be gone after exit');
   assert.deepEqual(
-    [tree.childA, tree.childB, tree.grandchild].map(existsSync),
-    [true, true, true],
+    [tree.childA, tree.childB, tree.grandchild, tree.mainTask, tree.childATask].map(existsSync),
+    [true, true, true, true, true],
     'descendants survive a current-only delete',
   );
 });
@@ -62,6 +62,20 @@ test('/delete cascades the whole descendant subtree when chosen', { timeout: 120
     { expect: cascadeOffered, send: '\r' },
   ]);
   assert.equal(surviving(tree.sessions), 0, 'cascade removes the session and all descendants');
+  assert.deepEqual(readdirSync(tree.sessions), [], 'hidden subagent sessions and their emptied directories go too');
+});
+
+test('/delete removes subagent transcripts after other extensions finish shutting down', { timeout: 120000 }, () => {
+  // pi-subagents aborts running children from its own shutdown handler, which may run after ours.
+  const { tree } = driveTree('late-write', 'main', [
+    { expect: loaded, send: '/delete\r' },
+    { expect: cascadeOffered, send: '\u001b[B' },
+    { expect: cascadeOffered, send: '\r' },
+  ], {
+    args: ['-e', join(repoRoot, 'test/fixtures/late-writer.ts')],
+    env: (tree) => ({ PI_LATE_WRITE: tree.mainTask }),
+  });
+  assert.deepEqual(readdirSync(tree.sessions), [], 'a transcript written during shutdown must not survive');
 });
 
 test('the picker refuses ctrl+d on the active session', { timeout: 120000 }, () => {
@@ -82,15 +96,15 @@ test('a picker subtree cascade holds back the active session', { timeout: 120000
     { expect: loaded, send: '/resume\r' },
     { expect: 'synthetic grandchild', send: '\u0004', settle: 1 },
     { expect: 'Delete session?', send: 't', settle: 1 },
-    { expect: 'Deleted 3 sessions', send: '\u001b' },
+    { expect: 'Deleted 4 sessions (1 hidden)', send: '\u001b' },
     exitPi,
   ]);
   // The key and its label are separate colour spans, so only the label is matchable.
   assert.match(output, /subtree/, 'pi-delete must add its hint to Pi\'s own confirmation line');
   assert.deepEqual(
-    { main: existsSync(tree.main), childA: existsSync(tree.childA), childB: existsSync(tree.childB), grandchild: existsSync(tree.grandchild) },
-    { main: false, childA: true, childB: false, grandchild: false },
-    'everything but the active session goes, and the active session is held back',
+    Object.fromEntries(['main', 'childA', 'childB', 'grandchild', 'mainTask', 'childATask'].map(k => [k, existsSync(tree[k])])),
+    { main: false, childA: true, childB: false, grandchild: false, mainTask: false, childATask: true },
+    'everything but the active session goes; the active session and its own subagents are held back',
   );
 });
 
