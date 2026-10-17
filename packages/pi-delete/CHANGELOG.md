@@ -1,5 +1,11 @@
 # @allenyolk/pi-delete
 
+## 0.3.3
+
+### Patch Changes
+
+- Cascade deletes now include the subagent sessions pi-subagents keeps in `<session>/tasks/`, which Pi's listing never shows, and remove the emptied directories. The active session keeps its own subagent sessions.
+
 ## 0.3.2
 
 ### Patch Changes

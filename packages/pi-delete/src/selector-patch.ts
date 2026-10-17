@@ -1,6 +1,6 @@
-import { rawKeyHint, SessionSelectorComponent } from "@earendil-works/pi-coding-agent";
+import { rawKeyHint, SessionManager, SessionSelectorComponent } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { planCascade } from "./descendants.ts";
+import { planCascade, withTaskSessions } from "./descendants.ts";
 import { deleteSessionFiles } from "./delete-sessions.ts";
 
 /** Pressed while Pi's own ctrl+d confirmation is up, so the cascade is a second
@@ -93,6 +93,12 @@ async function runCascade(selector: Selector, targets: string[]): Promise<void> 
   const failed = new Set(failures.map((f) => f.path));
   const gone = new Set(targets.filter((p) => !failed.has(p)));
 
+  // Subagent sessions are not rows in the picker, so the count says how many of
+  // the deleted ones the user never saw; otherwise it disagrees with the subtree.
+  const rows = new Set([...(selector.currentSessions ?? []), ...(selector.allSessions ?? [])].map((s) => s.path));
+  const hidden = [...gone].filter((p) => !rows.has(p)).length;
+  const hiddenNote = hidden ? ` (${hidden} hidden)` : "";
+
   const keep = <T extends { path: string }>(list: T[] | null) =>
     list ? list.filter((s) => !gone.has(s.path)) : list;
   selector.currentSessions = keep(selector.currentSessions);
@@ -103,8 +109,8 @@ async function runCascade(selector: Selector, targets: string[]): Promise<void> 
 
   selector.header.setStatusMessage(
     failures.length
-      ? { type: "error", message: `Deleted ${gone.size}, failed ${failures.length}: ${failures[0]?.error.slice(0, 60)}` }
-      : { type: "info", message: `Deleted ${gone.size} session${gone.size === 1 ? "" : "s"}` },
+      ? { type: "error", message: `Deleted ${gone.size}${hiddenNote}, failed ${failures.length}: ${failures[0]?.error.slice(0, 60)}` }
+      : { type: "info", message: `Deleted ${gone.size} session${gone.size === 1 ? "" : "s"}${hiddenNote}` },
     4000,
   );
 
@@ -153,11 +159,11 @@ export function installSelectorCascade(report: (message: string) => void): (() =
     }
 
     const selector = this as unknown as Selector;
-    const pool = (selector.scope === "all" ? selector.allSessions : selector.currentSessions) ?? [];
-    const plan = planCascade(pool as never, target, (p) => selector.sessionList.isCurrentSessionPath(p));
+    const isCurrent = (p: string) => selector.sessionList.isCurrentSessionPath(p);
+    const listed = (selector.scope === "all" ? selector.allSessions : selector.currentSessions) ?? [];
 
     selector.sessionList.setConfirmingDeletePath(null);
-    if (plan.blocked) {
+    if (isCurrent(target)) {
       selector.header.setStatusMessage(
         { type: "error", message: "Cannot delete the currently active session" },
         3000,
@@ -166,7 +172,12 @@ export function installSelectorCascade(report: (message: string) => void): (() =
       return undefined;
     }
 
-    void runCascade(selector, plan.targets);
+    void withTaskSessions(listed as never, target, (dir) => SessionManager.listAll(dir), isCurrent)
+      .then((pool) => runCascade(selector, planCascade(pool, target, isCurrent)))
+      .catch((error: unknown) => {
+        selector.header.setStatusMessage({ type: "error", message: `Cascade failed: ${String(error).slice(0, 60)}` }, 4000);
+        selector.requestRender();
+      });
     return undefined;
   };
 

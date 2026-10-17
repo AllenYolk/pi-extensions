@@ -93,6 +93,8 @@ Deletion happens during Pi's shutdown, after the session file's last write, so n
 
 Cascade covers the whole descendant subtree at any depth, but only within the current project's session directory. A session forked into a different project keeps its own files — that separation is deliberate, so a cascade never reaches across projects.
 
+It also covers subagent sessions that [`@gotgenes/pi-subagents`](https://www.npmjs.com/package/@gotgenes/pi-subagents) stores beside their parent in `<session>/tasks/`. Pi's picker never lists that directory, and their headers record the parent's ID rather than its path, so the directory is how they are found: for the selected session, every listed descendant, and each subagent session in turn. `/delete` lists them with the rest; the picker does not draw them, so its status line counts them separately (`Deleted 4 sessions (1 hidden)`): the total minus the hidden ones matches the subtree you see. Once a directory is empty it is removed too; anything else left inside keeps it. The active session's own subagent sessions are held back with it, since its subagents may still be writing them. Deleting only one session — `Delete current session`, or `ctrl+d` then `enter` — leaves its subagent sessions on disk.
+
 Deleting only the current session leaves its children pointing at a file that is gone. Pi's session picker treats them as roots, which is the intended result.
 
 `/delete` reports and does nothing for an ephemeral session (`--no-session`) or outside interactive mode.

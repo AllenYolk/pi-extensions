@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type { SessionInfo } from "@earendil-works/pi-coding-agent";
 
 export interface DescendantEntry {
@@ -51,31 +52,50 @@ export function collectDescendants(sessions: SessionInfo[], rootPath: string): D
   return found;
 }
 
-export interface CascadePlan {
-  /** Paths to remove, selected node first. Empty when the delete is refused. */
-  targets: string[];
-  /** Set when the selected node is the live session, which must never be deleted. */
-  blocked: boolean;
-  /** Descendants kept back because they are the live session. */
-  skipped: number;
+/** Where pi-subagents keeps a session's subagent transcripts: beside the
+ *  session file, outside the directory Pi lists, so the picker never shows them. */
+export function taskDir(sessionPath: string): string {
+  return join(dirname(sessionPath), basename(sessionPath, ".jsonl"), "tasks");
 }
 
 /**
- * Decide what a cascade from `selected` may remove. The active session survives
- * both as the selected node and as any descendant of it, matching the rule Pi's
- * own single delete enforces.
+ * Add the hidden task sessions owned by `rootPath` and its listed descendants,
+ * at any depth, each linked to its owner. Their headers record the parent's ID
+ * rather than its path, so the directory is the only reliable link. A held-back
+ * owner (the live session) keeps its tasks: its subagents may still write them.
+ */
+export async function withTaskSessions(
+  sessions: SessionInfo[],
+  rootPath: string,
+  listDir: (dir: string) => Promise<SessionInfo[]>,
+  isHeld: (path: string) => boolean = () => false,
+): Promise<SessionInfo[]> {
+  const pool = [...sessions];
+  const owners = [rootPath, ...collectDescendants(sessions, rootPath).map((d) => d.session.path)];
+  // Grows while it is walked, so tasks of tasks are scanned too; each level is
+  // a deeper directory, so the walk ends.
+  for (let i = 0; i < owners.length; i++) {
+    const owner = owners[i]!;
+    if (isHeld(owner)) continue;
+    for (const task of await listDir(taskDir(owner))) {
+      pool.push({ ...task, parentSessionPath: owner });
+      owners.push(task.path);
+    }
+  }
+  return pool;
+}
+
+/**
+ * The paths a cascade from `selected` may remove, selected node first. The
+ * active session survives both as the selected node (nothing is removed) and
+ * as any descendant of it, matching the rule Pi's own single delete enforces.
  */
 export function planCascade(
   sessions: SessionInfo[],
   selected: string,
   isCurrent: (path: string) => boolean,
-): CascadePlan {
-  if (isCurrent(selected)) return { targets: [], blocked: true, skipped: 0 };
+): string[] {
+  if (isCurrent(selected)) return [];
   const descendants = collectDescendants(sessions, selected).map((d) => d.session.path);
-  const deletable = descendants.filter((path) => !isCurrent(path));
-  return {
-    targets: [selected, ...deletable],
-    blocked: false,
-    skipped: descendants.length - deletable.length,
-  };
+  return [selected, ...descendants.filter((path) => !isCurrent(path))];
 }

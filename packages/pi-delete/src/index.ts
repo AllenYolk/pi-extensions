@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import * as Pi from "@earendil-works/pi-coding-agent";
-import { collectDescendants, type DescendantEntry } from "./descendants.ts";
+import { collectDescendants, type DescendantEntry, withTaskSessions } from "./descendants.ts";
 import { deleteSessionFiles } from "./delete-sessions.ts";
 import { installSelectorCascade } from "./selector-patch.ts";
 
@@ -51,7 +51,8 @@ export default function sessionDelete(pi: Pi.ExtensionAPI): void {
         return;
       }
 
-      const sessions = await Pi.SessionManager.list(ctx.cwd, ctx.sessionManager.getSessionDir());
+      const listed = await Pi.SessionManager.list(ctx.cwd, ctx.sessionManager.getSessionDir());
+      const sessions = await withTaskSessions(listed, current, (dir) => Pi.SessionManager.listAll(dir));
       const descendants = collectDescendants(sessions, current);
 
       const deleteCurrent = "Delete current session";

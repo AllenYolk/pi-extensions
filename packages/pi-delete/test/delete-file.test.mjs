@@ -34,3 +34,23 @@ test("reports an error when the file cannot be removed", async () => {
   assert.match(error, /permission|EACCES/i);
   assert.equal(existsSync(file), true, "file must survive a failed delete");
 });
+
+const { deleteSessionFiles } = await import("../src/delete-sessions.ts");
+
+test("emptied task directories go with their sessions; anything else keeps them", async () => {
+  const parent = join(root, "parent.jsonl");
+  const tasks = join(root, "parent", "tasks");
+  const child = join(tasks, "child.jsonl");
+  mkdirSync(join(tasks, "child", "tasks"), { recursive: true });
+  const grandchild = join(tasks, "child", "tasks", "grand.jsonl");
+  for (const f of [parent, child, grandchild]) writeFileSync(f, "{}\n");
+  assert.deepEqual(await deleteSessionFiles([parent, child, grandchild]), []);
+  assert.equal(existsSync(join(root, "parent")), false, "the whole emptied tree is removed");
+
+  const kept = join(root, "kept.jsonl");
+  mkdirSync(join(root, "kept", "tasks"), { recursive: true });
+  writeFileSync(kept, "{}\n");
+  writeFileSync(join(root, "kept", "tasks", "notes.txt"), "user data\n");
+  assert.deepEqual(await deleteSessionFiles([kept]), []);
+  assert.equal(existsSync(join(root, "kept", "tasks", "notes.txt")), true, "unknown files are never removed");
+});

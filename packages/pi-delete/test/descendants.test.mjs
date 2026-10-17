@@ -72,9 +72,7 @@ const never = () => false;
 
 test("plan refuses to delete the active session itself", () => {
   const all = [session("/s/root.jsonl"), session("/s/kid.jsonl", "/s/root.jsonl")];
-  const plan = planCascade(all, "/s/root.jsonl", (p) => p === "/s/root.jsonl");
-  assert.equal(plan.blocked, true);
-  assert.deepEqual(plan.targets, []);
+  assert.deepEqual(planCascade(all, "/s/root.jsonl", (p) => p === "/s/root.jsonl"), []);
 });
 
 test("plan keeps the active session when it is a descendant", () => {
@@ -84,14 +82,59 @@ test("plan keeps the active session when it is a descendant", () => {
     session("/s/other.jsonl", "/s/root.jsonl"),
     session("/s/deep.jsonl", "/s/live.jsonl"),
   ];
-  const plan = planCascade(all, "/s/root.jsonl", (p) => p === "/s/live.jsonl");
-  assert.equal(plan.blocked, false);
-  assert.equal(plan.skipped, 1);
-  assert.ok(!plan.targets.includes("/s/live.jsonl"), "active session must not be a target");
-  assert.deepEqual(plan.targets.sort(), ["/s/deep.jsonl", "/s/other.jsonl", "/s/root.jsonl"]);
+  const targets = planCascade(all, "/s/root.jsonl", (p) => p === "/s/live.jsonl");
+  assert.deepEqual(targets.sort(), ["/s/deep.jsonl", "/s/other.jsonl", "/s/root.jsonl"]);
 });
 
 test("plan on a leaf targets only that session", () => {
   const all = [session("/s/root.jsonl"), session("/s/leaf.jsonl", "/s/root.jsonl")];
-  assert.deepEqual(planCascade(all, "/s/leaf.jsonl", never).targets, ["/s/leaf.jsonl"]);
+  assert.deepEqual(planCascade(all, "/s/leaf.jsonl", never), ["/s/leaf.jsonl"]);
+});
+
+// --- withTaskSessions: subagent transcripts hidden in <session>/tasks/ ---
+
+const { withTaskSessions, taskDir } = await import("../src/descendants.ts");
+
+/** Fake directory listing; task headers carry the parent's ID, not its path. */
+const tasks = (byDir) => async (dir) =>
+  (byDir[dir] ?? []).map((path) => session(path, "parent-uuid-not-a-path"));
+
+test("task dir sits beside the session file, named after it", () => {
+  assert.equal(taskDir("/s/2026_abc.jsonl"), "/s/2026_abc/tasks");
+});
+
+test("hidden tasks of the root, of a listed child and of a task all join the cascade", async () => {
+  const listed = [session("/s/root.jsonl"), session("/s/fork.jsonl", "/s/root.jsonl")];
+  const pool = await withTaskSessions(
+    listed,
+    "/s/root.jsonl",
+    tasks({
+      "/s/root/tasks": ["/s/root/tasks/t1.jsonl"],
+      "/s/fork/tasks": ["/s/fork/tasks/t2.jsonl"],
+      "/s/root/tasks/t1/tasks": ["/s/root/tasks/t1/tasks/t3.jsonl"],
+    }),
+  );
+  const found = collectDescendants(pool, "/s/root.jsonl");
+  const depth = new Map(found.map((e) => [e.session.path, e.depth]));
+  assert.deepEqual(Object.fromEntries(depth), {
+    "/s/fork.jsonl": 1,
+    "/s/fork/tasks/t2.jsonl": 2,
+    "/s/root/tasks/t1.jsonl": 1,
+    "/s/root/tasks/t1/tasks/t3.jsonl": 2,
+  });
+});
+
+test("a held-back live session keeps its own tasks while the rest go", async () => {
+  const listed = [session("/s/root.jsonl"), session("/s/live.jsonl", "/s/root.jsonl")];
+  const isLive = (p) => p === "/s/live.jsonl";
+  const pool = await withTaskSessions(
+    listed,
+    "/s/root.jsonl",
+    tasks({ "/s/root/tasks": ["/s/root/tasks/a.jsonl"], "/s/live/tasks": ["/s/live/tasks/b.jsonl"] }),
+    isLive,
+  );
+  assert.deepEqual(planCascade(pool, "/s/root.jsonl", isLive).sort(), [
+    "/s/root.jsonl",
+    "/s/root/tasks/a.jsonl",
+  ]);
 });

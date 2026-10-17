@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { unlink } from "node:fs/promises";
+import { rmdir, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
+import { taskDir } from "./descendants.ts";
 
 export interface DeleteFailure {
   path: string;
@@ -29,6 +31,13 @@ export async function deleteSessionFiles(paths: string[]): Promise<DeleteFailure
   for (const path of paths) {
     const error = await deleteSessionFile(path);
     if (error) failures.push({ path, error });
+  }
+  // Deepest first, so a parent's directory is empty by the time it is tried.
+  // Non-recursive: anything else left inside keeps the directory.
+  for (const path of [...paths].reverse()) {
+    const tasks = taskDir(path);
+    await rmdir(tasks).catch(() => {});
+    await rmdir(dirname(tasks)).catch(() => {});
   }
   return failures;
 }

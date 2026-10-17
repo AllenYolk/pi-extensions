@@ -64,6 +64,8 @@ export function activated(agent) {
  * A synthetic session tree: one root, two children, one grandchild. realpath matters —
  * a session whose recorded cwd differs from Pi's resolved cwd triggers the fork prompt.
  */
+const readSessionId = (file) => JSON.parse(readFileSync(file, 'utf8').split('\n')[0]).id;
+
 export function sessionTree(root) {
   mkdirSync(root, { recursive: true });
   const base = realpathSync(root);
@@ -74,8 +76,8 @@ export function sessionTree(root) {
     input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
-  const make = (parentSession, text) => {
-    const session = SessionManager.create(proj, sessions, parentSession ? { parentSession } : undefined);
+  const make = (parentSession, text, dir = sessions) => {
+    const session = SessionManager.create(proj, dir, parentSession ? { parentSession } : undefined);
     session.appendMessage({ role: 'user', content: text, timestamp: Date.now() });
     session.appendMessage({
       role: 'assistant', content: [{ type: 'text', text: 'ok' }], timestamp: Date.now(),
@@ -87,7 +89,13 @@ export function sessionTree(root) {
   const childA = make(main, 'synthetic child A');
   const childB = make(main, 'synthetic child B');
   const grandchild = make(childA, 'synthetic grandchild');
-  return { proj, sessions, main, childA, childB, grandchild };
+  // Subagent transcripts as pi-subagents writes them: in `<parent>/tasks/`, outside Pi's
+  // listing, with the parent's session ID (not its path) in the header.
+  const taskOf = (parent, text) =>
+    make(readSessionId(parent), text, join(parent.slice(0, -'.jsonl'.length), 'tasks'));
+  const mainTask = taskOf(main, 'hidden subagent of root');
+  const childATask = taskOf(childA, 'hidden subagent of child A');
+  return { proj, sessions, main, childA, childB, grandchild, mainTask, childATask };
 }
 
 /** Run the real CLI under the PTY driver with the given expect/send script. */
