@@ -159,9 +159,11 @@ test('all colored padding is clickable, the leading gap is not, including after 
 
 test('a turn groups mixed calls, native expansion retains details, disposal restores the host', () => {
   const before = Container.prototype.render;
-  const dispose = installPresentation(config, Pi.VERSION, () => {});
-  assert.equal(typeof dispose, 'function');
+  const diagnostics = [];
+  const dispose = installPresentation(config, Pi.VERSION, message => diagnostics.push(message));
   try {
+    assert.equal(typeof dispose, 'function', diagnostics.join('\n'));
+    assert.deepEqual(diagnostics, []);
     const transcript = new Container();
     transcript.addChild(new UserMessageComponent('hello'));
     const first = tool('bash', 'first', 'FIRST RESULT');
@@ -182,7 +184,7 @@ test('a turn groups mixed calls, native expansion retains details, disposal rest
     first.setExpanded(false);
     second.setExpanded(false);
     assert.match(transcript.render(80).join('\n'), /echo first/);
-  } finally { dispose(); }
+  } finally { dispose?.(); }
   assert.equal(Container.prototype.render, before);
 });
 
@@ -491,10 +493,15 @@ test('ungrouped lines mode previews only a short display command, expansion pres
     assert.doesNotMatch(collapsed.join('\n'), /END_OF_COMMAND|OUTPUT_ONLY_ON_EXPAND/);
     assert.ok(collapsed.every(line => visibleWidth(line) <= 30));
     assert.equal(first.args.command, command);
+    const updatedCommand = `${command}\necho UPDATED_ARGUMENTS`;
+    first.updateArgs({ command: updatedCommand });
+    assert.match(transcript.render(30).join('\n'), /check/);
     first.setExpanded(true);
     const expanded = transcript.render(80).join('\n');
     assert.match(expanded, /END_OF_COMMAND/);
+    assert.match(expanded, /UPDATED_ARGUMENTS/);
     assert.match(expanded, /OUTPUT_ONLY_ON_EXPAND/);
+    assert.equal(first.args.command, updatedCommand);
   } finally { dispose(); }
 });
 
@@ -517,7 +524,8 @@ test('click expansion uses the projected group layout even after resizing', () =
 
 test('thinking visibility and streaming remain native across repeated installation', () => {
   const message = { role: 'assistant', content: [{ type: 'thinking', thinking: 'PRIVATE THOUGHT' }, { type: 'text', text: 'PUBLIC TEXT' }], stopReason: 'stop' };
-  const serialized = JSON.stringify(message);
+  const finished = { ...message, content: [message.content[0], { type: 'text', text: 'FINAL TEXT' }] };
+  const serialized = JSON.stringify({ message, finished });
   for (let index = 0; index < 10; index++) {
     const dispose = installPresentation(config, Pi.VERSION, () => {});
     try {
@@ -527,11 +535,20 @@ test('thinking visibility and streaming remain native across repeated installati
       assert.equal(component.lastMessage, message);
       assert.match(component.render(80).join('\n'), /PRIVATE THOUGHT/);
       assert.match(component.render(80).join('\n'), /PUBLIC TEXT/);
-      dispose();
+      component.setHideThinkingBlock(true);
+      component.updateContent(finished, false);
+      assert.equal(component.isStreaming, false);
+      assert.equal(component.lastMessage, finished);
+      assert.match(component.render(80).join('\n'), /FINAL TEXT/);
+      assert.doesNotMatch(component.render(80).join('\n'), /PRIVATE THOUGHT|PUBLIC TEXT|Thinking\.\.\./);
+      component.setHideThinkingBlock(false);
       assert.match(component.render(80).join('\n'), /PRIVATE THOUGHT/);
+      component.setHideThinkingBlock(true);
+      dispose();
+      assert.deepEqual(component.render(80), new AssistantMessageComponent(finished, true).render(80));
     } finally { dispose(); }
   }
-  assert.equal(JSON.stringify(message), serialized);
+  assert.equal(JSON.stringify({ message, finished }), serialized);
 });
 
 test('expanded native controls receive their original mouse events', () => {
