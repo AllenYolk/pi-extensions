@@ -19,6 +19,14 @@ import {
 } from './config.ts';
 import { prepareCompaction } from './preparation.ts';
 import {
+  announcement,
+  DEGRADATION_ENTRY,
+  DEGRADATION_WIDGET,
+  describeFailure,
+  ladder,
+  type Degradation,
+} from './ladder.ts';
+import {
   editedTargets,
   evaluatePruneGate,
   hostCompactionTrigger,
@@ -32,15 +40,22 @@ import {
   describeOutboundRequest,
   estimateSummaryTokens,
   HOST_PROMPT_AND_TOOLS_TOKENS,
-  outputBudgets,
   resolveSummarizerModel,
   summarizerThinkingLevel,
+  type AttemptOutcome,
   type SeamResult,
 } from './summarizer.ts';
+
+/** The host's custom instructions plus a rung's budget instruction, in the order it appends them. */
+const withInstruction = (base: string | undefined, extra: string | undefined): string | undefined =>
+  (extra ? (base ? `${base}\n\n${extra}` : extra) : base);
+
 export default function piCompaction(pi: ExtensionAPI): void {
   let config: Config = defaults();
   let diagnostic: string | undefined;
   let seam: Promise<SeamResult> | undefined;
+  /** The degradation raised inside a compaction, waiting for the compaction to settle. */
+  let pending: Degradation | undefined;
 
   const reload = () => {
     const loaded = loadConfig(getAgentDir());
@@ -58,17 +73,45 @@ export default function piCompaction(pi: ExtensionAPI): void {
   /** The host's own compaction trigger for the current model, which is what "imminent" means. */
   const trigger = (ctx: ExtensionContext) => hostCompactionTrigger(pi.getSettings(), ctx.model);
 
-  pi.on('session_start', () => {
+  /**
+   * The durable half of a degradation, written once the compaction has settled.
+   *
+   * Anything raised inside `session_before_compact` is lost to the repaint: the host clears and
+   * rebuilds the transcript when the compaction ends, and a notification raised before that never
+   * reaches the terminal. So the announcement is pinned above the editor — chrome the repaint does
+   * not touch — and recorded as a custom session entry, which carries no LLM context and survives a
+   * restart. `/compaction` reads that entry back, which is the part that stays visible afterwards.
+   */
+  const settle = (ctx: ExtensionContext) => {
+    const degradation = pending;
+    pending = undefined;
+    if (!degradation) {
+      // A compaction that completed resolves whatever an earlier one degraded into.
+      if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, undefined);
+      return;
+    }
+    pi.appendEntry(DEGRADATION_ENTRY, degradation);
+    if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, announcement(degradation));
+  };
+
+  pi.on('session_start', (_event, ctx) => {
     reload();
     seam = undefined;
+    pending = undefined;
+    if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, undefined);
     // Activation-time check: the status view reports it, and the hook awaits the same promise.
     void seamResult();
   });
 
-  pi.on('session_shutdown', () => {
+  pi.on('session_compact', (_event, ctx) => settle(ctx));
+  pi.on('session_compact_failed', (_event, ctx) => settle(ctx));
+
+  pi.on('session_shutdown', (_event, ctx) => {
     config = defaults();
     diagnostic = undefined;
     seam = undefined;
+    pending = undefined;
+    if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, undefined);
   });
 
   pi.on('session_before_compact', async (event: SessionBeforeCompactEvent, ctx: ExtensionContext): Promise<SessionBeforeCompactResult | void> => {
@@ -77,68 +120,87 @@ export default function piCompaction(pi: ExtensionAPI): void {
     // Inert until enabled, and `off` is the absence of a preset: stock Pi compacts.
     if (!settings.enabled || !tuple) return;
 
+    /**
+     * Every handback goes through here, so a degradation is announced the same way whatever caused
+     * it. A cancellation is answered first: handing back would start a fresh compaction behind the
+     * user, which is the one thing a cancellation must never do.
+     */
+    const handBack = (summarizer: string, reason: string): SessionBeforeCompactResult | void => {
+      if (event.signal.aborted) return { cancel: true };
+      pending = { preset: settings.preset, summarizer, reason };
+      report(ctx, announcement(pending).join('\n'), 'error');
+      return undefined;
+    };
+
     const checked = await seamResult();
-    if (!checked.ok) {
-      report(ctx, `host seam mismatch (${checked.detail}); compaction handed back to Pi`);
-      return;
-    }
+    if (!checked.ok) return handBack('none — the seam was never reached', `host seam mismatch (${checked.detail})`);
+
     const model = resolveSummarizerModel(tuple, ctx);
     if (!model) {
-      report(ctx, `preset ${settings.preset} names summarizer model ${tuple.model}, which this host does not offer; compaction handed back to Pi`);
-      return;
+      const wanted = tuple.model === null ? 'the conversation model' : `summarizer model ${tuple.model}`;
+      return handBack(tuple.model ?? CONVERSATION_MODEL, `this host does not offer ${wanted}`);
     }
-    if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
-      report(ctx, `summarizer model ${model.provider}/${model.id} has no configured credentials; compaction handed back to Pi`);
-      return;
-    }
+    const named = `${model.provider}/${model.id} (${model.api})`;
+    if (!ctx.modelRegistry.hasConfiguredAuth(model)) return handBack(named, 'the host has no configured credentials for it');
+
     const thinking = summarizerThinkingLevel(model, tuple);
     const outbound = describeOutboundRequest(model, tuple, thinking, settings.keptWindowTokens);
     if (outbound.apiClass === 'no-ceiling') {
       // Proceeding would mean claiming a bound we do not have, which is worse than being inert.
-      report(
-        ctx,
-        `preset ${settings.preset} cannot bound the summary: ${outbound.api} sends no output-ceiling field, so its ` +
-        `${tuple.textBudget}-token text budget and ${tuple.reasoningBudget}-token reasoning budget would be dropped; ` +
-        'compaction handed back to Pi',
+      return handBack(
+        named,
+        `${outbound.api} sends no output-ceiling field, so the ${tuple.textBudget}-token text budget `
+        + `and the ${tuple.reasoningBudget}-token reasoning budget would both be dropped`,
       );
-      return;
     }
     const prepared = prepareCompaction(event.branchEntries, event.preparation, settings.keptWindowTokens);
     if (!prepared) return;
 
-    const budgets = outputBudgets(model, tuple, thinking);    let result;
-    try {
-      result = await compact(
-        prepared,
-        model,
-        undefined,
-        undefined,
-        event.customInstructions,
-        event.signal,
-        thinking as never,
-        boundedStream(ctx.modelRegistry, budgets),
-        undefined,
-        undefined,
-        undefined,
-        ctx.sessionManager.getSessionId(),
-      );
-    } catch (error) {
-      // A cancellation stops here: handing back would start a fresh compaction behind the user.
+    // Two rungs, so the ladder cannot loop: the preset's own configuration, then one tighter one.
+    const rungs = ladder(model, tuple, thinking);
+    const failures: string[] = [];
+    for (const [index, rung] of rungs.entries()) {
       if (event.signal.aborted) return { cancel: true };
-      report(ctx, `preset ${settings.preset} could not summarise (${String(error)}); compaction handed back to Pi`);
-      return;
+      const last = index === rungs.length - 1;
+      let outcome: AttemptOutcome | undefined;
+      let result;
+      try {
+        result = await compact(
+          prepared,
+          model,
+          undefined,
+          undefined,
+          withInstruction(event.customInstructions, rung.instruction),
+          event.signal,
+          rung.thinking as never,
+          boundedStream(ctx.modelRegistry, rung.budgets, (seen) => { outcome = seen; }),
+          undefined,
+          undefined,
+          undefined,
+          ctx.sessionManager.getSessionId(),
+        );
+      } catch (error) {
+        if (event.signal.aborted) return { cancel: true };
+        failures.push(describeFailure(outcome, error));
+        // A tighter configuration answers a length stop and an overlong summary, and nothing else:
+        // a model error, a timeout or a malformed result would only be paid for twice.
+        if (last || outcome?.stopReason !== 'length') break;
+        continue;
+      }
+      if (event.signal.aborted) return { cancel: true };
+      // Nothing the provider did not finish cleanly is persisted, whatever the host handed back.
+      if (outcome && outcome.stopReason !== 'stop') {
+        failures.push(describeFailure(outcome, undefined));
+        break;
+      }
+      const tokens = estimateSummaryTokens(result.summary);
+      if (tokens <= tuple.textBudget) return { compaction: result };
+      failures.push(`the summarizer produced a ${tokens}-token summary, over the preset's ${tuple.textBudget}-token text budget`);
     }
 
-    const tokens = estimateSummaryTokens(result.summary);
-    if (tokens > tuple.textBudget) {
-      report(
-        ctx,
-        `preset ${settings.preset} produced a ${tokens}-token summary, over its ${tuple.textBudget}-token text budget; ` +
-          'it is not persisted and compaction is handed back to Pi',
-      );
-      return;
-    }
-    return { compaction: result };
+    return handBack(named, failures.length > 1
+      ? `${failures[0]}, and after a tighter retry (${rungs[1].tightening}) ${failures[1]}`
+      : failures[0]);
   });
 
   /**
@@ -315,7 +377,21 @@ export default function piCompaction(pi: ExtensionAPI): void {
     lines.push(...pruneStatus(ctx, settings));
     const checked = await seamResult();
     lines.push(`Host seam: ${checked.ok ? 'ok' : 'MISMATCH'} — ${checked.detail}`);
+    const degraded = lastDegradation(ctx);
+    lines.push(degraded
+      ? `Last degradation: preset ${degraded.preset} — ${degraded.reason}`
+      : 'Last degradation: none in this session');
     return lines.join('\n');
+  }
+
+  /** The most recent degradation this package recorded in the session, if there is one. */
+  function lastDegradation(ctx: ExtensionCommandContext): Degradation | undefined {
+    const branch = ctx.sessionManager.getBranch();
+    for (let index = branch.length - 1; index >= 0; index--) {
+      const entry = branch[index];
+      if (entry.type === 'custom' && entry.customType === DEGRADATION_ENTRY) return entry.data as Degradation;
+    }
+    return undefined;
   }
 
   /** Whether pruning is armed right now, and which gate decided it. */

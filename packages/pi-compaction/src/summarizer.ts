@@ -64,11 +64,21 @@ export interface OutputBudgets {
  * through the per-level thinking-budget option; everywhere else the output option is one pool and
  * carries their sum. The reasoning budget is absolute, so it is set for every level: an adapter that
  * clamps the requested level must not fall back to its own default budget.
+ *
+ * `keepPool` leaves a single pool at `textBudget + reasoningBudget` with thinking off, which is what
+ * the ladder's single-pool retry asks for: the tighter configuration there is the reasoning draw,
+ * not the envelope, and a smaller envelope would make a second length stop more likely.
  */
-export function outputBudgets(model: SummarizerModel, tuple: Tuple, thinking: ThinkingLevel): OutputBudgets {
+export function outputBudgets(
+  model: SummarizerModel,
+  tuple: Tuple,
+  thinking: ThinkingLevel,
+  options: { keepPool?: boolean } = {},
+): OutputBudgets {
   const reasoning = thinking === 'off' ? 0 : tuple.reasoningBudget;
+  const pool = options.keepPool ? tuple.textBudget + tuple.reasoningBudget : tuple.textBudget + reasoning;
   const budgets: OutputBudgets = {
-    maxTokens: apiClassOf(model) === 'answer-budget' ? tuple.textBudget : tuple.textBudget + reasoning,
+    maxTokens: apiClassOf(model) === 'answer-budget' ? tuple.textBudget : pool,
   };
   if (reasoning > 0) {
     budgets.thinkingBudgets = { minimal: reasoning, low: reasoning, medium: reasoning, high: reasoning };
@@ -225,17 +235,52 @@ function reasoningBudgetReachesProvider(model: SummarizerModel, apiClass: ApiCla
   return Boolean(compat?.thinkingTokenBudgetField || compat?.supportsThinkingTokenBudget);
 }
 
+/** What the provider's own response said about a summarization attempt. */
+export interface AttemptOutcome {
+  /** The response's `stopReason`; undefined when the provider sent none we recognise. */
+  stopReason?: string;
+  /** Whether the response tried to call a tool instead of writing a summary. */
+  toolCall: boolean;
+}
+
 /**
  * The injection point: the host hands its summarization request options straight through, with no
  * output ceiling of its own, and this is where the two budgets are added.
+ *
+ * `observe` reports what the response actually said. The host turns a length stop, an error and a
+ * tool call into thrown errors whose prose would otherwise have to be string-matched to tell them
+ * apart — and it returns a partially written summary unchanged when a response stops for any other
+ * reason. We own this function, so we read the response instead.
  */
-export function boundedStream(registry: ModelRegistry, budgets: OutputBudgets): SummarizerStream {
-  return ((model: SummarizerModel, context: unknown, options?: StreamOptions) =>
-    registry.streamSimple(model, context as never, {
+export function boundedStream(
+  registry: ModelRegistry,
+  budgets: OutputBudgets,
+  observe?: (outcome: AttemptOutcome) => void,
+): SummarizerStream {
+  return ((model: SummarizerModel, context: unknown, options?: StreamOptions) => {
+    const stream = registry.streamSimple(model, context as never, {
       ...options,
       maxTokens: budgets.maxTokens,
       ...(budgets.thinkingBudgets ? { thinkingBudgets: budgets.thinkingBudgets } : {}),
-    })) as unknown as SummarizerStream;
+    }) as { result: () => Promise<unknown> };
+    if (!observe) return stream;
+    const result = stream.result.bind(stream);
+    stream.result = async () => {
+      const message = await result();
+      observe(outcomeOf(message));
+      return message;
+    };
+    return stream;
+  }) as unknown as SummarizerStream;
+}
+
+function outcomeOf(message: unknown): AttemptOutcome {
+  const response = (message ?? {}) as { stopReason?: unknown; content?: unknown };
+  const content = Array.isArray(response.content) ? response.content : [];
+  return {
+    ...(typeof response.stopReason === 'string' ? { stopReason: response.stopReason } : {}),
+    toolCall: content.some((block) => (block as { type?: unknown } | null)?.type === 'toolCall'),
+  };
 }
 
 export interface SeamResult {
