@@ -13,6 +13,9 @@ number on it.
 - The **kept window** — the most recent entries a compaction retains verbatim — is the extension's
   own token target rather than the host's recent-token setting, so base context is a number you
   control.
+- **Pruning** shrinks context between compactions by replacing an old tool result with a bounded
+  placeholder, keeping the originating tool call. No model call and no summary, and it only runs when
+  invalidating the provider prompt cache is already free.
 - The read-files and modified-files blocks are **bounded**, and a summary this package produces does
   not inherit the previous compaction's lists.
 
@@ -28,7 +31,10 @@ project-level overrides, and `/reload` picks up a change without restarting.
   "enabled": true,
   "preset": "balanced",
   "summarizerModel": null,
-  "keptWindowTokens": 16000
+  "keptWindowTokens": 16000,
+  "prune": true,
+  "pruneWindowTokens": 16000,
+  "neverPrune": ["bash", "edit", "write", "subagent"]
 }
 ```
 
@@ -41,6 +47,9 @@ project-level overrides, and `/reload` picks up a change without restarting.
 | `textBudget` | Absolute output allowance for the summary text. Overrides the preset. |
 | `reasoningBudget` | Absolute output allowance for the summarizer's reasoning. Overrides the preset; `0` means the summarizer does not reason. |
 | `keptWindowTokens` | Token target for the kept window. Defaults to `16000`. |
+| `prune` | Whether pruning runs. Defaults to `true`, and is independent of the preset: pruning works with `off`, and `prune: false` leaves the summarizer alone. |
+| `pruneWindowTokens` | How much recent tool-result context pruning protects. Defaults to `16000`. |
+| `neverPrune` | Tool names whose results are never pruned. Defaults to the list below. |
 
 An invalid value is rejected whole: the package reports the file and the field, and compaction stays
 stock Pi rather than half-applying a configuration.
@@ -76,6 +85,92 @@ instead.
 Neither is a default and neither is required. The chosen model must be one this host offers with
 configured credentials; if it is not, the package says so and hands compaction back to Pi rather
 than failing the compaction.
+
+## Pruning
+
+A **prune** shrinks context by replacing an old tool result with a bounded placeholder, keeping the
+originating tool call. It is not a compaction: there is no model call, no summary and no waiting.
+
+It is recorded as a persisted `context_edit` session entry carrying a **replacement**, per
+[ADR 0002](docs/adr/0002-prune-durably-not-per-request.md). The alternatives were rejected for
+concrete reasons: a rewrite of the outgoing message list never reaches the host's session
+projection, so one of its two compaction triggers would not see the prune; and `replacement: null`
+omits the entry, which removes the result while leaving the originating tool call in place — the
+host does not repair that orphan and providers reject the shape.
+
+The raw entry is never modified. A pruned result is still on disk in the session file, byte for byte
+— but nothing in this package reads it back, because a recall tool is out of scope. **Recovery is by
+re-running the tool**, which is what makes the never-prune list a correctness requirement rather than
+a tuning knob.
+
+### The placeholder
+
+```text
+[pi-compaction pruned this tool result]
+Tool: read
+Arguments: {"path":"/src/session.ts"}
+Omitted: 41203 of 41803 characters.
+Excerpt (first 600 characters):
+…
+Re-run `read` with those arguments to recover the full result; it is unchanged on disk in this session.
+```
+
+It names the tool, carries a short digest of the arguments so a re-run is actually possible, states
+how much was omitted and keeps a bounded excerpt. It does not repeat the full arguments: they are on
+the preserved tool call, which is the thing that makes the result recoverable. A result whose
+placeholder would not be smaller than its own text is left alone.
+
+### The never-prune list
+
+A pruned result is recoverable only by re-running its tool, and there is no recall tool. Results of
+one-shot and side-effecting tools — a subagent's answer, a `bash` that mutated state, a network
+fetch whose response has since changed — are information the session cannot get back. Pruning one is
+loss, not compression.
+
+The default list:
+
+```text
+ask_user_question, bash, codemode, edit, fetch_content, powershell,
+source_check, subagent, web_search, write
+```
+
+Every other tool's results are prunable, so a tool this list does not name is one you have judged
+re-runnable. That includes MCP tools, whose semantics this package cannot know: add them to
+`neverPrune` if yours are not safe to re-run. The list is enforced by name, whatever a result's size
+or age, and `/compaction never-prune none` really does empty it — the status view says what that
+costs rather than showing it as the default.
+
+### The two gates
+
+Either gate permits a prune; with neither, nothing is pruned.
+
+- **The previous request already missed the provider prompt cache**, read from the usage the host
+  recorded for it. A request that read no cached prompt tokens paid full price for its whole prefix,
+  so invalidating that prefix costs nothing that was not already being paid; a request that read
+  cached tokens has a warm prefix, and a prune inside it would buy tokens with a full-price prefill.
+  This is a measured fact rather than a clock, so it self-calibrates across providers whose cache
+  lifetimes differ.
+- **Compaction is imminent**, tested with the host's own threshold and its own resolved
+  `compaction.reserveTokens`. The prefix is about to be destroyed, so invalidating it is free.
+
+A clock threshold exists only as a **fallback** for a request that reports no cache usage at all —
+five minutes, the same prompt-cache TTL the host itself assumes. It never overrides measured usage,
+and the status view labels it as the fallback when it is what armed the prune.
+
+Pruning targets the oldest results beyond the protected window: the position that saves the most
+tokens and invalidates the most cache, which is acceptable precisely because a gate had to permit it.
+All of a turn's edits are appended together from one turn boundary, so a turn costs one cache
+invalidation rather than one per pruned result.
+
+### The window
+
+`pruneWindowTokens` is the one knob, denominated in tokens of recent tool-result context. Walking
+back from the newest result, a result is protected while the results newer than it are still worth
+fewer than that many tokens; everything older is a candidate.
+
+At the edges: a window of `0` protects nothing, including the results of the turn that just ended,
+which can make the model re-run tools it has only just called — the default exists to prevent that.
+A window larger than the session's tool results prunes nothing at all.
 
 ## What the two budgets mean on each provider API
 
@@ -187,8 +282,15 @@ Reasoning budget on this API: advisory — openai-responses sends a reasoning ef
   independent ceiling
 Worst case: summary 20000 tokens; base context 34874 + 20000 + 16000 = 70874 tokens
 Kept window: 16000 tokens
+Prune: on
+Prune window: 16000 tokens of recent tool results
+Never prune: ask_user_question, bash, codemode, edit, fetch_content, powershell, source_check, subagent, web_search, write
+Prune gate: blocked — the previous request read 58278 cached prompt tokens, so its prefix is warm
 Host seam: ok — compact() arity 12; our stream function received {apiKey, cacheRetention, env, headers, sessionId, signal}
 ```
+
+The gate line says whether pruning is armed right now and which gate decided it — or, when it is
+blocked, which gate is blocking it.
 
 Every knob is settable from it, and each change is written back to the configuration file:
 
@@ -200,6 +302,9 @@ Every knob is settable from it, and each change is written back to the configura
 /compaction text <tokens>
 /compaction reasoning <tokens>
 /compaction window <tokens>
+/compaction prune on | off
+/compaction prune-window <tokens>
+/compaction never-prune <tool>[,<tool>…] | default | none
 ```
 
 ## Host-seam check
@@ -227,5 +332,6 @@ Version `0.1.0`, a candidate. Its development host, and the host its checks run 
 so it does not change the host's prompt and tool declarations, and it never patches the host, edits
 an installed Pi or changes the host's compaction settings.
 
-Not in this release: the retry ladder for a summarizer that hits its ceiling, the announced
-degradation surface beyond the warning it already prints, and the no-summary prune path.
+Not in this release: the retry ladder for a summarizer that hits its ceiling, and the announced
+degradation surface beyond the warning it already prints. There is no recall tool for pruned content:
+recovery is by re-running the tool, which is why the never-prune list is enforced.
