@@ -1,6 +1,6 @@
 # Glossary
 
-One vocabulary for both packages in this repository. Use these terms in issues, code and
+One vocabulary for every package in this repository. Use these terms in issues, code and
 tests. This is the domain glossary, not an implementation spec.
 
 ## Shared
@@ -106,10 +106,18 @@ Paths below are relative to `packages/` unless stated otherwise.
 | Session-picker patches | `pi-delete/src/selector-patch.ts` | Owns selector/header wrappers, native-shape checks and picker refresh after mutation. |
 | Display activation and configuration | `pi-minimal-display/src/index.ts`, `pi-minimal-display/src/config.ts` | The entry owns the disposer/status; config is read from Pi's actual agent directory. |
 | Display projection and private host access | `pi-minimal-display/src/presentation.ts` | Owns fingerprint checks and presentation/mouse/expansion wrappers; execution and saved data remain Pi-owned. |
+| Compaction activation, configuration and the compaction hook | `pi-compaction/src/index.ts` | Registers `/compaction`, owns the inert-until-enabled switch, the slash-command surface and the `session_before_compact` hook that supplies a compaction or hands it back. |
+| Summarizer budgets, API classification and the host seam | `pi-compaction/src/summarizer.ts` | Owns the two output budgets, the per-API classification, thinking-level clamping, the bounded stream function and the activation-time host-seam check. |
+| The cut point and the summarised range | `pi-compaction/src/preparation.ts` | Chooses the kept-window boundary and builds the range to summarise from the branch entries, so nothing between the two is lost. |
+| Pruning, its gates and the never-prune list | `pi-compaction/src/prune.ts` | Owns the durable context-edit replacements, the bounded placeholder, the cache and imminence gates and the never-prune list. |
+| The retry ladder and the degradation announcement | `pi-compaction/src/ladder.ts` | Owns the two rungs, the per-class tightening, the announcement and the durable record of a degradation. |
 | Collection/package boundaries | Repository-root manifest, `test/` and `.github/workflows/` | Aggregate installation, independent-package checks, coexistence and shared development/release tooling. |
 
 Pi session records and parent links are the source of ancestry; the plugins do not maintain
-a separate persistent session index. Pi also owns thinking visibility, global tool expansion
+a separate persistent session index. Pi also owns the compaction trigger, the summarization
+prompts and the session's own reserved-token and recent-token settings; this repository's
+compaction package chooses a summarizer, its budgets and a cut point, and hands compaction
+back to Pi whenever it cannot bound the result. Pi also owns thinking visibility, global tool expansion
 and tool results; compact cards are a projection of that state.
 
 The display entry passes the host modules into its adapter so patched components are the
