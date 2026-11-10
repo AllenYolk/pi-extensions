@@ -249,9 +249,9 @@ There is no `maxTokens` reference anywhere in the file, so a ceiling handed to i
 dropped** — the exact failure this package exists to prevent.
 
 The package will not pretend otherwise. With a summarizer on this API the status view says the
-ceiling cannot be enforced and names the API, and the hook hands compaction back to Pi with a
-warning instead of producing a summary it cannot bound. Proceeding would mean claiming a bound we do
-not have, which is worse than being inert.
+ceiling cannot be enforced and names the API, and the hook degrades before any request rather than
+producing a summary it cannot bound. Proceeding would mean claiming a bound we do not have, which is
+worse than being inert.
 
 ### Untested — `google-generative-ai`, `google-vertex`
 
@@ -289,9 +289,113 @@ certainty that the text may use whatever the thinking phase leaves.
 The status view computes the same figures from your own configured kept-window target, so its
 numbers move with that setting.
 
-Beyond the request, the package refuses to persist a summary longer than the text budget: it says so
-and hands compaction back to Pi rather than writing a summary it cannot bound. That is where the
-retry ladder will go; it is not implemented in this release.
+Beyond the request, the package refuses to persist a summary longer than the text budget. That refusal
+is not the end of it: see the retry ladder below.
+
+## The retry ladder
+
+A hard ceiling on a model that wants to write more produces a **length stop**, and a model that
+ignores the budget produces a summary **over the text budget**. Both used to end in the same place —
+warn, and hand compaction back to stock Pi, which is the unbounded summary this package exists to
+remove. So the package's own guardrail no longer routes into the bug it was built to fix.
+
+1. Attempt with the preset's model, thinking level and both budgets.
+2. On a length stop, or on a summary over the text budget, retry **once** with a tighter
+   configuration.
+3. On any further failure — a second length stop, a model error, a timeout, a malformed result —
+   degrade to stock Pi.
+
+The retry is **two rungs, not a loop**: the configuration list is a fixed array, so there is no third
+attempt to reach however the second one fails.
+
+### The tighter configuration depends on the API class
+
+The difference is whether the reasoning budget reaches the provider as a token cap.
+
+| Class | Why a length stop happened | The retry |
+| --- | --- | --- |
+| Answer budget | `thinkingBudgets` is honoured, so the thinking phase may simply have eaten the quota the text needed | **Compress both budgets**: text budget and reasoning budget are each halved, so the envelope shrinks with them and the provider enforces the smaller text budget itself |
+| Single pool | The adapter never reads `thinkingBudgets`, so reasoning drew from one envelope uncapped and the envelope really was exhausted | **Drop the reasoning draw**: thinking off, and an explicit budget instruction appended to the request. The envelope is left at the pool |
+| No ceiling | — | Never reaches the ladder; handed back before any request |
+
+Halving is the aim, not a new contract. **Both attempts are judged against the preset's own text
+budget**, so the persisted summary is always inside the number you configured; the retry's smaller
+budgets only shape the request.
+
+Leaving the envelope alone on a single pool is deliberate. The acceptance test is on the text, and a
+model told to stay inside the text budget still needs room to *stop cleanly* rather than hit the cap
+again — shrinking the envelope there would make the second length stop more likely, not less.
+
+### The budget instruction
+
+The host appends `customInstructions` to its summarization prompt as an "Additional focus" section,
+which is the only place a budget can be stated in words on an API whose ceiling is one pool the
+adapter will not divide. Only the single-pool retry uses it:
+
+```text
+Additional focus: Keep the entire summary within 12000 tokens. An earlier attempt ran past its
+output ceiling and was discarded, so write a shorter summary rather than an incomplete one: drop
+detail, and keep exact file paths, function names and error messages.
+```
+
+Any custom instructions the compaction already carried are kept, and this is appended after them.
+
+### What is never persisted
+
+A truncated or partial summary is never persisted, at any step, including from a retry:
+
+- The host throws on a length stop and on a tool call, so those never reach a result at all.
+- The package additionally refuses any response whose `stopReason` is not a clean stop, read from the
+  response itself through the stream function it owns — the host returns a partially written summary
+  unchanged for a stop reason it does not recognise.
+- A summary over the preset's text budget is refused, from either attempt.
+
+A cancellation stops everything. It is checked before every attempt, after every attempt and before
+every handback, and it answers `{cancel: true}`: no retry, and never a fallback that begins a fresh
+compaction behind your back.
+
+## Degradation
+
+Degradation is handing compaction back to stock Pi after the package's own attempts fail. It is never
+silent, and it is the same announcement whatever caused it: a host seam mismatch, an unavailable
+summarizer model, missing credentials, a no-ceiling API, a model error, a summary over the text
+budget, or a second length stop.
+
+```text
+pi-compaction: degraded — compaction handed back to stock Pi
+Preset: balanced — summarizer mafia-o/gpt-6.1-sol (openai-responses)
+Why: the summarizer hit its output ceiling, so the summary was incomplete, and after a tighter retry
+  (thinking off and an explicit 12000-token budget instruction, with the envelope unchanged) the
+  summarizer hit its output ceiling, so the summary was incomplete
+Now: stock Pi sends no output ceiling at all, so the summary is bounded only by the summarizer
+  model's own output limit. Measured on the profile this package was built against, summaries grew
+  3,437 to 26,019 tokens across 16 compactions, each taking 289 to 490 seconds, and base context grew
+  with them.
+Next: /compaction preset fast for a hard 6,000-token ceiling, /compaction model provider/model for a
+  summarizer on an answer-budget API, or /compaction disable to make this the default.
+```
+
+### How it reaches you
+
+A notification raised from inside a compaction does not paint: the host clears and rebuilds the
+transcript when the compaction ends, and anything raised before that is lost. A single stderr line
+scrolls away. So the announcement is delivered three ways, and only one of them is the terminal:
+
+| Surface | Survives the repaint | Survives a restart |
+| --- | --- | --- |
+| `console.error` and `ctx.ui.notify`, immediately | no — the repaint takes it | no |
+| A **widget pinned above the editor**, set once the compaction has settled | **yes** — it is chrome the repaint does not touch, and it cannot scroll away | no |
+| A **custom session entry**, `pi-compaction-degradation`, read back by `/compaction` | yes | **yes** |
+
+The pinned widget is cleared by the next compaction that completes, and at session start and
+shutdown. The session entry is the durable record: custom entries carry no LLM context, so it never
+enters the summary or the model's context, and `/compaction` reports it as `Last degradation:` for as
+long as the session lives.
+
+What is *not* durable is the rendering of that entry in the transcript. Drawing it would mean
+registering a TUI component, which would add `@earendil-works/pi-tui` as a peer dependency to a
+package that deliberately has none. The widget carries the visible announcement and the session entry
+carries the record; `/compaction` is how you read the record afterwards.
 
 ## `/compaction`
 
@@ -317,6 +421,7 @@ Prune window: 16000 tokens of recent tool results
 Never prune: ask_user_question, bash, codemode, edit, fetch_content, powershell, source_check, subagent, web_search, write
 Prune gate: blocked (prefix-read-from-cache) — the previous request read 58278 cached prompt tokens, so the next request would read the same prefix
 Host seam: ok — compact() arity 12; our stream function received {apiKey, cacheRetention, env, headers, sessionId, signal}
+Last degradation: none in this session
 ```
 
 The gate line says whether pruning is armed right now, names the fact that decided it, and gives the
@@ -342,9 +447,8 @@ Every knob is settable from it, and each change is written back to the configura
 Two seams this package depends on are not documented extension APIs: the argument list of the host's
 `compact()` and the point at which it calls its stream function. Both are verified at activation —
 the arity, and an actual call through a stream function the package supplies, which needs no
-credentials and makes no request. A mismatch hands compaction back to the host instead of letting
-the package misbehave, and the status view reports it. Tested signatures decide compatibility, not
-version text.
+credentials and makes no request. A mismatch degrades to the host instead of letting the package
+misbehave, and the status view reports it. Tested signatures decide compatibility, not version text.
 
 ## Install
 
@@ -360,8 +464,8 @@ pi -e ./packages/pi-compaction/src/index.ts
 Version `0.1.0`, a candidate. Its development host, and the host its checks run against, is
 `@earendil-works/pi-coding-agent` 1.5.1 — the version whose seams were inspected. It adds no tools,
 so it does not change the host's prompt and tool declarations, and it never patches the host, edits
-an installed Pi or changes the host's compaction settings.
+an installed Pi or changes the host's compaction settings. It has no runtime dependencies and no peer
+dependency beyond the host itself.
 
-Not in this release: the retry ladder for a summarizer that hits its ceiling, and the announced
-degradation surface beyond the warning it already prints. There is no recall tool for pruned content:
-recovery is by re-running the tool, which is why the never-prune list is enforced.
+There is no recall tool for pruned content: recovery is by re-running the tool, which is why the
+never-prune list is enforced.
