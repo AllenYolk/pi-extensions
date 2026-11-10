@@ -4,7 +4,7 @@ import type { ThinkingLevel, Tuple } from './config.ts';
 
 /**
  * Every type this module needs is derived from `compact()`'s own signature. That signature is one
- * of the two seams checked at activation, so deriving from it keeps the check and the call in step.
+ * of the three seams checked at activation, so deriving from it keeps the check and the call in step.
  */
 type CompactArguments = Parameters<typeof compact>;
 export type SummarizerModel = CompactArguments[1];
@@ -251,6 +251,11 @@ export interface AttemptOutcome {
  * tool call into thrown errors whose prose would otherwise have to be string-matched to tell them
  * apart — and it returns a partially written summary unchanged when a response stops for any other
  * reason. We own this function, so we read the response instead.
+ *
+ * That read rests on a third host seam: the host awaits `result()` on whatever this function
+ * returns, so the replacement installed below is the one it calls. Without it `observe` never runs
+ * and no outcome is recorded at all — a silent, quality-only failure, which is why `checkHostSeam`
+ * probes for it.
  */
 export function boundedStream(
   registry: ModelRegistry,
@@ -289,9 +294,10 @@ export interface SeamResult {
 }
 
 /**
- * `compact()`'s argument list and the point at which it calls its stream function are not
- * documented extension APIs, so they are checked rather than assumed — with an actual call through
- * a stream function we supply, which needs no credentials and makes no request. A mismatch hands
+ * Three things the host does are not documented extension APIs: `compact()`'s argument list, the
+ * point at which it calls its stream function, and that it awaits `result()` on whatever that
+ * function returns. All three are checked rather than assumed — with an actual call through a
+ * stream function we supply, which needs no credentials and makes no request. A mismatch hands
  * compaction back to the host instead of letting the package misbehave.
  */
 export async function checkHostSeam(compactFn: typeof compact = compact): Promise<SeamResult> {
@@ -307,9 +313,15 @@ async function probeSeam(compactFn: typeof compact): Promise<SeamResult> {
     return { ok: false, detail: `compact() takes ${compactFn.length} arguments, not 12` };
   }
   const seen: unknown[] = [];
+  let awaited = 0;
   const stream: SummarizerStream = ((_model: unknown, _context: unknown, options?: StreamOptions) => {
     seen.push(options);
-    return { result: async () => probeResponse() } as never;
+    return {
+      result: async () => {
+        awaited += 1;
+        return probeResponse();
+      },
+    } as never;
   }) as unknown as SummarizerStream;
   try {
     await compactFn(probePreparation(), probeModel(), undefined, undefined, undefined, undefined, 'off', stream);
@@ -320,7 +332,19 @@ async function probeSeam(compactFn: typeof compact): Promise<SeamResult> {
   if (seen.length !== 1 || !options || typeof options !== 'object') {
     return { ok: false, detail: `the supplied stream function was called ${seen.length} times with ${typeof options} options` };
   }
-  return { ok: true, detail: `compact() arity 12; our stream function received {${Object.keys(options).sort().join(', ')}}` };
+  // The third seam. Without it no outcome is ever observed, so the package cannot tell a clean
+  // summary from a partial one and would persist whatever the host handed back.
+  if (awaited === 0) {
+    return {
+      ok: false,
+      detail: "compact() never awaited result() on the object our stream function returned, so a response's stopReason cannot be read",
+    };
+  }
+  return {
+    ok: true,
+    detail: `compact() arity 12; our stream function received {${Object.keys(options).sort().join(', ')}} `
+      + 'and its result() was awaited',
+  };
 }
 
 function probeModel(): SummarizerModel {

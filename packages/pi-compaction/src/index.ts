@@ -24,6 +24,7 @@ import {
   DEGRADATION_WIDGET,
   describeFailure,
   ladder,
+  UNOBSERVED_RESPONSE,
   type Degradation,
 } from './ladder.ts';
 import {
@@ -188,9 +189,10 @@ export default function piCompaction(pi: ExtensionAPI): void {
         continue;
       }
       if (event.signal.aborted) return { cancel: true };
-      // Nothing the provider did not finish cleanly is persisted, whatever the host handed back.
-      if (outcome && outcome.stopReason !== 'stop') {
-        failures.push(describeFailure(outcome, undefined));
+      // Nothing the provider did not finish cleanly is persisted, whatever the host handed back —
+      // and an attempt whose response this package never observed proves nothing about its summary.
+      if (!outcome || outcome.stopReason !== 'stop') {
+        failures.push(outcome ? describeFailure(outcome, undefined) : UNOBSERVED_RESPONSE);
         break;
       }
       const tokens = estimateSummaryTokens(result.summary);

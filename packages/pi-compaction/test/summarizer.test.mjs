@@ -183,6 +183,9 @@ test('the host seam check accepts this package\'s host and reports what it saw',
   assert.equal(result.ok, true, result.detail);
   assert.match(result.detail, /arity 12/);
   assert.match(result.detail, /cacheRetention/);
+  // The third seam: the host must await result() on what our stream function returns, or no
+  // response is ever observed and a partial summary cannot be told from a clean one.
+  assert.match(result.detail, /its result\(\) was awaited/);
 });
 
 test('the host seam check steps aside on a compaction function with another shape', async () => {
@@ -197,4 +200,20 @@ test('the host seam check steps aside on a compaction function with another shap
   const ignored = await checkHostSeam(ignoresStream);
   assert.equal(ignored.ok, false);
   assert.match(ignored.detail, /called 0 times/);
+});
+
+test('the host seam check rejects a host that never resolves the stream it was handed', async () => {
+  // The right arity and the stream function is called with options, so the first two seams hold —
+  // but the host drops the object instead of awaiting its result(), so this package would never
+  // observe a stopReason and would persist whatever summary came back.
+  const ignoresResult = async (
+    _preparation, _model, _apiKey, _headers, _instructions, _signal, _thinking, streamFn,
+  ) => {
+    await streamFn(undefined, undefined, {});
+    return { summary: 'x', firstKeptEntryId: 'x', tokensBefore: 0 };
+  };
+  Object.defineProperty(ignoresResult, 'length', { value: 12 });
+  const result = await checkHostSeam(ignoresResult);
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /never awaited result\(\)/);
 });

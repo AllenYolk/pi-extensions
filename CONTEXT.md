@@ -73,6 +73,13 @@ text budget because their sum, not either alone, is what bounds the request.
 
 **Ceiling**: text budget plus reasoning budget. The total output a preset permits.
 
+**API class**: the shape a provider API gives the ceiling, which is what decides what the two budgets
+mean there. `answer-budget` adds the reasoning budget on top of the text budget, so thinking is capped
+and the text budget is the room guaranteed to remain; `single-pool` sends their sum as one ceiling the
+reasoning phase draws from uncapped, so the text has no ceiling of its own; `no-ceiling` sends no
+output ceiling at all, so neither budget can be enforced. An API not enumerated is treated as a
+single pool.
+
 **Kept window**: the most recent session entries a compaction retains verbatim. Its size is a target
 the extension chooses, not the host's configured recent-token setting, and it trades directly
 against the text budget for a fixed base context.
@@ -91,8 +98,27 @@ originating tool call. No model call and no summary, so it is not a compaction.
 Results of side-effecting or one-shot tools are not prunable; pruning one is information loss, not
 compression.
 
+**Placeholder**: the bounded text a pruned tool result is replaced with. It names the tool, digests
+the arguments, states how much was omitted and keeps an excerpt. The originating tool call is
+preserved, which is what makes the result recoverable by re-running it.
+
+**Prune window**: the amount of recent tool-result context a prune protects, denominated in tokens
+and measured backwards from the newest result. Everything older than the window is a candidate.
+
+**Prune gate**: the test that decides whether a prune may run now. Either of two facts permits one:
+the next request has nothing cached to read, or compaction is imminent. With neither, nothing is
+pruned. Its reasons are `prefix-read-from-cache` and `prefix-just-written` (the next request would
+read the cache, so a prune would pay for that prefill again), `nothing-cached` (there is nothing to
+invalidate), `compaction-imminent` (the prefix is about to be destroyed, so invalidating it is free),
+`cache-ttl-fallback` (no request reported usable usage and the last one is older than the fallback
+lifetime), and `inside-fallback-ttl` and `no-request-observed` (nothing yet says what the next
+request would read).
+
 **Degradation**: handing compaction back to stock Pi after the extension's own attempts fail. Always
 announced, never silent, and never partial: a truncated summary is never persisted.
+
+**Rung**: one attempt of the retry ladder — everything a single summarization attempt sends that the
+next one changes. The ladder is two rungs, so there is no third attempt to reach.
 
 ## Code and state ownership
 
