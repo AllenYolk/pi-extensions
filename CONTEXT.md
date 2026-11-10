@@ -55,6 +55,45 @@ enabled.
 **Retained detail**: The command, text blocks, images, structured details, and truncation
 references available to Pi. It excludes content Pi has already discarded.
 
+## Context compaction
+
+**Summarizer**: the request that produces a compaction summary, with its own model and thinking
+level. Distinct from the conversation model and the session's thinking level, both of which the
+host would otherwise reuse.
+
+**Preset**: a named selection of summarizer model, thinking level, text budget and reasoning
+budget, switchable while a session runs. `fast`, `balanced` and `deep` are presets; `off` is the
+absence of one and returns compaction to stock Pi.
+
+**Text budget**: the absolute output ceiling for the summary text. An absolute token value, never
+derived from the host's reserved-token setting.
+
+**Reasoning budget**: the absolute output ceiling for the summarizer's reasoning. Separate from the
+text budget because their sum, not either alone, is what bounds the request.
+
+**Ceiling**: text budget plus reasoning budget. The total output a preset permits.
+
+**Kept window**: the most recent session entries a compaction retains verbatim. Its size is a target
+the extension chooses, not the host's configured recent-token setting, and it trades directly
+against the text budget for a fixed base context.
+
+**Base context**: what a session occupies immediately after a compaction: the host's prompt and tool
+declarations, the summary, and the kept window. The prompt and tool declarations are a constant the
+extension cannot reduce.
+
+**Growth per cycle**: the distance between the compaction trigger and the base context — the amount
+of new work a session absorbs between compactions.
+
+**Prune**: shrinking context by replacing an old tool result with a bounded placeholder, keeping the
+originating tool call. No model call and no summary, so it is not a compaction.
+
+**Prunable result**: a tool result whose information the agent can recover by re-running the tool.
+Results of side-effecting or one-shot tools are not prunable; pruning one is information loss, not
+compression.
+
+**Degradation**: handing compaction back to stock Pi after the extension's own attempts fail. Always
+announced, never silent, and never partial: a truncated summary is never persisted.
+
 ## Code and state ownership
 
 Paths below are relative to `packages/` unless stated otherwise.
