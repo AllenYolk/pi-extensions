@@ -108,6 +108,14 @@ export function describeFailure(outcome: AttemptOutcome | undefined, error: unkn
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/**
+ * Why an attempt whose response was never observed is refused. Distinct from `describeFailure`'s
+ * unobserved case, which has a thrown error to quote: here `compact()` handed back a summary and
+ * this package never saw the response that produced it, so it has proved nothing about it.
+ */
+export const UNOBSERVED_RESPONSE =
+  "the summarizer's response was never observed, so the package cannot prove the summary is complete";
+
 export interface Degradation {
   preset: Selection;
   /** What the preset asked to summarise with, or what there was instead. */

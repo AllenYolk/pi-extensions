@@ -11,6 +11,10 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
  *
  * `PI_COMPACTION_FIXTURE_RECORD`   file the recorded requests are appended to, as JSON lines
  * `PI_COMPACTION_FIXTURE_MODE`     normal (default) | oversized | error | length
+ * `PI_COMPACTION_FIXTURE_STOP_REASON`  stop reason a failing summarization response carries instead
+ *                                      of MODE's; the host returns anything but `error` and `length`
+ *                                      as a normal result carrying partial text, which is the only
+ *                                      way the package's own refusal is reached
  * `PI_COMPACTION_FIXTURE_FAIL_FIRST`  how many leading summarization requests take `MODE`; unset is
  *                                      every one of them, so a mode is only left behind on request
  * `PI_COMPACTION_FIXTURE_SUMMARY`  summary size in host-estimated tokens (default 200)
@@ -67,6 +71,7 @@ const model = (id: string, api: string, extra: Record<string, unknown> = {}) => 
 export default function fakeProvider(pi: ExtensionAPI) {
   const record = process.env.PI_COMPACTION_FIXTURE_RECORD;
   const mode = process.env.PI_COMPACTION_FIXTURE_MODE ?? 'normal';
+  const stopReason = process.env.PI_COMPACTION_FIXTURE_STOP_REASON;
   const failFirst = Number(process.env.PI_COMPACTION_FIXTURE_FAIL_FIRST ?? Number.MAX_SAFE_INTEGER);
   const abortAfter = Number(process.env.PI_COMPACTION_FIXTURE_ABORT_AFTER_SUMMARIZE ?? 0);
   const summaryTokens = Number(process.env.PI_COMPACTION_FIXTURE_SUMMARY ?? 200);
@@ -90,12 +95,14 @@ export default function fakeProvider(pi: ExtensionAPI) {
     const systemPrompt = typeof system?.content === 'string' ? system.content : '';
     const summarization = systemPrompt.startsWith(SUMMARIZATION_PROMPT_PREFIX);
     const turn = summarization ? ++summarizationTurns : ++conversationTurns;
+    const failing = summarization && turn <= failFirst;
     const entry = {
       model: `${candidate.provider}/${candidate.id}`,
       api: candidate.api,
       summarization,
       systemPrompt: systemPrompt.slice(0, 80),
-      mode: summarization && turn <= failFirst ? mode : 'normal',
+      mode: failing ? mode : 'normal',
+      stopReason: failing ? stopReason : undefined,
       options: {
         maxTokens: options?.maxTokens,
         reasoning: options?.reasoning,
@@ -157,6 +164,11 @@ export default function fakeProvider(pi: ExtensionAPI) {
         ...(totalTokens !== undefined && !summarization && !noUsage ? { totalTokens: Number(totalTokens) } : {}),
       },
     };
+    if (failing && stopReason) {
+      // A stop reason the host does not reject: it hands the partial text back as a normal result,
+      // so only the package's own reading of the response refuses it.
+      return { ...base, content: [{ type: 'text', text: PARTIAL_TEXT }], stopReason };
+    }
     if (failing && mode === 'error') {
       return { ...base, content: [], stopReason: 'error', errorMessage: 'fixture summarizer is unavailable' };
     }

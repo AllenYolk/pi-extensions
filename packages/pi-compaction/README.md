@@ -365,7 +365,11 @@ A truncated or partial summary is never persisted, at any step, including from a
 - The host throws on a length stop and on a tool call, so those never reach a result at all.
 - The package additionally refuses any response whose `stopReason` is not a clean stop, read from the
   response itself through the stream function it owns — the host returns a partially written summary
-  unchanged for a stop reason it does not recognise.
+  unchanged for a stop reason it does not recognise, `aborted` being the case the specification names.
+- An attempt whose response the package never observed is refused as well. It has proved nothing
+  about the summary, so it is not treated as a clean one. See the host-seam check: the package
+  verifies at activation that the host does await the response, so on a host that passes the check
+  this cannot happen.
 - A summary over the preset's text budget is refused, from either attempt.
 
 A cancellation stops everything. It is checked before every attempt, after every attempt and before
@@ -440,7 +444,7 @@ Prune: on
 Prune window: 16000 tokens of recent tool results
 Never prune: ask_user_question, bash, codemode, edit, fetch_content, powershell, source_check, subagent, web_search, write
 Prune gate: blocked (prefix-read-from-cache) — the previous request read 58278 cached prompt tokens, so the next request would read the same prefix
-Host seam: ok — compact() arity 12; our stream function received {apiKey, cacheRetention, env, headers, sessionId, signal}
+Host seam: ok — compact() arity 12; our stream function received {apiKey, cacheRetention, env, headers, sessionId, signal} and its result() was awaited
 Last degradation: none in this session
 ```
 
@@ -464,11 +468,16 @@ Every knob is settable from it, and each change is written back to the configura
 
 ## Host-seam check
 
-Two seams this package depends on are not documented extension APIs: the argument list of the host's
-`compact()` and the point at which it calls its stream function. Both are verified at activation —
-the arity, and an actual call through a stream function the package supplies, which needs no
-credentials and makes no request. A mismatch degrades to the host instead of letting the package
-misbehave, and the status view reports it. Tested signatures decide compatibility, not version text.
+Three seams this package depends on are not documented extension APIs: the argument list of the
+host's `compact()`, the point at which it calls its stream function, and that it awaits `result()`
+on whatever that function returns. All three are verified at activation — the arity, and an actual
+call through a stream function the package supplies, which needs no credentials and makes no
+request. A mismatch degrades to the host instead of letting the package misbehave, and the status
+view reports it. Tested signatures decide compatibility, not version text.
+
+The third is the one the package reads a response's stop reason through, which is how it refuses to
+persist a partial summary. Losing it would not break compaction — summaries would still be produced,
+just unchecked — so it is probed rather than assumed.
 
 ## Install
 

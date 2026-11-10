@@ -325,6 +325,39 @@ test('a second failure degrades to stock Pi, and the ladder cannot loop', { time
   assertNoPartialPersisted(run);
 });
 
+test('a response that did not stop cleanly is refused, and its partial text is never persisted', { timeout: 180_000 }, () => {
+  // The spec's own named case. The host rejects only `error` and `length`; an `aborted` response
+  // comes back as a normal result carrying whatever partial text it has, so the package's own
+  // reading of the stop reason is the only thing that refuses it.
+  const reason = 'the summarizer\'s response stopped with "aborted" instead of finishing, so the summary may be partial';
+  const run = runCompaction({
+    name: 'aborted-',
+    config: { enabled: true, preset: 'balanced' },
+    fixture: { STOP_REASON: 'aborted', FAIL_FIRST: 1 },
+    turns: 30,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  const attempts = ours(run.records);
+  assert.equal(attempts.length, 1, 'one attempt and no retry: a tighter configuration cannot answer a partial response');
+  assert.equal(attempts[0].stopReason, 'aborted', 'the response really did carry a stop reason the host does not reject');
+  assert.equal(stock(run.records).length, 1, 'stock Pi then compacted on its own');
+
+  // The host was willing to hand this summary back; the session must not contain it.
+  const persisted = persistedCompactions(run.session.file);
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].fromHook ?? false, false, 'the compaction that reached the session is the host\'s, not ours');
+  assertNoPartialPersisted(run);
+
+  assertAnnounced(run, {
+    preset: 'balanced',
+    summarizer: 'minimax-cn/pi-compaction-conversation \\(anthropic-messages\\)',
+    why: reason,
+  });
+  assertPaintedAfterTheRepaint(run);
+  assertRecorded(run, { preset: 'balanced', reason });
+});
+
 test('a cancellation stops the ladder and starts no new work', { timeout: 180_000 }, () => {
   const run = runCompaction({
     name: 'cancel-',
