@@ -48,7 +48,7 @@ export default function probe(pi: ExtensionAPI) {
         assert.ok(ctx.hasUI);
         assert.ok(restored, "a previous runtime patch was not restored before reload");
 
-        // Both extensions own a different seam; neither may be missing or shadowed.
+        // Three extensions own three different seams; none may be missing or shadowed.
         assert.notEqual(
           Container.prototype.render,
           pristineRender,
@@ -58,6 +58,10 @@ export default function probe(pi: ExtensionAPI) {
           SessionSelectorComponent.prototype.handleInput,
           pristineSelector,
           "pi-delete did not install its session-picker patch",
+        );
+        assert.ok(
+          pi.getCommands().some((command) => command.name === "compaction" && command.source === "extension"),
+          "pi-compaction did not register its command",
         );
 
         // Grouping and expansion, through real tool components in a real transcript.

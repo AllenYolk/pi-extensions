@@ -14,7 +14,8 @@
   "pi": {
     "extensions": [
       "./packages/pi-delete/src/index.ts",
-      "./packages/pi-minimal-display/src/index.ts"
+      "./packages/pi-minimal-display/src/index.ts",
+      "./packages/pi-compaction/src/index.ts"
     ]
   },
   "engines": {

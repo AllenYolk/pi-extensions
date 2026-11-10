@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
@@ -49,6 +49,17 @@ test('publication requires a main SHA and its complete successful Check workflow
   assert.equal(execute(dispatch).status, 0);
   assert.notEqual(execute(dispatch, { PUBLISH_COMMIT: 'main' }).status, 0);
   assert.notEqual(execute(dispatch, { GITHUB_REF: 'refs/heads/release/test' }).status, 0);
+  // The gate's passing path must be exercised against a release state this test controls, not
+  // against whatever the working branch happens to be carrying. docs/publishing.md's flow develops a
+  // change with its release intent first and applies pending changesets later, in a separate version
+  // PR — so a correct feature branch has an unapplied changeset in `.changeset/`, and the gate is
+  // supposed to reject exactly that at publication time. This clone is of the working branch, so the
+  // repository's own pending changesets are removed here before the passing assertion. The step's
+  // shell still runs verbatim against a real tree, and the synthetic changeset below still proves it
+  // rejects one.
+  for (const file of readdirSync(join(checkout, '.changeset'))) {
+    if (file.endsWith('.md') && file !== 'README.md') rmSync(join(checkout, '.changeset', file));
+  }
   assert.equal(execute('Require applied version changes').status, 0);
   writeFileSync(join(checkout, '.changeset/pending.md'), '---\n"@allenyolk/pi-delete": patch\n---\nUnapplied release\n');
   assert.notEqual(execute('Require applied version changes').status, 0);

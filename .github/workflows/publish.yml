@@ -92,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           npm exec -- changeset git-tag
-          for package in pi-delete pi-minimal-display; do
+          for package in pi-delete pi-minimal-display pi-compaction; do
             tag=$(node -p "const p = require('./packages/$package/package.json'); p.name + '@' + p.version")
             git push origin "refs/tags/$tag"
             if ! gh release view "$tag" >/dev/null 2>&1; then
@@ -108,7 +108,7 @@ jobs:
             echo "| Package | Version in tree | Version on npm |"
             echo "| --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
-          for package in pi-delete pi-minimal-display; do
+          for package in pi-delete pi-minimal-display pi-compaction; do
             name=$(node -p "require('./packages/$package/package.json').name")
             version=$(node -p "require('./packages/$package/package.json').version")
             published=$(npm view "$name@$version" version 2>/dev/null || echo "not published")

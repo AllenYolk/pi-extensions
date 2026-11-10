@@ -9,10 +9,11 @@ and can be installed, updated and used independently.
 | --- | --- |
 | [`@allenyolk/pi-delete`](packages/pi-delete/README.md) | Delete the current session and exit, optionally including its descendants; delete a subtree from Pi's session picker. |
 | [`@allenyolk/pi-minimal-display`](packages/pi-minimal-display/README.md) | Group tool activity into compact cards, with native details available on expansion. |
+| [`@allenyolk/pi-compaction`](packages/pi-compaction/README.md) | Bound Pi's compaction summary with two absolute token budgets, give the summarizer its own model and thinking level, and prune old tool results between compactions. Inert until you enable it. |
 
 ## Install
 
-Install the package you want. This is the recommended route, and the two packages update
+Install the package you want. This is the recommended route, and the packages update
 independently:
 
 ```sh
@@ -20,11 +21,22 @@ pi install npm:@allenyolk/pi-delete
 pi install npm:@allenyolk/pi-minimal-display
 ```
 
-Or install this repository as one collection, which enables both:
+`@allenyolk/pi-compaction` is not on npm yet — its first release is a candidate. Until it is
+published, take it from the collection below or load it for one run with
+`pi -e ./packages/pi-compaction/src/index.ts`.
+
+Or install this repository as one collection, which enables all three:
 
 ```sh
 pi install git:github.com/AllenYolk/pi-extensions
 ```
+
+**The collection ships a third extension, and it is inert until you explicitly enable it.**
+`@allenyolk/pi-compaction` reads `extensions/pi-compaction/config.json` in the Pi agent directory,
+where `enabled` defaults to `false`. Installing or updating the collection therefore changes nobody's
+compaction: until you set that field or run `/compaction enable`, compaction is exactly what stock Pi
+does. Enabling it is the only step that hands compaction to this package, and `/compaction disable`
+or `"preset": "off"` hands it straight back.
 
 To take only one extension from the collection, narrow it in `~/.pi/agent/settings.json`:
 
@@ -57,12 +69,13 @@ explicitly. No new npm package or collection manifest entry is added.
 ```text
 packages/pi-delete/           Package, README, source and tests
 packages/pi-minimal-display/  Package, README, source and tests
+packages/pi-compaction/       Package, README, source, tests and ADRs
 test/                        Installation and coexistence checks
 docs/                        Contributor conventions and archived history
 ```
 
-The root is a private npm workspace, not a third npm package. Packages keep their own
-versions, licenses and manifests; they share no runtime code and neither depends on the other.
+The root is a private npm workspace, not a package of its own. Packages keep their own
+versions, licenses and manifests; they share no runtime code and none depends on another.
 
 ## Development
 
@@ -73,11 +86,11 @@ npm run check
 ```
 
 `npm run check` runs each package's own checks and then the collection checks in `test/`,
-which cover git installation with resource filtering and both extensions loaded in one
+which cover git installation with resource filtering and all three extensions loaded in one
 session. The checks use disposable profiles under ignored `work/` and never touch the daily
 Pi profile or real sessions.
 
-Each package keeps the Pi version it certifies as its own development dependency, so the two
+Each package keeps the Pi version it certifies as its own development dependency, so the
 different hosts stay installed side by side. TypeScript is shared at the root.
 
 Versions are managed with [Changesets](.changeset/README.md); only the packages a change

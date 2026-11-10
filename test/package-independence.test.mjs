@@ -29,9 +29,12 @@ const declared = (agent) =>
   (JSON.parse(readFileSync(join(agent, 'settings.json'), 'utf8')).packages ?? [])
     .map(entry => resolve(agent, typeof entry === 'string' ? entry : entry.source));
 
+const nothing = { delete: false, display: false, compaction: false };
+
 for (const [directory, expected] of [
-  ['pi-delete', { delete: true, display: false }],
-  ['pi-minimal-display', { delete: false, display: true }],
+  ['pi-delete', { ...nothing, delete: true }],
+  ['pi-minimal-display', { ...nothing, display: true }],
+  ['pi-compaction', { ...nothing, compaction: true }],
 ]) {
   test(`${directory} installs, loads and removes on its own`, { timeout: 300000 }, () => {
     const { dir, manifest } = unpackedArtifact(directory);
@@ -54,6 +57,6 @@ for (const [directory, expected] of [
     const remove = runPi(agent, ['remove', dir]);
     assert.equal(remove.status, 0, remove.stderr);
     assert.deepEqual(declared(agent), []);
-    assert.deepEqual(activated(agent), { delete: false, display: false }, 'removal must deactivate it');
+    assert.deepEqual(activated(agent), nothing, 'removal must deactivate it');
   });
 }

@@ -50,6 +50,7 @@ One source repository, independently installable and versioned extension package
 | --- | --- |
 | Display grouping, rendering or host compatibility | [Display README](packages/pi-minimal-display/README.md), [render-time ADR](packages/pi-minimal-display/docs/adr/0001-project-the-transcript-at-render-time.md), [validation evidence](packages/pi-minimal-display/docs/validation.md) |
 | Session deletion, cascade or picker behavior | [Delete README](packages/pi-delete/README.md), deletion ownership in CONTEXT.md |
+| Compaction behavior, packaging or release evidence | [Compaction README](packages/pi-compaction/README.md), [validation evidence](packages/pi-compaction/docs/validation.md) |
 | Package metadata, version PRs or publishing | [Release workflow](docs/publishing.md) and the relevant manifests/workflows |
 | Issues or PR coordination | [Issue tracker](docs/agents/issue-tracker.md), [triage labels](docs/agents/triage-labels.md) |
 | Domain terminology or architecture decisions | [Domain documentation conventions](docs/agents/domain.md) |
