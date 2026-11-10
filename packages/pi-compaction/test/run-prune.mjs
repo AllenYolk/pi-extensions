@@ -15,6 +15,19 @@ const isolation = ['--offline', '--no-context-files', '--no-skills', '--no-promp
 
 /** The marker the probe writes on every session start, including after a reload. */
 export const READY = 'PI_COMPACTION_PRUNE_READY';
+/** The marker the probe writes once its report is on disk and the CLI is still running. */
+export const DONE = 'PI_COMPACTION_PRUNE_DONE';
+
+/**
+ * A script that runs the probe, then renders the status view against the run that just happened, so
+ * a caller can read the gate the extension itself reports. Ctrl-D leaves the CLI on a settled frame,
+ * the way the coexistence checks do.
+ */
+export const gateScript = [
+  { expect: READY, send: '/prune-probe\r' },
+  { expect: DONE, send: '/compaction\r' },
+  { expect: 'Prune gate:', send: '\u0004' },
+];
 
 /**
  * One real packaged-CLI run for the prune path: a disposable profile, a synthetic session whose
@@ -34,6 +47,7 @@ export function runPrune({
   turns = 8,
   turnTokens = 1_200,
   messages = 2,
+  hold = false,
   script,
   timeoutSeconds = 120,
 } = {}) {
@@ -62,6 +76,7 @@ export function runPrune({
       PI_COMPACTION_PRUNE_RESULT: resultFile,
       PI_COMPACTION_PRUNE_MODEL: model,
       PI_COMPACTION_PRUNE_MESSAGES: String(messages),
+      ...(hold ? { PI_COMPACTION_PRUNE_HOLD: '1' } : {}),
       ...Object.fromEntries(Object.entries(fixture).map(([key, value]) => [`PI_COMPACTION_FIXTURE_${key}`, String(value)])),
       ...Object.fromEntries(Object.entries(probe).map(([key, value]) => [`PI_COMPACTION_PRUNE_${key}`, String(value)])),
     },

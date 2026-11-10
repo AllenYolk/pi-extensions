@@ -15,6 +15,8 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
  * `PI_COMPACTION_FIXTURE_WRITE`    path the conversation model asks `write` to create, once
  * `PI_COMPACTION_FIXTURE_CACHE_READ`   cacheRead the conversation response reports (default 0)
  * `PI_COMPACTION_FIXTURE_CACHE_WRITE`  cacheWrite the conversation response reports (default 0)
+ * `PI_COMPACTION_FIXTURE_NO_USAGE`     report no usable usage at all, which is what a provider
+ *                                      that does not account for tokens looks like to the host
  * `PI_COMPACTION_FIXTURE_TOTAL_TOKENS` totalTokens the conversation response reports, which is what
  *                                     the host's context accounting reads when it is present
  * `PI_COMPACTION_FIXTURE_CONTEXT_WINDOW` the models' context window (default 200000)
@@ -61,6 +63,7 @@ export default function fakeProvider(pi: ExtensionAPI) {
   const writePath = process.env.PI_COMPACTION_FIXTURE_WRITE;
   const cacheRead = Number(process.env.PI_COMPACTION_FIXTURE_CACHE_READ ?? 0);
   const cacheWrite = Number(process.env.PI_COMPACTION_FIXTURE_CACHE_WRITE ?? 0);
+  const noUsage = Boolean(process.env.PI_COMPACTION_FIXTURE_NO_USAGE);
   const totalTokens = process.env.PI_COMPACTION_FIXTURE_TOTAL_TOKENS;
   const messageAgeMs = Number(process.env.PI_COMPACTION_FIXTURE_MESSAGE_AGE_MS ?? 0);
   let conversationTurns = 0;
@@ -118,15 +121,20 @@ export default function fakeProvider(pi: ExtensionAPI) {
   };
 
   function respond(candidate: AnyModel, { summarization, turn }: { summarization: boolean; turn: number }) {
-    const reported = summarization ? { cacheRead: 0, cacheWrite: 0 } : { cacheRead, cacheWrite };
+    const reported = summarization || noUsage ? { cacheRead: 0, cacheWrite: 0 } : { cacheRead, cacheWrite };
     const base = {
       role: 'assistant',
       provider: candidate.provider,
       model: candidate.id,
       timestamp: Date.now() - (summarization ? 0 : messageAgeMs),
       usage: {
-        input: 10, output: 20, ...reported, cost,
-        ...(totalTokens !== undefined && !summarization ? { totalTokens: Number(totalTokens) } : {}),
+        // A response with no tokens at all is one the host's own rule treats as having measured
+        // nothing, which is what "usage is unavailable" means to the prune gate.
+        input: noUsage && !summarization ? 0 : 10,
+        output: noUsage && !summarization ? 0 : 20,
+        ...reported,
+        cost,
+        ...(totalTokens !== undefined && !summarization && !noUsage ? { totalTokens: Number(totalTokens) } : {}),
       },
     };
     if (mode === 'error') {

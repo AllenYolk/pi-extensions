@@ -144,23 +144,53 @@ costs rather than showing it as the default.
 
 Either gate permits a prune; with neither, nothing is pruned.
 
-- **The previous request already missed the provider prompt cache**, read from the usage the host
-  recorded for it. A request that read no cached prompt tokens paid full price for its whole prefix,
-  so invalidating that prefix costs nothing that was not already being paid; a request that read
-  cached tokens has a warm prefix, and a prune inside it would buy tokens with a full-price prefill.
-  This is a measured fact rather than a clock, so it self-calibrates across providers whose cache
-  lifetimes differ.
+The measured gate asks whether the **next** request would read the cache — not whether the last one
+did. That distinction is the whole gate: a request that *wrote* prompt tokens left an entry the next
+request would read, so pruning there throws away a prefill that was just paid for. It is the most
+expensive moment to prune, not the cheapest. The usage the host recorded for the previous request
+answers the question directly, so this is a measured fact rather than a clock and it self-calibrates
+across providers whose cache lifetimes differ.
+
+| The previous request | What the next request would do | Prune? |
+| --- | --- | --- |
+| read cached prompt tokens | read the same warm prefix | no — `prefix-read-from-cache` |
+| wrote prompt tokens, read none | read the entry just written | no — `prefix-just-written` |
+| neither read nor wrote | nothing cached to hit | **yes** — `nothing-cached` |
+| reported no usable usage | unknown | the clock fallback, below |
+
+The three cache facts stay distinct in the status view, because they cost different amounts and
+"warm" on its own hides the case that matters most.
+
 - **Compaction is imminent**, tested with the host's own threshold and its own resolved
   `compaction.reserveTokens`. The prefix is about to be destroyed, so invalidating it is free.
 
-A clock threshold exists only as a **fallback** for a request that reports no cache usage at all —
-five minutes, the same prompt-cache TTL the host itself assumes. It never overrides measured usage,
-and the status view labels it as the fallback when it is what armed the prune.
+A clock threshold exists only as a **fallback** for a session in which no request reports usable
+usage at all — five minutes, the same prompt-cache TTL the host itself assumes, measured from the
+most recent request. It never overrides measured usage in any direction, and the status view labels
+it as the fallback when it is what armed the prune.
+
+### What this means on a provider with prompt caching
+
+Plainly: **on a session whose provider caches the prompt, the measured gate does not fire.** Every
+request either reads the prefix back or writes the entry the next request will read, so there is
+never a free moment between compactions — which is exactly the finding, not a defect in it.
+
+Pruning on such a session therefore runs when **compaction is imminent**: once per compaction cycle,
+just before the host would compact, where the prefix is about to be destroyed and invalidating it
+costs nothing. That is still worth doing — it shrinks what the summarizer has to read, and it can
+take the session back under the trigger and avoid the compaction entirely. The status view shows the
+gate standing down to `prefix-read-from-cache` or `prefix-just-written` immediately afterwards,
+because a context edit makes the host re-account from the projection and this session is no longer
+at the trigger.
+
+On a provider that reports no cache activity — most OpenAI-compatible endpoints, local models, many
+gateways — the measured gate fires freely, because there is no cache to protect. If you expected
+pruning to run continuously on a caching provider, it will not, and that is deliberate.
 
 Pruning targets the oldest results beyond the protected window: the position that saves the most
-tokens and invalidates the most cache, which is acceptable precisely because a gate had to permit it.
-All of a turn's edits are appended together from one turn boundary, so a turn costs one cache
-invalidation rather than one per pruned result.
+tokens and invalidates the most cache — acceptable precisely because a gate had to permit it. All of
+a turn's edits are appended together from one turn boundary, so a turn costs one cache invalidation
+rather than one per pruned result.
 
 ### The window
 
@@ -285,12 +315,12 @@ Kept window: 16000 tokens
 Prune: on
 Prune window: 16000 tokens of recent tool results
 Never prune: ask_user_question, bash, codemode, edit, fetch_content, powershell, source_check, subagent, web_search, write
-Prune gate: blocked — the previous request read 58278 cached prompt tokens, so its prefix is warm
+Prune gate: blocked (prefix-read-from-cache) — the previous request read 58278 cached prompt tokens, so the next request would read the same prefix
 Host seam: ok — compact() arity 12; our stream function received {apiKey, cacheRetention, env, headers, sessionId, signal}
 ```
 
-The gate line says whether pruning is armed right now and which gate decided it — or, when it is
-blocked, which gate is blocking it.
+The gate line says whether pruning is armed right now, names the fact that decided it, and gives the
+reason — or, when it is blocked, which of the three cache facts is blocking it.
 
 Every knob is settable from it, and each change is written back to the configuration file:
 

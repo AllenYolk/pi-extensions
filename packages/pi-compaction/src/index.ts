@@ -171,7 +171,7 @@ export default function piCompaction(pi: ExtensionAPI): void {
     report(
       ctx,
       `pruned ${plan.edits.length} tool result${many} (${plan.toolNames.join(', ')}), ` +
-      `omitting ${plan.omittedChars} characters; gate: ${gate.detail}`,
+      `omitting ${plan.omittedChars} characters; gate: ${gate.reason} — ${gate.detail}`,
       'info',
     );
     // Returning `entries` replaces that field, so any draft an earlier handler added is preserved.
@@ -334,7 +334,7 @@ export default function piCompaction(pi: ExtensionAPI): void {
       isCompactionImminent(ctx.getContextUsage(), trigger(ctx)),
       Date.now(),
     );
-    lines.push(`Prune gate: ${gate.armed ? `armed (${gate.gate})` : 'blocked'} — ${gate.detail}`);
+    lines.push(`Prune gate: ${gate.armed ? 'armed' : 'blocked'} (${gate.reason}) — ${gate.detail}`);
     return lines;
   }
 }

@@ -1,7 +1,6 @@
 import { calculateContextTokens, DEFAULT_COMPACTION_SETTINGS, estimateTokens, shouldCompact } from '@earendil-works/pi-coding-agent';
 import type { ContextEditEntryDraft, ContextUsage, ExtensionAPI, ProjectedSessionEntry } from '@earendil-works/pi-coding-agent';
 
-type ProjectedMessage = ProjectedSessionEntry['messages'][number];
 type HostSettings = ReturnType<ExtensionAPI['getSettings']>;
 
 /**
@@ -26,10 +25,10 @@ export const PLACEHOLDER_EXCERPT_CHARS = 600;
 export const ARGUMENT_DIGEST_CHARS = 240;
 
 /**
- * Fallback only, for a provider that reports no cache usage at all. The gate's real signal is the
- * usage the host recorded for the previous request, which self-calibrates across providers whose
- * cache lifetimes differ; this is a clock, so it is deliberately the same five minutes the host
- * itself treats as a prompt-cache TTL.
+ * Fallback only, for a session in which no request reports usable usage at all. The gate's real
+ * signal is the usage the host recorded for the previous request, which says directly whether the
+ * next request would read the cache; this is a clock, so it is deliberately the same five minutes
+ * the host itself treats as a prompt-cache TTL, and it never overrides measured usage.
  */
 export const CACHE_TTL_FALLBACK_MS = 5 * 60 * 1000;
 
@@ -37,30 +36,45 @@ export const CACHE_TTL_FALLBACK_MS = 5 * 60 * 1000;
 // The two gates
 // ============================================================================
 
-/** Which gate permitted a prune. `cache-ttl-fallback` is the clock, and only when usage is absent. */
-export type PruneGateName = 'cache-miss' | 'compaction-imminent' | 'cache-ttl-fallback';
+/**
+ * Which fact decided the gate.
+ *
+ * The three cache facts stay distinct on purpose. "The next request would read the prefix" and
+ * "the next request would read the entry we just paid to write" are different facts with different
+ * costs, and collapsing them into one "warm" line is what hid the second one's cost.
+ */
+export type PruneGateReason =
+  | 'compaction-imminent'
+  | 'nothing-cached'
+  | 'cache-ttl-fallback'
+  | 'prefix-read-from-cache'
+  | 'prefix-just-written'
+  | 'inside-fallback-ttl'
+  | 'no-request-observed';
 
 export interface PruneGate {
   armed: boolean;
-  gate?: PruneGateName;
+  reason: PruneGateReason;
   /** What decided it, reported verbatim by the status view and by every prune. */
   detail: string;
 }
 
-/** What the host recorded for the request that just completed. */
+/** What the host recorded for the previous request. */
 export interface RequestObservation {
+  /** Absent when that request reported no usage the host would count. */
   usage?: { cacheRead: number; cacheWrite: number };
-  /** The assistant message's own timestamp, in milliseconds. */
-  timestamp?: number;
+  /** When that request happened, in milliseconds. */
+  requestedAt?: number;
 }
 
 /**
- * Either gate permits a prune; neither, and nothing is pruned.
+ * Either gate permits a prune; with neither, nothing is pruned.
  *
- * The cache gate is a measured fact rather than a clock: a request that read no cached prompt
- * tokens paid full price for its whole prefix, so invalidating that prefix costs nothing that was
- * not already being paid. A request that read cached tokens has a warm prefix, and a prune inside it
- * would buy tokens with a full-price prefill.
+ * The measured gate asks whether the **next** request would read the cache, not whether the last
+ * one did. A request that wrote prompt tokens left an entry the next request would read, so pruning
+ * there throws away a prefill that was just paid for — the most expensive moment to prune, not the
+ * cheapest. Only a request that neither read nor wrote cache tokens leaves nothing for the next
+ * request to hit, and only then is invalidating the prefix free.
  */
 export function evaluatePruneGate(
   request: RequestObservation | undefined,
@@ -70,62 +84,82 @@ export function evaluatePruneGate(
   if (compactionImminent) {
     return {
       armed: true,
-      gate: 'compaction-imminent',
+      reason: 'compaction-imminent',
       detail: 'compaction is imminent, so the prefix is about to be destroyed and invalidating it is free',
     };
   }
   const usage = request?.usage;
-  if (usage && usage.cacheRead + usage.cacheWrite > 0) {
-    return usage.cacheRead === 0
-      ? {
-        armed: true,
-        gate: 'cache-miss',
-        detail: `the previous request read no cached prompt tokens and wrote ${usage.cacheWrite}, so its prefix is already cold`,
-      }
-      : {
+  if (usage) {
+    if (usage.cacheRead > 0) {
+      return {
         armed: false,
-        detail: `the previous request read ${usage.cacheRead} cached prompt tokens, so its prefix is warm`,
+        reason: 'prefix-read-from-cache',
+        detail: `the previous request read ${usage.cacheRead} cached prompt tokens, so the next request would read the same prefix`,
       };
+    }
+    if (usage.cacheWrite > 0) {
+      return {
+        armed: false,
+        reason: 'prefix-just-written',
+        detail: `the previous request wrote ${usage.cacheWrite} prompt tokens to the cache, so the next request would read the entry just written; pruning would pay for that prefill again`,
+      };
+    }
+    return {
+      armed: true,
+      reason: 'nothing-cached',
+      detail: 'the previous request neither read nor wrote cache tokens, so the next request has nothing cached to read',
+    };
   }
-  if (request?.timestamp === undefined) {
-    return { armed: false, detail: 'no completed request has been observed yet, so nothing says whether the cache is cold' };
+  if (request?.requestedAt === undefined) {
+    return {
+      armed: false,
+      reason: 'no-request-observed',
+      detail: 'no completed request has been observed yet, so nothing says what the next request would read',
+    };
   }
-  const age = now - request.timestamp;
+  const age = now - request.requestedAt;
   return age > CACHE_TTL_FALLBACK_MS
     ? {
       armed: true,
-      gate: 'cache-ttl-fallback',
-      detail: `the previous request reported no cache usage and was ${seconds(age)}s ago, past the ${seconds(CACHE_TTL_FALLBACK_MS)}s fallback TTL`,
+      reason: 'cache-ttl-fallback',
+      detail: `no request reported usable usage and the last one was ${seconds(age)}s ago, ` +
+        `past the ${seconds(CACHE_TTL_FALLBACK_MS)}s fallback TTL, so the cache has certainly expired`,
     }
     : {
       armed: false,
-      detail: `the previous request reported no cache usage and was ${seconds(age)}s ago, inside the ${seconds(CACHE_TTL_FALLBACK_MS)}s fallback TTL`,
+      reason: 'inside-fallback-ttl',
+      detail: `no request reported usable usage and the last one was ${seconds(age)}s ago, ` +
+        `inside the ${seconds(CACHE_TTL_FALLBACK_MS)}s fallback TTL`,
     };
 }
 
 const seconds = (ms: number) => Math.round(ms / 1000);
 
-/** The observation one assistant message yields, using the host's own rule for usable usage. */
-function requestObservation(message: ProjectedMessage): RequestObservation | undefined {
-  if (message.role !== 'assistant') return undefined;
-  const usable = message.stopReason !== 'aborted'
-    && message.stopReason !== 'error'
-    && message.usage
-    && calculateContextTokens(message.usage) > 0;
-  // An aborted, failed or usage-less response says nothing about the cache, so it is not an
-  // observation at all — the request before it is the last one that measured anything.
-  return usable
-    ? { usage: { cacheRead: message.usage.cacheRead, cacheWrite: message.usage.cacheWrite }, timestamp: message.timestamp }
-    : undefined;
-}
-
-/** The most recent request whose usage the host would count. */
+/**
+ * The previous request: the newest assistant message in the projection.
+ *
+ * Only that message is consulted. An older request's usage would say nothing about whether the
+ * cache entry it read is still alive, and an older timestamp would overstate how long the session
+ * has been idle — both of which the clock fallback would then act on.
+ */
 export function lastRequest(entries: readonly ProjectedSessionEntry[]): RequestObservation | undefined {
   for (let index = entries.length - 1; index >= 0; index--) {
     const messages = entries[index].messages;
     for (let at = messages.length - 1; at >= 0; at--) {
-      const observed = requestObservation(messages[at]);
-      if (observed) return observed;
+      const message = messages[at];
+      if (message.role !== 'assistant') continue;
+      // The host's own rule for usage it will count: an aborted, failed or all-zero response
+      // measured nothing, so it carries no cache facts.
+      const usable = message.stopReason !== 'aborted'
+        && message.stopReason !== 'error'
+        && message.usage
+        && calculateContextTokens(message.usage) > 0;
+      return {
+        requestedAt: message.timestamp,
+        ...(usable
+          ? { usage: { cacheRead: message.usage.cacheRead, cacheWrite: message.usage.cacheWrite } }
+          : {}),
+      };
     }
   }
   return undefined;

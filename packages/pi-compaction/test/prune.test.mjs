@@ -195,66 +195,95 @@ test('a placeholder that would not be smaller is not a prune', () => {
   assert.deepEqual(plan.edits, [], 'a two-character result is not worth replacing with a placeholder');
 });
 
-test('a warm cache blocks the prune and a cold one permits it', () => {
+test('the measured gate asks whether the next request would read the cache', () => {
   const now = 1_000_000_000;
-  const warm = evaluatePruneGate({ usage: { cacheRead: 40_000, cacheWrite: 900 }, timestamp: now }, false, now);
-  assert.equal(warm.armed, false);
-  assert.equal(warm.gate, undefined);
-  assert.match(warm.detail, /read 40000 cached prompt tokens/);
+  const at = (cacheRead, cacheWrite) =>
+    evaluatePruneGate({ usage: { cacheRead, cacheWrite }, requestedAt: now }, false, now);
 
-  const cold = evaluatePruneGate({ usage: { cacheRead: 0, cacheWrite: 40_000 }, timestamp: now }, false, now);
-  assert.equal(cold.armed, true);
-  assert.equal(cold.gate, 'cache-miss');
-  assert.match(cold.detail, /already cold/);
+  // Read: the prefix is warm and the next request would read it again.
+  const read = at(40_000, 900);
+  assert.equal(read.armed, false);
+  assert.equal(read.reason, 'prefix-read-from-cache');
+  assert.match(read.detail, /read 40000 cached prompt tokens, so the next request would read the same prefix/);
+
+  // Written: the request left an entry the next request would read. This is the case that used to
+  // arm the prune and throw away a prefill that had just been paid for.
+  const written = at(0, 40_000);
+  assert.equal(written.armed, false, 'a fresh cache write must not arm the prune');
+  assert.equal(written.reason, 'prefix-just-written');
+  assert.match(written.detail, /wrote 40000 prompt tokens to the cache, so the next request would read the entry just written/);
+  assert.match(written.detail, /pay for that prefill again/);
+
+  // Nothing: no cache activity at all, so the next request has nothing to hit.
+  const nothing = at(0, 0);
+  assert.equal(nothing.armed, true);
+  assert.equal(nothing.reason, 'nothing-cached');
+  assert.match(nothing.detail, /neither read nor wrote cache tokens/);
+
+  // The three facts stay distinct, so the status view can say which one is blocking.
+  assert.equal(new Set([read.reason, written.reason, nothing.reason]).size, 3);
+  assert.equal(new Set([read.detail, written.detail, nothing.detail]).size, 3);
 });
 
 test('an imminent compaction permits the prune whatever the cache is doing', () => {
   const now = 1_000_000_000;
-  for (const cache of [{ cacheRead: 40_000, cacheWrite: 0 }, { cacheRead: 0, cacheWrite: 40_000 }]) {
-    const gate = evaluatePruneGate({ usage: cache, timestamp: now }, true, now);
-    assert.equal(gate.armed, true);
-    assert.equal(gate.gate, 'compaction-imminent');
+  const caches = [{ cacheRead: 40_000, cacheWrite: 0 }, { cacheRead: 0, cacheWrite: 40_000 }, { cacheRead: 0, cacheWrite: 0 }];
+  for (const usage of caches) {
+    const gate = evaluatePruneGate({ usage, requestedAt: now }, true, now);
+    assert.equal(gate.armed, true, JSON.stringify(usage));
+    assert.equal(gate.reason, 'compaction-imminent');
   }
   // Even with no observation at all.
   const blind = evaluatePruneGate(undefined, true, now);
   assert.equal(blind.armed, true);
-  assert.equal(blind.gate, 'compaction-imminent');
+  assert.equal(blind.reason, 'compaction-imminent');
 });
 
-test('the clock applies only when the request reported no cache usage', () => {
+test('the clock applies only when no request reported usable usage', () => {
   const now = 1_000_000_000;
   const stale = now - CACHE_TTL_FALLBACK_MS - 1_000;
   const fresh = now - 1_000;
 
-  const fallback = evaluatePruneGate({ timestamp: stale }, false, now);
+  const fallback = evaluatePruneGate({ requestedAt: stale }, false, now);
   assert.equal(fallback.armed, true);
-  assert.equal(fallback.gate, 'cache-ttl-fallback');
-  assert.match(fallback.detail, /no cache usage/);
+  assert.equal(fallback.reason, 'cache-ttl-fallback');
+  assert.match(fallback.detail, /no request reported usable usage/);
 
-  assert.equal(evaluatePruneGate({ timestamp: fresh }, false, now).armed, false);
-  // A warm cache is never overridden by the clock, however old the request is.
-  const warm = evaluatePruneGate({ usage: { cacheRead: 10, cacheWrite: 0 }, timestamp: stale }, false, now);
-  assert.equal(warm.armed, false);
-  assert.equal(warm.gate, undefined);
+  const inside = evaluatePruneGate({ requestedAt: fresh }, false, now);
+  assert.equal(inside.armed, false);
+  assert.equal(inside.reason, 'inside-fallback-ttl');
+
+  // Measured usage outranks the clock in every direction, however old the request is.
+  for (const usage of [{ cacheRead: 10, cacheWrite: 0 }, { cacheRead: 0, cacheWrite: 10 }, { cacheRead: 0, cacheWrite: 0 }]) {
+    const gate = evaluatePruneGate({ usage, requestedAt: stale }, false, now);
+    assert.notEqual(gate.reason, 'cache-ttl-fallback', JSON.stringify(usage));
+    assert.equal(gate.armed, usage.cacheRead === 0 && usage.cacheWrite === 0, JSON.stringify(usage));
+  }
   // And with nothing observed at all, nothing is armed.
   const none = evaluatePruneGate(undefined, false, now);
   assert.equal(none.armed, false);
-  assert.match(none.detail, /no completed request/);
+  assert.equal(none.reason, 'no-request-observed');
 });
 
-test('the last request observation is the newest assistant message with usable usage', () => {
+test('the previous request is the newest assistant message, usable usage or not', () => {
   const { session } = buildSession({ turns: 3, tools: ['read'] });
   const observed = lastRequest(project(session).entries);
   assert.deepEqual(observed.usage, { cacheRead: 0, cacheWrite: 5_000 });
+  assert.equal(typeof observed.requestedAt, 'number');
 
-  // An aborted assistant message carries no usable usage, so the one before it stays the observation.
+  // An aborted response measured nothing, so the newest assistant message is still the observation
+  // — with no usage, which is what leaves the clock as the only signal. Its timestamp is the one
+  // that matters: an older request's would overstate how long the session has been idle.
   session.appendMessage({ role: 'user', content: 'again', timestamp: Date.now() });
   session.appendMessage({
     role: 'assistant', content: [{ type: 'text', text: 'stopped' }], timestamp: 7,
     provider: 'minimax-cn', model: 'pi-compaction-conversation', usage: usage(9, 9), stopReason: 'aborted',
   });
-  assert.deepEqual(lastRequest(project(session).entries).usage, { cacheRead: 0, cacheWrite: 5_000 });
-  // With no usable usage anywhere, there is no observation and the clock fallback cannot apply.
+  const after = lastRequest(project(session).entries);
+  assert.equal(after.usage, undefined);
+  assert.equal(after.requestedAt, 7);
+
+  // Nothing assistant-shaped at all is no observation.
   assert.equal(lastRequest([]), undefined);
 });
 

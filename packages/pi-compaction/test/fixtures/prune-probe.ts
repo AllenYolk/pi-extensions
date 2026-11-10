@@ -9,6 +9,8 @@ import { estimateTokens, type ExtensionAPI } from '@earendil-works/pi-coding-age
  * `PI_COMPACTION_PRUNE_MODEL`    `provider/model` the session runs on
  * `PI_COMPACTION_PRUNE_MESSAGES` user messages to send, one turn each (default 2)
  * `PI_COMPACTION_PRUNE_RELOADS`  `/reload` cycles before the run
+ * `PI_COMPACTION_PRUNE_HOLD`     when set, leave the CLI running after the report so a following
+ *                                `/compaction` can render the gate against the run that just happened
  */
 
 const textOf = (content: unknown): string => {
@@ -88,6 +90,10 @@ export default function probe(pi: ExtensionAPI) {
         report.error = String(error);
       }
       writeFileSync(destination, JSON.stringify(report, null, 2));
+      if (process.env.PI_COMPACTION_PRUNE_HOLD) {
+        process.stdout.write('\nPI_COMPACTION_PRUNE_DONE\n');
+        return;
+      }
       ctx.shutdown();
     },
   });

@@ -4,14 +4,20 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFAULT_NEVER_PRUNE } from '../src/config.ts';
 import { ARGUMENT_DIGEST_CHARS, CACHE_TTL_FALLBACK_MS, PLACEHOLDER_EXCERPT_CHARS } from '../src/prune.ts';
-import { contextEdits, fileEntries, READY, requests, resultEntryFor, resultsFor, runPrune } from './run-prune.mjs';
+import { contextEdits, fileEntries, gateScript, READY, requests, resultEntryFor, resultsFor, runPrune } from './run-prune.mjs';
 
 /** Stock compaction, so nothing but the prune path touches the session. */
 const base = (overrides = {}) => ({ enabled: true, preset: 'off', prune: true, pruneWindowTokens: 0, ...overrides });
-/** A cold prefix: the request wrote its prompt and read nothing from cache. */
-const COLD = { CACHE_WRITE: 50_000 };
-/** A warm prefix: the request read it back from cache. */
-const WARM = { CACHE_READ: 50_000 };
+/** The previous request read its prefix back from the cache. */
+const READ = { CACHE_READ: 50_000 };
+/** The previous request wrote its prefix to the cache and read nothing back. */
+const WROTE = { CACHE_WRITE: 50_000 };
+/** The previous request reported no cache activity, so the next one has nothing to hit. */
+const NOTHING_CACHED = {};
+/** The previous request reported no usable usage at all, which leaves only the clock. */
+const NO_USAGE = { NO_USAGE: '1' };
+/** Enough reported context to satisfy the host's own threshold, so compaction is imminent. */
+const IMMINENT = { TOTAL_TOKENS: 190_000 };
 
 const SESSION = { turns: 8, turnTokens: 3_600 };
 const TIMEOUT = { timeout: 180_000 };
@@ -46,7 +52,7 @@ test('a pruned result is absent from the next request and its tool call is still
   const run = runPrune({
     name: 'prune-main-',
     config: base(),
-    fixture: COLD,
+    fixture: NOTHING_CACHED,
     ...SESSION,
     messages: 2,
   });
@@ -96,11 +102,79 @@ test('a pruned result is absent from the next request and its tool call is still
   assertRawEntriesUntouched(run);
   // The report names the gate that permitted it, through both channels.
   assert.match(run.plain, /pi-compaction: pruned 16 tool results \(read\), omitting \d+ characters/);
-  assert.match(run.plain, /gate: the previous request read no cached prompt tokens and wrote 50000/);
+  assert.match(run.plain, /gate: nothing-cached . the previous request neither read nor wrote cache tokens/);
+});
+
+test('the gate asks whether the next request would read the cache, and says which fact decided it', TIMEOUT, () => {
+  // All four cases run the same session through the same probe; only the usage the previous
+  // request reported differs, and the status view is the witness for which fact blocked or armed it.
+  const cases = [
+    {
+      name: 'read',
+      fixture: READ,
+      armed: false,
+      reason: 'prefix-read-from-cache',
+      prose: /read 50000 cached prompt tokens, so the next request would read the same prefix/,
+    },
+    {
+      // The regression: a request that wrote prompt tokens left an entry the next request would
+      // read, so pruning there would pay for the prefill that was just bought.
+      name: 'wrote',
+      fixture: WROTE,
+      armed: false,
+      reason: 'prefix-just-written',
+      prose: /wrote 50000 prompt tokens to the cache, so the next request would read the entry just written/,
+    },
+    {
+      name: 'nothing',
+      fixture: NOTHING_CACHED,
+      armed: true,
+      reason: 'nothing-cached',
+      prose: /neither read nor wrote cache tokens, so the next request has nothing cached to read/,
+    },
+    {
+      name: 'no-usage',
+      fixture: NO_USAGE,
+      armed: false,
+      reason: 'inside-fallback-ttl',
+      prose: /no request reported usable usage and the last one was \d+s ago, inside the 300s fallback TTL/,
+    },
+  ];
+  const seen = [];
+  for (const { name, fixture, armed, reason, prose } of cases) {
+    const run = runPrune({
+      name: `prune-gate-${name}-`,
+      config: base(),
+      fixture,
+      ...SESSION,
+      messages: 1,
+      hold: true,
+      script: gateScript,
+    });
+    assert.equal(run.report.error, undefined, run.report.error);
+    const edits = contextEdits(run.after);
+    assert.equal(edits.length > 0, armed, `${name}: ${edits.length} edits`);
+    // The status view names the fact, so the owner can see which one is blocking.
+    assert.match(run.plain, new RegExp(`Prune gate: ${armed ? 'armed' : 'blocked'} \\(${reason}\\)`), name);
+    assert.match(run.plain, prose, name);
+    seen.push(reason);
+    if (armed) {
+      assert.match(run.plain, new RegExp(`gate: ${reason} . `), name);
+      assertRawEntriesUntouched(run);
+    } else {
+      assert.doesNotMatch(run.plain, /pi-compaction: pruned/, `${name} must not prune`);
+      // The result is still whole in the request the provider received.
+      const original = resultEntryFor(run.before, 'MARK-r0').message.content[0].text;
+      assert.ok(requests(run.records).at(-1).prompt.includes(original), name);
+    }
+  }
+  assert.equal(seen.length, cases.length);
+  // The facts stay distinct rather than collapsing into one "warm" line.
+  assert.equal(new Set(seen).size, seen.length);
 });
 
 test('a result on the never-prune list is never pruned, and the list is the configured one', TIMEOUT, () => {
-  const run = runPrune({ name: 'prune-never-', config: base(), fixture: COLD, ...SESSION, messages: 1 });
+  const run = runPrune({ name: 'prune-never-', config: base(), fixture: NOTHING_CACHED, ...SESSION, messages: 1 });
   assert.equal(run.report.error, undefined, run.report.error);
   const pruned = new Set(contextEdits(run.after).map((entry) => entry.targetId));
   const reads = resultsFor(run.before, 'read');
@@ -114,7 +188,7 @@ test('a result on the never-prune list is never pruned, and the list is the conf
   const swapped = runPrune({
     name: 'prune-never-swap-',
     config: base({ neverPrune: ['read'] }),
-    fixture: COLD,
+    fixture: NOTHING_CACHED,
     ...SESSION,
     messages: 1,
   });
@@ -128,56 +202,68 @@ test('a result on the never-prune list is never pruned, and the list is the conf
   assertRawEntriesUntouched(swapped);
 });
 
-test('a warm cache suppresses the prune and an imminent compaction permits it anyway', TIMEOUT, () => {
-  const warm = runPrune({ name: 'prune-warm-', config: base(), fixture: WARM, ...SESSION, messages: 2 });
-  assert.equal(warm.report.error, undefined, warm.report.error);
-  assert.deepEqual(contextEdits(warm.after), [], 'a warm prefix must not be invalidated');
-  assert.doesNotMatch(warm.plain, /pi-compaction: pruned/);
-  // The result is still whole in the request the provider received.
-  const original = resultEntryFor(warm.before, 'MARK-r0').message.content[0].text;
-  assert.ok(requests(warm.records).at(-1).prompt.includes(original));
+test('the clock applies only when no request reported usable usage', TIMEOUT, () => {
+  const stale = CACHE_TTL_FALLBACK_MS + 60_000;
 
-  // Same warm cache, but the host's own threshold is already met: the prefix is about to go.
-  const imminent = runPrune({
-    name: 'prune-imminent-',
-    config: base(),
-    fixture: { ...WARM, TOTAL_TOKENS: 190_000 },
-    ...SESSION,
-    messages: 1,
-  });
-  assert.equal(imminent.report.error, undefined, imminent.report.error);
-  assert.ok(contextEdits(imminent.after).length > 0, 'an imminent compaction permits the prune whatever the cache is doing');
-  assert.match(imminent.plain, /gate: compaction is imminent/);
-  assertRawEntriesUntouched(imminent);
-});
-
-test('the clock applies only when the request reported no cache usage', TIMEOUT, () => {
-  // No cache accounting at all, and the request is older than the fallback TTL.
-  const stale = runPrune({
+  // No usable usage anywhere, and the last request is older than the fallback TTL.
+  const aged = runPrune({
     name: 'prune-clock-stale-',
     config: base(),
-    fixture: { MESSAGE_AGE_MS: CACHE_TTL_FALLBACK_MS + 60_000 },
+    fixture: { ...NO_USAGE, MESSAGE_AGE_MS: stale },
     ...SESSION,
     messages: 1,
+    hold: true,
+    script: gateScript,
   });
-  assert.equal(stale.report.error, undefined, stale.report.error);
-  assert.ok(contextEdits(stale.after).length > 0);
-  assert.match(stale.plain, /gate: the previous request reported no cache usage and was \d+s ago, past the 300s fallback TTL/);
+  assert.equal(aged.report.error, undefined, aged.report.error);
+  assert.ok(contextEdits(aged.after).length > 0);
+  assert.match(aged.plain, /Prune gate: armed \(cache-ttl-fallback\)/);
+  assert.match(aged.plain, /gate: cache-ttl-fallback . no request reported usable usage and the last one was \d+s ago, past the 300s fallback TTL/);
 
-  // The same absent usage, inside the TTL: nothing is armed.
-  const fresh = runPrune({ name: 'prune-clock-fresh-', config: base(), ...SESSION, messages: 1 });
-  assert.equal(fresh.report.error, undefined, fresh.report.error);
-  assert.deepEqual(contextEdits(fresh.after), [], 'the fallback clock must not fire on a fresh request');
+  // Measured usage outranks the clock in every direction, however old the request is. A caching
+  // session is the case that matters: the clock must not rescue a prefix that was just written.
+  for (const [name, fixture] of [['read', READ], ['wrote', WROTE]]) {
+    const run = runPrune({
+      name: `prune-clock-${name}-`,
+      config: base(),
+      fixture: { ...fixture, MESSAGE_AGE_MS: stale },
+      ...SESSION,
+      messages: 1,
+      hold: true,
+      script: gateScript,
+    });
+    assert.deepEqual(contextEdits(run.after), [], `${name}: the clock must not override measured usage`);
+    assert.doesNotMatch(run.plain, /cache-ttl-fallback/, name);
+  }
+});
 
-  // A warm cache is never overridden by the clock, however old the request is.
-  const warmAndStale = runPrune({
-    name: 'prune-clock-warm-',
-    config: base(),
-    fixture: { ...WARM, MESSAGE_AGE_MS: CACHE_TTL_FALLBACK_MS + 60_000 },
-    ...SESSION,
-    messages: 1,
-  });
-  assert.deepEqual(contextEdits(warmAndStale.after), [], 'measured usage outranks the clock');
+test('an imminent compaction is the backstop, and it carries the load on a caching session', TIMEOUT, () => {
+  // On a provider with prompt caching, the measured arm does not fire: every request either reads
+  // the prefix or writes the entry the next one reads. Imminence is what still prunes there, which
+  // is free because the prefix is about to be destroyed either way.
+  for (const [name, fixture, reason] of [
+    ['read', READ, 'prefix-read-from-cache'],
+    ['wrote', WROTE, 'prefix-just-written'],
+  ]) {
+    const run = runPrune({
+      name: `prune-imminent-${name}-`,
+      config: base(),
+      fixture: { ...fixture, ...IMMINENT },
+      ...SESSION,
+      messages: 1,
+      hold: true,
+      script: gateScript,
+    });
+    assert.equal(run.report.error, undefined, run.report.error);
+    assert.ok(contextEdits(run.after).length > 0, `${name}: an imminent compaction must permit the prune`);
+    // The prune report is the witness for which gate permitted it.
+    assert.match(run.plain, /gate: compaction-imminent . compaction is imminent/, name);
+    // The status view is a snapshot of now, not of the prune: once a context edit exists the host
+    // re-accounts from the projection, this session is no longer at the trigger, and the gate
+    // stands down to the measured fact.
+    assert.match(run.plain, new RegExp(`Prune gate: blocked \\(${reason}\\)`), name);
+    assertRawEntriesUntouched(run);
+  }
 });
 
 test('the prune window protects recent tool results and behaves at its edges', TIMEOUT, () => {
@@ -185,7 +271,7 @@ test('the prune window protects recent tool results and behaves at its edges', T
   const wide = runPrune({
     name: 'prune-window-wide-',
     config: base({ pruneWindowTokens: 1_000_000 }),
-    fixture: COLD,
+    fixture: NOTHING_CACHED,
     ...SESSION,
     messages: 1,
   });
@@ -196,7 +282,7 @@ test('the prune window protects recent tool results and behaves at its edges', T
   const partial = runPrune({
     name: 'prune-window-mid-',
     config: base({ pruneWindowTokens: 1_200 }),
-    fixture: COLD,
+    fixture: NOTHING_CACHED,
     ...SESSION,
     messages: 1,
   });
@@ -218,7 +304,7 @@ test('the prune window protects recent tool results and behaves at its edges', T
 
 test('pruning is independent of the preset and of the summarizer strategy', TIMEOUT, () => {
   // `off` is the absence of a preset, so this run has no summarizer strategy at all and still prunes.
-  const stock = runPrune({ name: 'prune-preset-off-', config: base(), fixture: COLD, ...SESSION, messages: 1 });
+  const stock = runPrune({ name: 'prune-preset-off-', config: base(), fixture: NOTHING_CACHED, ...SESSION, messages: 1 });
   assert.ok(contextEdits(stock.after).length > 0);
   assert.equal(stock.records.filter((record) => record.summarization).length, 0, 'no summary was requested');
 
@@ -226,7 +312,7 @@ test('pruning is independent of the preset and of the summarizer strategy', TIME
   const off = runPrune({
     name: 'prune-off-',
     config: { enabled: true, preset: 'deep', prune: false },
-    fixture: COLD,
+    fixture: NOTHING_CACHED,
     ...SESSION,
     messages: 2,
   });
@@ -236,7 +322,7 @@ test('pruning is independent of the preset and of the summarizer strategy', TIME
   assert.ok(requests(off.records).at(-1).prompt.includes(original), 'the result is untouched');
 
   // Inert until enabled, whatever the file says about pruning.
-  const inert = runPrune({ name: 'prune-inert-', fixture: COLD, ...SESSION, messages: 1 });
+  const inert = runPrune({ name: 'prune-inert-', fixture: NOTHING_CACHED, ...SESSION, messages: 1 });
   assert.deepEqual(contextEdits(inert.after), [], 'an unenabled package prunes nothing');
   assertRawEntriesUntouched(inert);
 });
@@ -245,7 +331,7 @@ test('activation, reload and shutdown leave no residue', TIMEOUT, () => {
   const run = runPrune({
     name: 'prune-reload-',
     config: base(),
-    fixture: COLD,
+    fixture: NOTHING_CACHED,
     ...SESSION,
     messages: 2,
     probe: { RELOADS: 2 },
@@ -273,7 +359,7 @@ test('the command sets and shows every prune knob', TIMEOUT, () => {
   const run = runPrune({
     name: 'prune-command-',
     config: base({ pruneWindowTokens: 16_000 }),
-    fixture: COLD,
+    fixture: NOTHING_CACHED,
     ...SESSION,
     messages: 1,
     script: [
@@ -296,7 +382,10 @@ test('the command sets and shows every prune knob', TIMEOUT, () => {
   assert.match(run.plain, /Prune: on/);
   assert.match(run.plain, /Prune window: 16000 tokens of recent tool results/);
   assert.match(run.plain, /Never prune: ask_user_question, bash, codemode, edit, fetch_content, powershell, source_check, subagent, web_search, write/);
-  assert.match(run.plain, /Prune gate: blocked — no completed request has been observed yet/);
+  // The synthetic session's own turns report no usable usage, so the clock is the only signal and
+  // the last request was a moment ago. Short fragments only: the status view wraps at the PTY width.
+  assert.match(run.plain, /Prune gate: blocked \(inside-fallback-ttl\)/);
+  assert.match(run.plain, /inside the 300s fallback TTL/);
   // An emptied list says what it costs rather than looking like the default.
   assert.match(run.plain, /Never prune: \(none\) — every tool result is prunable/);
   // Pruning off is independent of the preset: `deep` is set and nothing was pruned.
@@ -315,7 +404,7 @@ test('the command sets and shows every prune knob', TIMEOUT, () => {
 });
 
 test('the placeholder bounds what it keeps', TIMEOUT, () => {
-  const run = runPrune({ name: 'prune-bounds-', config: base(), fixture: COLD, ...SESSION, messages: 1 });
+  const run = runPrune({ name: 'prune-bounds-', config: base(), fixture: NOTHING_CACHED, ...SESSION, messages: 1 });
   assert.equal(run.report.error, undefined, run.report.error);
   const edits = contextEdits(run.after);
   assert.ok(edits.length > 0);
