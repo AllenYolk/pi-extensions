@@ -1,6 +1,36 @@
 # Validation
 
-Version: `0.2.4`. Questionnaire cards default to compact; the actual `@juicesharp/rpiv-ask-user-question@2.13.8` answer/cancel and collapse/reopen paths were checked on Linux x64 with Node 24.19.0 and Pi 1.2.0. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds completed-failure cards with local failure counts and render-time model-request event folding. The Pi 1.5.0 compatibility update pins that development host for CI. The earlier Pi 1.2.0 change also passed the package check on Pi 0.99.1 and 1.1.0 before its host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+Version: `0.2.5`. Questionnaire cards default to compact; the actual `@juicesharp/rpiv-ask-user-question@2.13.8` answer/cancel and collapse/reopen paths were checked on Linux x64 with Node 24.19.0 and Pi 1.2.0. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds completed-failure cards with local failure counts and render-time model-request event folding. The Pi 1.5.1 compatibility update pins that development host for CI. The earlier Pi 1.2.0 change also passed the package check on Pi 0.99.1 and 1.1.0 before its host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+
+## Pi 1.5.1 host
+
+[Issue #13](https://github.com/AllenYolk/pi-extensions/issues/13) adds two presentation signatures and two event-handler signatures without changing the adapter's rendering or lifecycle logic. Five of the seven patched presentation methods and both `abortRetry` signatures are byte-identical to Pi 1.5.0; only `InteractiveMode.setToolsExpanded` and `InteractiveMode.handleEvent` changed. Every hash below was measured on this machine, the SDK ones from the package's own 1.5.1 development host and the CLI ones from inside the real 1.5.1 `dist/bundle` with no extension loaded, so nothing was patched when they were taken.
+
+| Method | Pi 1.5.1 SDK | Pi 1.5.1 bundled CLI |
+| --- | --- | --- |
+| `Container.render` | `3f8010cd…` (unchanged) | `1bd938ca…` (unchanged) |
+| `Container.handleMouse` | `702b6e2d…` (unchanged) | `9316e9de…` (unchanged) |
+| `AssistantMessageComponent.updateContent` | `459e3519…` (unchanged) | `1360563a…` (unchanged) |
+| `AssistantMessageComponent.render` | `b32d71cf…` (unchanged) | `706329ba…` (unchanged) |
+| `InteractiveMode.setToolsExpanded` | `e8f44ff2…` | `90657218…` |
+| `InteractiveMode.showStatus` | `0974240c…` (unchanged) | `ac16eeb7…` (unchanged) |
+| `InteractiveMode.toggleThinkingBlockVisibility` | `8bb49631…` (unchanged) | `ceb99f44…` (unchanged) |
+| `InteractiveMode.handleEvent` | `bbd5aa0d…` | `083d0f1e…` |
+| `AgentSession.abortRetry` | `bb861a58…` (unchanged) | `c4d7c104…` (unchanged) |
+
+The host seam was re-verified before either signature was allowlisted, in the SDK source and in the bundle:
+
+- `setToolsExpanded` differs only by iterating a third container, `[loadedResourcesContainer, chatContainer, pendingMessagesContainer]`. It is still synchronous, still ends with the exact `` `Tool output: ${expanded ? 'expanded' : 'collapsed'}` `` status, and still requests no render itself, so the adapter's action-scoped `showStatus` routing and its own `ui.requestRender()` remain correct. The extra container holds deferred user-bash output, which the adapter neither reads nor patches.
+- `handleEvent`'s `agent_settled` case now calls `flushPendingBashComponents()` and `this.ui.requestRender()` before `await this.checkShutdownRequested()`. The adapter observes every event before delegating to the host, so retry-chain classification is unaffected, and the flushed components are `BashExecutionComponent`, which extends `Container` rather than `ToolExecutionComponent`: they stay native and end the current display group instead of joining it. `chainSpan` only inspects indices between a chain's first and last member, so components appended after it do not disturb the projection.
+- The private state the adapter reads is unchanged: `tool-execution.js`, `assistant-message.js` and `bash-execution.js` are byte-identical between 1.5.0 and 1.5.1, `AgentSession`'s `auto_retry_start`/`auto_retry_end`/`agent_settled` emission is unchanged, and `InteractiveMode`'s `session`/`sessionManager` accessors are unchanged.
+
+On macOS arm64 with Node 24.18.0, the Pi 1.5.0 baseline passed 52/52 package tests and rendered 320/5,560 compact and 3,640/5,560 native lines. After moving only this package's development host to Pi/Tui 1.5.1, the activation regression reproduced `Pi 1.5.1 presentation methods are incompatible; using native display`; the whole package run reported 53 tests, 9 passed, 43 failed and 1 cancelled, and every failure was the fail-closed gate. Per file: `cli` 0/1, `config` 4/4, `first-paint` 0/4, `host` 0/2, `lifecycle` 1/4, `model-errors` 0/8 with 1 cancelled, `package` 0/1, `presentation` 4/28. In that state `model-errors.test.mjs` never exits: `harness()` throws at its `typeof dispose === 'function'` assertion before `close()` runs, so the `InteractiveMode` and `AgentSessionRuntime` it created are never disposed and the child process keeps the loop alive. That is a property of the existing fail-closed test path, not of Pi 1.5.1, and it disappears once the signatures are accepted.
+
+Adding the verified signatures restored 52/52 with no compatibility diagnostic, including regular/fullscreen first paint, replay, native keyboard/mouse expansion and images, retry success/failure/cancellation, ten real bundled-CLI reloads, and the six-file npm tarball loading without installed peers. One test fixture changed: the garbage-collection probe in `lifecycle.test.mjs` calls the real `setToolsExpanded` on a hand-built host-shaped object, which now also needs `pendingMessagesContainer`. The root `npm run check` passes all 84 checks (16 delete, 52 display, 16 repository integration), the same total as the Pi 1.5.0 baseline. Git-collection fixtures serve committed `HEAD`, so that portion must be rerun against the committed candidate; its exact-commit evidence and CI results are recorded in issue #13 and its release PR. The display source and packed-artifact probes load the candidate on Pi 1.5.1.
+
+The same synthetic 320-call workload renders 320/5,560 compact and 3,640/5,560 native collapsed/expanded lines on Pi 1.5.1, identical to Pi 1.5.0 and to the recorded baseline. Pi 1.5.1 native/compact medians are 0.417/0.388 ms collapsed and 0.221/0.437 ms expanded; the Pi 1.5.0 medians measured on this machine in the same session were 0.354/0.403 ms and 0.230/0.461 ms, and the recorded Pi 1.5.0 figures are 0.375/0.461 ms and 0.231/0.457 ms. These sub-millisecond differences are run-to-run noise across host versions, not an adapter hot-path change, and support no speed claim. A separate scratch probe also hashed the adapter's rendered output for native collapsed, native expanded, compact collapsed, compact expanded and post-dispose restoration on both hosts: all five SHA-256 values are identical between Pi 1.5.0 and Pi 1.5.1.
+
+These checks covered macOS arm64 and Node 24.18.0 only. Linux, Windows and other Node versions were not rerun locally, no provider-backed or model-account run was made, the extension was not activated in the daily profile, and publication is not part of this verification.
 
 ## Pi 1.5.0 host
 
@@ -134,4 +164,4 @@ npm run benchmark -- work/upstream-large-session.jsonl
 
 ## Certification limits
 
-Pi 0.85.0, 0.85.1, 0.99.1, 1.1.0 and 1.2.0 are historically tested hosts; the current development host that CI re-verifies is 1.5.0. A future Pi version is accepted only while its presentation seam matches an allowlisted tested signature; matching is compatibility evidence, not full release certification. The historical four-job CI matrix (retired-repository run 33959587401) passed on Linux/macOS with Node 22.19.0/24.12.0 at commit `bc3c8b2`; the Pi 0.99.1 release evidence is recorded in issue pi-minimal-display#26. Windows and alternative Pi runtimes are not tested by this candidate.
+Pi 0.85.0, 0.85.1, 0.99.1, 1.1.0, 1.2.0 and 1.5.0 are historically tested hosts; the current development host that CI re-verifies is 1.5.1. A future Pi version is accepted only while its presentation seam matches an allowlisted tested signature; matching is compatibility evidence, not full release certification. The historical four-job CI matrix (retired-repository run 33959587401) passed on Linux/macOS with Node 22.19.0/24.12.0 at commit `bc3c8b2`; the Pi 0.99.1 release evidence is recorded in issue pi-minimal-display#26. Windows and alternative Pi runtimes are not tested by this candidate.

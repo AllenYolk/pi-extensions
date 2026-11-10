@@ -1,5 +1,11 @@
 # @allenyolk/pi-minimal-display
 
+## 0.2.5
+
+### Patch Changes
+
+- 5748340: Accept Pi 1.5.1's tested SDK and bundled CLI presentation methods and retry event handler so compact tool cards and model-request errors no longer fall back to native display. Keep fail-closed compatibility checks and reversible patch ownership.
+
 ## 0.2.4
 
 ### Patch Changes
