@@ -1,18 +1,31 @@
 import { compact, getAgentDir } from '@earendil-works/pi-coding-agent';
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionBeforeCompactEvent, SessionBeforeCompactResult } from '@earendil-works/pi-coding-agent';
+import type {
+  ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionBeforeCompactEvent, SessionBeforeCompactResult,
+  TurnEndEvent, TurnEndEventResult,
+} from '@earendil-works/pi-coding-agent';
 import {
   configPath,
   CONVERSATION_MODEL,
+  DEFAULT_NEVER_PRUNE,
   defaults,
   effective,
   loadConfig,
   saveConfig,
   validateConfig,
   type Config,
+  type Effective,
   type Selection,
   type ThinkingLevel,
 } from './config.ts';
 import { prepareCompaction } from './preparation.ts';
+import {
+  editedTargets,
+  evaluatePruneGate,
+  hostCompactionTrigger,
+  isCompactionImminent,
+  lastRequest,
+  planPrune,
+} from './prune.ts';
 import {
   boundedStream,
   checkHostSeam,
@@ -42,6 +55,8 @@ export default function piCompaction(pi: ExtensionAPI): void {
     // host repaints over it, and a warning that can be missed is not a warning.
     console.error(line);
   };
+  /** The host's own compaction trigger for the current model, which is what "imminent" means. */
+  const trigger = (ctx: ExtensionContext) => hostCompactionTrigger(pi.getSettings(), ctx.model);
 
   pi.on('session_start', () => {
     reload();
@@ -126,8 +141,45 @@ export default function piCompaction(pi: ExtensionAPI): void {
     return { compaction: result };
   });
 
+  /**
+   * Prune at a turn boundary: the assistant and its tool results are persisted, and the next
+   * request has not been made yet. All of a turn's edits are returned together, so the turn costs
+   * one cache invalidation rather than one per pruned result.
+   */
+  pi.on('turn_end', (event: TurnEndEvent, ctx: ExtensionContext): TurnEndEventResult | void => {
+    const settings = effective(config);
+    // Inert until enabled; pruning is on once it is, and independent of the summarizer strategy.
+    if (!settings.enabled || !settings.prune) return;
+
+    const projection = ctx.sessionManager.buildSessionProjection();
+    const gate = evaluatePruneGate(
+      lastRequest(projection.entries),
+      isCompactionImminent(ctx.getContextUsage(), trigger(ctx)),
+      Date.now(),
+    );
+    if (!gate.armed) return;
+
+    const plan = planPrune({
+      entries: projection.entries,
+      editedTargetIds: editedTargets(ctx.sessionManager.getBranch()),
+      neverPrune: settings.neverPrune,
+      pruneWindowTokens: settings.pruneWindowTokens,
+    });
+    if (plan.edits.length === 0) return;
+
+    const many = plan.edits.length === 1 ? '' : 's';
+    report(
+      ctx,
+      `pruned ${plan.edits.length} tool result${many} (${plan.toolNames.join(', ')}), ` +
+      `omitting ${plan.omittedChars} characters; gate: ${gate.detail}`,
+      'info',
+    );
+    // Returning `entries` replaces that field, so any draft an earlier handler added is preserved.
+    return { entries: [...event.entries, ...plan.edits] };
+  });
+
   pi.registerCommand('compaction', {
-    description: 'Show or change bounded compaction: preset, summarizer model, thinking, budgets, kept window',
+    description: 'Show or change bounded compaction and pruning: preset, summarizer model, thinking, budgets, kept window, prune',
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const [verb, value] = args.trim().split(/\s+/, 2);
       if (!verb || verb === 'status') {
@@ -164,8 +216,38 @@ export default function piCompaction(pi: ExtensionAPI): void {
           next[field] = Number(value);
           break;
         }
+        case 'prune':
+          if (value !== 'on' && value !== 'off') return void ctx.ui.notify('usage: /compaction prune on|off', 'error');
+          next.prune = value === 'on';
+          break;
+        case 'prune-window':
+          if (!value || !/^\d+$/.test(value)) return void ctx.ui.notify('usage: /compaction prune-window <tokens>', 'error');
+          next.pruneWindowTokens = Number(value);
+          break;
+        case 'never-prune': {
+          if (!value) {
+            return void ctx.ui.notify('usage: /compaction never-prune <tool>[,<tool>…] | default | none', 'error');
+          }
+          if (value === 'default') {
+            next.neverPrune = [...DEFAULT_NEVER_PRUNE];
+            break;
+          }
+          if (value === 'none') {
+            next.neverPrune = [];
+            break;
+          }
+          const tools = value.split(',').map((tool) => tool.trim()).filter(Boolean);
+          if (tools.length === 0) {
+            return void ctx.ui.notify('usage: /compaction never-prune <tool>[,<tool>…] | default | none', 'error');
+          }
+          next.neverPrune = tools;
+          break;
+        }
         default:
-          ctx.ui.notify(`unknown setting ${verb}; try preset, model, thinking, text, reasoning, window, enable, disable`, 'error');
+          ctx.ui.notify(
+            `unknown setting ${verb}; try preset, model, thinking, text, reasoning, window, prune, prune-window, never-prune, enable, disable`,
+            'error',
+          );
           return;
       }
       const invalid = validateConfig(next);
@@ -230,8 +312,29 @@ export default function piCompaction(pi: ExtensionAPI): void {
       lines.push('Compaction: stock Pi');
     }
     lines.push(`Kept window: ${settings.keptWindowTokens} tokens`);
+    lines.push(...pruneStatus(ctx, settings));
     const checked = await seamResult();
     lines.push(`Host seam: ${checked.ok ? 'ok' : 'MISMATCH'} — ${checked.detail}`);
     return lines.join('\n');
+  }
+
+  /** Whether pruning is armed right now, and which gate decided it. */
+  function pruneStatus(ctx: ExtensionCommandContext, settings: Effective): string[] {
+    const lines = [`Prune: ${settings.prune ? 'on' : 'off'}`];
+    lines.push(`Prune window: ${settings.pruneWindowTokens} tokens of recent tool results`);
+    lines.push(settings.neverPrune.length === 0
+      ? 'Never prune: (none) — every tool result is prunable, including results the agent cannot recover by re-running'
+      : `Never prune: ${settings.neverPrune.join(', ')}`);
+    if (!settings.enabled || !settings.prune) {
+      lines.push(`Prune gate: not evaluated — pruning is ${settings.enabled ? 'off' : 'inert until the package is enabled'}`);
+      return lines;
+    }
+    const gate = evaluatePruneGate(
+      lastRequest(ctx.sessionManager.buildSessionProjection().entries),
+      isCompactionImminent(ctx.getContextUsage(), trigger(ctx)),
+      Date.now(),
+    );
+    lines.push(`Prune gate: ${gate.armed ? `armed (${gate.gate})` : 'blocked'} — ${gate.detail}`);
+    return lines;
   }
 }

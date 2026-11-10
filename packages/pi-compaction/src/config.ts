@@ -34,6 +34,29 @@ export const PRESETS: Record<PresetName, Tuple> = {
 
 export const DEFAULT_KEPT_WINDOW_TOKENS = 16_000;
 
+export const DEFAULT_PRUNE_WINDOW_TOKENS = 16_000;
+
+/**
+ * Tools whose results the agent cannot recover by re-running them, so pruning one would be
+ * information loss rather than compression. Side-effecting tools (`bash`, `edit`, `write`,
+ * `powershell`, `codemode`) and one-shot ones (a subagent's answer, a human's answer, a network
+ * response that has since changed). Correctness, not tuning: a pruned result is recoverable only by
+ * re-running its tool, and there is no recall tool. Every other tool's results are prunable, so a
+ * tool this list does not name is one you have judged re-runnable.
+ */
+export const DEFAULT_NEVER_PRUNE = [
+  'ask_user_question',
+  'bash',
+  'codemode',
+  'edit',
+  'fetch_content',
+  'powershell',
+  'source_check',
+  'subagent',
+  'web_search',
+  'write',
+];
+
 /** The file as written: `preset` plus optional per-field overrides of the preset's tuple. */
 export interface Config {
   enabled: boolean;
@@ -44,6 +67,10 @@ export interface Config {
   textBudget?: number;
   reasoningBudget?: number;
   keptWindowTokens: number;
+  /** On once the package is enabled, and switchable on its own: pruning is not a summarizer strategy. */
+  prune: boolean;
+  pruneWindowTokens: number;
+  neverPrune: string[];
 }
 
 /** What a compaction actually runs with. `tuple` is absent when compaction is stock Pi's. */
@@ -51,12 +78,18 @@ export interface Effective {
   enabled: boolean;
   preset: Selection;
   keptWindowTokens: number;
+  prune: boolean;
+  pruneWindowTokens: number;
+  neverPrune: string[];
   tuple?: Tuple;
 }
 
 const SELECTIONS: Selection[] = ['fast', 'balanced', 'deep', 'off'];
 const LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-const FIELDS = ['enabled', 'preset', 'summarizerModel', 'thinking', 'textBudget', 'reasoningBudget', 'keptWindowTokens'];
+const FIELDS = [
+  'enabled', 'preset', 'summarizerModel', 'thinking', 'textBudget', 'reasoningBudget', 'keptWindowTokens',
+  'prune', 'pruneWindowTokens', 'neverPrune',
+];
 const MAX_TOKENS = 1_000_000;
 
 export const defaults = (): Config => ({
@@ -64,6 +97,9 @@ export const defaults = (): Config => ({
   preset: 'balanced',
   summarizerModel: null,
   keptWindowTokens: DEFAULT_KEPT_WINDOW_TOKENS,
+  prune: true,
+  pruneWindowTokens: DEFAULT_PRUNE_WINDOW_TOKENS,
+  neverPrune: [...DEFAULT_NEVER_PRUNE],
 });
 
 export function configPath(agentDir: string): string {
@@ -109,6 +145,18 @@ function parse(raw: unknown): Config {
   if ('textBudget' in record) config.textBudget = integer(record.textBudget, 'textBudget', 1);
   if ('reasoningBudget' in record) config.reasoningBudget = integer(record.reasoningBudget, 'reasoningBudget', 0);
   if ('keptWindowTokens' in record) config.keptWindowTokens = integer(record.keptWindowTokens, 'keptWindowTokens', 0);
+  if ('prune' in record) {
+    if (typeof record.prune !== 'boolean') throw new Error('prune must be boolean');
+    config.prune = record.prune;
+  }
+  if ('pruneWindowTokens' in record) config.pruneWindowTokens = integer(record.pruneWindowTokens, 'pruneWindowTokens', 0);
+  if ('neverPrune' in record) {
+    const list = record.neverPrune;
+    if (!Array.isArray(list) || list.some((item) => typeof item !== 'string' || item.length === 0)) {
+      throw new Error('neverPrune must be an array of non-empty tool names');
+    }
+    config.neverPrune = [...new Set(list as string[])];
+  }
   return config;
 }
 
@@ -143,6 +191,9 @@ function toRaw(config: Config): Record<string, unknown> {
     if (config[key] !== undefined) raw[key] = config[key];
   }
   raw.keptWindowTokens = config.keptWindowTokens;
+  raw.prune = config.prune;
+  raw.pruneWindowTokens = config.pruneWindowTokens;
+  raw.neverPrune = config.neverPrune;
   return raw;
 }
 
@@ -163,7 +214,14 @@ export function saveConfig(agentDir: string, config: Config): void {
 }
 
 export function effective(config: Config): Effective {
-  const base = { enabled: config.enabled, preset: config.preset, keptWindowTokens: config.keptWindowTokens };
+  const base = {
+    enabled: config.enabled,
+    preset: config.preset,
+    keptWindowTokens: config.keptWindowTokens,
+    prune: config.prune,
+    pruneWindowTokens: config.pruneWindowTokens,
+    neverPrune: config.neverPrune,
+  };
   if (config.preset === 'off') return base;
   const preset = PRESETS[config.preset];
   return {

@@ -28,8 +28,10 @@ export function prepareCompaction(
   const projected = buildSessionProjection(branchEntries).entries;
   const previousIndex = projected.findIndex((entry) => entry.sourceEntry.type === 'compaction' && entry.messages.length > 0);
   const boundaryStart = previousIndex >= 0 ? previousIndex + 1 : 0;
-  // shortcut: cut points and token sizes come from the unedited entries, so a context edit makes
-  // the kept window look larger than it is. Use projected sizes when the prune path lands.
+  // shortcut: findCutPoint() measures the raw entries, so a pruned result counts at its full size
+  // and the kept window lands smaller than its target — the safe direction for base context.
+  // Correcting it means reimplementing the host's cut-point search over projected sizes, which is
+  // more duplication than the overshoot costs; do it if a measured kept window proves too thin.
   const sources = projected.map((entry) => entry.sourceEntry);
   const cut = findCutPoint(sources, boundaryStart, sources.length, keptWindowTokens);
   const firstKept = projected[cut.firstKeptEntryIndex]?.sourceEntry;
