@@ -1,0 +1,48 @@
+{
+  "name": "@allenyolk/pi-compaction",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Bounded Pi context compaction: a summarizer with its own model, thinking level and two output budgets.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AllenYolk/pi-extensions.git",
+    "directory": "packages/pi-compaction"
+  },
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": "./src/index.ts",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "compaction",
+    "context"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm run typecheck && npm test",
+    "sandbox": "node test/make-sandbox.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.1"
+  }
+}
