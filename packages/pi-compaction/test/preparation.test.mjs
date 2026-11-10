@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { estimateTokens, DEFAULT_COMPACTION_SETTINGS, SessionManager } from '@earendil-works/pi-coding-agent';
+import { longSession, workspace } from '../../../test/pi-collection.mjs';
 import { MAX_FILE_LIST_ENTRIES, prepareCompaction } from '../src/preparation.ts';
-import { longSession, sandbox } from './session.mjs';
-
-mkdirSync('work', { recursive: true });
 
 const hostPreparation = (fileOps = { read: new Set(), written: new Set(), edited: new Set() }, previousSummary) => ({
   firstKeptEntryId: 'host',
@@ -21,10 +19,15 @@ const hostPreparation = (fileOps = { read: new Set(), written: new Set(), edited
 const markersIn = (messages) =>
   new Set(messages.flatMap((message) => JSON.stringify(message.content ?? '').match(/MARK-[uar]\d+/g) ?? []));
 
+const box = (name) => {
+  const root = workspace(`${name}-`);
+  return { cwd: join(root, 'proj'), sessionDir: join(root, 'sessions') };
+};
+
 function built(turns = 40, turnTokens = 1_500) {
-  const box = sandbox('prep-');
-  const session = longSession({ cwd: box.proj, sessionDir: box.sessions, turns, turnTokens });
-  return { box, session, branch: session.session.getBranch() };
+  const dirs = box('prep-');
+  const session = longSession(SessionManager, { ...dirs, turns, turnTokens });
+  return { session, branch: session.session.getBranch() };
 }
 
 const tokensOf = (branch, fromId) => {
@@ -76,8 +79,8 @@ test('nothing between the summarised range and our cut point is lost', () => {
 test('a cut inside a turn keeps the turn prefix in its own summarised range', () => {
   // The budget is only exceeded by the trailing tool result, which is the case the host's own cut
   // point resolves to the preceding assistant tool call — a split turn.
-  const box = sandbox('prep-split-');
-  const session = SessionManager.create(box.proj, box.sessions);
+  const dirs = box('prep-split-');
+  const session = SessionManager.create(dirs.cwd, dirs.sessionDir);
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   for (let turn = 0; turn < 6; turn++) {
     session.appendMessage({ role: 'user', content: `MARK-u${turn} ${'x'.repeat(800)}`, timestamp: Date.now() });
@@ -123,8 +126,8 @@ test('the file blocks are capped', () => {
 });
 
 test('a native compaction\'s file lists are not carried into ours', () => {
-  const box = sandbox('prep-native-');
-  const session = SessionManager.create(box.proj, box.sessions);
+  const dirs = box('prep-native-');
+  const session = SessionManager.create(dirs.cwd, dirs.sessionDir);
   const entries = [];
   for (let turn = 0; turn < 6; turn++) {
     entries.push(session.appendMessage({ role: 'user', content: `MARK-u${turn} ${'x'.repeat(400)}`, timestamp: Date.now() }));

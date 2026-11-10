@@ -1,21 +1,27 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { piCli, packageDir, testDir } from './pi-host.mjs';
-import { longSession, sandbox } from './session.mjs';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { compactionEntry, compactionFixtures, driveHost, longSession, profile, workspace } from '../../../test/pi-collection.mjs';
+import { piCli } from './pi-host.mjs';
 
 const entries = [
-  '-e', resolve(testDir, 'fixtures/fake-provider.ts'),
-  '-e', resolve(packageDir, 'src/index.ts'),
-  '-e', resolve(testDir, 'fixtures/compaction-probe.ts'),
+  '-e', resolve(compactionFixtures, 'fake-provider.ts'),
+  '-e', compactionEntry,
+  '-e', resolve(compactionFixtures, 'compaction-probe.ts'),
 ];
 const isolation = ['--offline', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-extensions'];
 
+/** The marker the probe writes on every session start, including after a reload. */
+export const READY = 'PI_COMPACTION_PROBE_READY';
+
 /**
  * One real packaged-CLI run: a disposable profile, a synthetic session, the extension and the fake
- * provider loaded as the CLI loads them, and one or more compactions driven through the host's own
- * `/compact` path.
+ * provider loaded the way the CLI loads them, and one or more compactions driven through the host's
+ * own compaction path.
+ *
+ * The host is this package's own — the repository root resolves a different copy after hoisting —
+ * so the shared PTY driver is pointed at this package's CLI.
  */
 export function runCompaction({
   name,
@@ -25,49 +31,48 @@ export function runCompaction({
   model = 'minimax-cn/pi-compaction-conversation',
   turns = 40,
   turnTokens = 1_500,
+  script,
   timeoutSeconds = 120,
 } = {}) {
-  mkdirSync('work', { recursive: true });
-  const box = sandbox(`${name}-`);
-  writeFileSync(join(box.agent, 'settings.json'), JSON.stringify({ theme: 'dark', showCacheMissNotices: false }));
+  const box = workspace(`${name}-`);
+  const agent = profile(`${name}-agent-`);
+  const proj = join(box, 'proj');
+  const sessions = join(box, 'sessions');
   if (config) {
-    mkdirSync(join(box.agent, 'extensions/pi-compaction'), { recursive: true });
-    writeFileSync(join(box.agent, 'extensions/pi-compaction/config.json'), JSON.stringify(config, null, 2));
+    const dir = join(agent, 'extensions/pi-compaction');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'config.json'), JSON.stringify(config, null, 2));
   }
-  const session = longSession({ cwd: box.proj, sessionDir: box.sessions, turns, turnTokens });
-  const recordFile = join(box.root, 'requests.jsonl');
-  const resultFile = join(box.root, 'report.json');
+  const session = longSession(SessionManager, { cwd: proj, sessionDir: sessions, turns, turnTokens });
+  const recordFile = join(box, 'requests.jsonl');
+  const resultFile = join(box, 'report.json');
 
-  const result = spawnSync(
-    'uv',
-    ['run', '--no-project', '--python', '3.12', 'python', resolve(testDir, 'pty.py'),
-      process.execPath, piCli, ...entries, ...isolation,
-      '--session', session.file, '--session-dir', box.sessions, '/compaction-probe'],
+  const result = driveHost(
+    piCli,
+    [...entries, ...isolation, '--session', session.file, '--session-dir', sessions,
+      ...(script ? [] : ['/compaction-probe'])],
+    script ?? [],
     {
-      cwd: box.proj,
-      env: {
-        ...process.env,
-        PI_OFFLINE: '1',
-        PI_CODING_AGENT_DIR: box.agent,
-        PI_COMPACTION_PTY_TIMEOUT: String(timeoutSeconds),
-        PI_COMPACTION_FIXTURE_RECORD: recordFile,
-        PI_COMPACTION_PROBE_RESULT: resultFile,
-        PI_COMPACTION_PROBE_MODEL: model,
-        ...Object.fromEntries(Object.entries(fixture).map(([key, value]) => [`PI_COMPACTION_FIXTURE_${key}`, String(value)])),
-        ...Object.fromEntries(Object.entries(probe).map(([key, value]) => [`PI_COMPACTION_PROBE_${key}`, String(value)])),
-      },
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: (timeoutSeconds + 30) * 1000,
-      maxBuffer: 32 * 1024 * 1024,
+      PI_CODING_AGENT_DIR: agent,
+      PI_COMPACTION_FIXTURE_RECORD: recordFile,
+      PI_COMPACTION_PROBE_RESULT: resultFile,
+      PI_COMPACTION_PROBE_MODEL: model,
+      ...Object.fromEntries(Object.entries(fixture).map(([key, value]) => [`PI_COMPACTION_FIXTURE_${key}`, String(value)])),
+      ...Object.fromEntries(Object.entries(probe).map(([key, value]) => [`PI_COMPACTION_PROBE_${key}`, String(value)])),
     },
+    timeoutSeconds,
+    proj,
   );
   assert.equal(result.error, undefined, result.error?.message);
-  assert.doesNotMatch(result.stdout ?? '', /PI_COMPACTION_PTY_TIMEOUT/, 'the CLI run did not finish in time');
+  assert.doesNotMatch(result.stdout ?? '', /PI_DRIVE_TIMEOUT/, 'the CLI run did not finish in time');
+  assert.doesNotMatch(result.stderr ?? '', /PI_DRIVE_UNMATCHED/, result.stderr);
 
   const records = readRecords(recordFile);
   const report = JSON.parse(readFileSync(resultFile, 'utf8'));
-  return { box, session, report, records, stdout: result.stdout ?? '', stderr: result.stderr ?? '', status: result.status };
+  return {
+    box, agent, session, report, records, status: result.status,
+    stdout: result.stdout ?? '', plain: plainText(result.stdout ?? ''),
+  };
 }
 
 export function readRecords(file) {
@@ -77,6 +82,14 @@ export function readRecords(file) {
     if (error.code === 'ENOENT') return [];
     throw error;
   }
+}
+
+/** Terminal output with its escapes removed and its wrapping collapsed, for message assertions. */
+export function plainText(output) {
+  return output
+    .replace(/\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)/g, '')
+    .replace(/\u001B[[\]()#;?]*[0-9;]*[A-Za-z]/g, '')
+    .replace(/\s+/g, ' ');
 }
 
 export const summarizationRecords = (records) => records.filter((record) => record.summarization);

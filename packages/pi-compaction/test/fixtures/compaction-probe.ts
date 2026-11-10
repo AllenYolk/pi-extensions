@@ -29,6 +29,12 @@ const textOf = (content: unknown): string => {
 };
 
 export default function probe(pi: ExtensionAPI) {
+  // A reload replaces the runner, so the marker is written from an event rather than from the
+  // command: it is what the PTY driver waits for before sending the next step.
+  pi.on('session_start', () => {
+    process.stdout.write('\nPI_COMPACTION_PROBE_READY\n');
+  });
+
   pi.registerCommand('compaction-probe', {
     description: 'pi-compaction test harness; not part of any published package',
     handler: async (_args, ctx) => {
@@ -44,10 +50,10 @@ export default function probe(pi: ExtensionAPI) {
         if (level) pi.setThinkingLevel(level as never);
 
         const reloads = Number(process.env.PI_COMPACTION_PROBE_RELOADS ?? 0);
-        for (let round = 0; round < reloads; round++) await ctx.reload();
         report.reloads = reloads;
 
         const rounds = Number(process.env.PI_COMPACTION_PROBE_ROUNDS ?? 1);
+        const followUpTokens = Number(process.env.PI_COMPACTION_PROBE_FOLLOWUP ?? 200);
         const compactions: unknown[] = [];
         for (let round = 0; round < rounds; round++) {
           if (round > 0) {
@@ -62,12 +68,13 @@ export default function probe(pi: ExtensionAPI) {
                 resolve();
               });
             });
-            pi.sendUserMessage(`probe follow-up ${round}`);
+            pi.sendUserMessage(`probe follow-up ${round} ${'f'.repeat(followUpTokens * 4)}`);
             await settled;
           }
           compactions.push(await compactOnce(ctx));
         }
         report.compactions = compactions;
+        report.commands = pi.getCommands().map((command) => ({ name: command.name, source: command.source }));
         report.systemPromptTokens = Math.ceil(ctx.getSystemPrompt().length / 4);
         report.activeTools = pi.getActiveTools();
         report.entries = ctx.sessionManager.getEntries().map((entry) => {

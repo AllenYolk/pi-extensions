@@ -81,8 +81,8 @@ function parse(raw: unknown): Config {
   }
   if ('summarizerModel' in record) {
     const model = record.summarizerModel;
-    if (typeof model !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(model)) {
-      throw new Error('summarizerModel must be "provider/model"');
+    if (typeof model !== 'string' || (model !== CONVERSATION_MODEL && !/^[^/\s]+\/[^/\s]+$/.test(model))) {
+      throw new Error(`summarizerModel must be "provider/model" or "${CONVERSATION_MODEL}"`);
     }
     config.summarizerModel = model;
   }

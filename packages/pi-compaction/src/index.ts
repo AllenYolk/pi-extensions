@@ -36,8 +36,11 @@ export default function piCompaction(pi: ExtensionAPI): void {
   };
   const seamResult = () => (seam ??= checkHostSeam());
   const report = (ctx: ExtensionContext, message: string, type: 'info' | 'warning' | 'error' = 'warning') => {
-    if (ctx.hasUI) ctx.ui.notify(`pi-compaction: ${message}`, type);
-    else console.error(`pi-compaction: ${message}`);
+    const line = `pi-compaction: ${message}`;
+    if (ctx.hasUI) ctx.ui.notify(line, type);
+    // A notification raised from inside a compaction does not always reach the terminal before the
+    // host repaints over it, and a warning that can be missed is not a warning.
+    console.error(line);
   };
 
   pi.on('session_start', () => {
@@ -156,7 +159,7 @@ export default function piCompaction(pi: ExtensionAPI): void {
       }
       const invalid = validateConfig(next);
       if (invalid) {
-        ctx.ui.notify(`pi-compaction: ${invalid}; nothing changed`, 'error');
+        ctx.ui.notify(`pi-compaction: nothing changed; ${invalid}`, 'error');
         return;
       }
       saveConfig(getAgentDir(), next);
@@ -175,8 +178,11 @@ export default function piCompaction(pi: ExtensionAPI): void {
       const model = resolveSummarizerModel(tuple, ctx);
       const described = model ? `${model.provider}/${model.id} (${model.api})` : `${tuple.model} — not available on this host`;
       const thinking = model ? summarizerThinkingLevel(model, tuple) : tuple.thinking;
+      const why = thinking === tuple.thinking ? ''
+        : tuple.reasoningBudget === 0 ? ' (no reasoning budget)'
+          : ` (clamped from ${tuple.thinking})`;
       lines.push(`Summarizer model: ${described}`);
-      lines.push(`Thinking: ${thinking}${model && thinking !== tuple.thinking ? ` (clamped from ${tuple.thinking})` : ''}`);
+      lines.push(`Thinking: ${thinking}${why}`);
       lines.push(`Text budget: ${tuple.textBudget}`);
       lines.push(`Reasoning budget: ${tuple.reasoningBudget}`);
       lines.push(`Ceiling: ${tuple.textBudget + tuple.reasoningBudget}`);

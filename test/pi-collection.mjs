@@ -14,6 +14,8 @@ const piHostDir = dirname(dirname(fileURLToPath(import.meta.resolve('@earendil-w
 const piCli = join(piHostDir, 'dist/bundle/cli.js');
 export const deleteEntry = join(repoRoot, 'packages/pi-delete/src/index.ts');
 export const displayEntry = join(repoRoot, 'packages/pi-minimal-display/src/index.ts');
+export const compactionEntry = join(repoRoot, 'packages/pi-compaction/src/index.ts');
+export const compactionFixtures = join(repoRoot, 'packages/pi-compaction/test/fixtures');
 const driver = join(testDir, 'pty-drive.py');
 
 // Pi clones through git, which honours the developer's global proxy settings. The served
@@ -57,7 +59,7 @@ export function activated(agent) {
   assert.equal(result.status, 0, `${result.stderr}\n${result.stdout.slice(-3000)}`);
   const report = JSON.parse(readFileSync(resultFile, 'utf8'));
   assert.equal(report.hasUI, true);
-  return { delete: report.delete, display: report.display };
+  return { delete: report.delete, display: report.display, compaction: report.compaction };
 }
 
 /**
@@ -100,9 +102,18 @@ export function sessionTree(root) {
 
 /** Run the real CLI under the PTY driver with the given expect/send script. */
 export function drivePi(args, script, env = {}, timeoutSeconds = 60, cwd = repoRoot) {
+  return driveHost(piCli, args, script, env, timeoutSeconds, cwd);
+}
+
+/**
+ * The same driver against another host's CLI, for a package that certifies its own Pi version.
+ * The repository-root checks resolve the root host; a package check resolves the host its own
+ * workspace resolves, which is a different copy after npm hoisting.
+ */
+export function driveHost(cli, args, script, env = {}, timeoutSeconds = 60, cwd = repoRoot) {
   return spawnSync(
     'uv',
-    ['run', '--no-project', '--python', '3.12', 'python', driver, process.execPath, piCli, ...args],
+    ['run', '--no-project', '--python', '3.12', 'python', driver, process.execPath, cli, ...args],
     {
       cwd,
       env: {
@@ -139,6 +150,65 @@ export function git(cwd, ...args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 120000 });
   if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
   return result.stdout.trim();
+}
+
+/**
+ * A synthetic long session, built through the host's own session manager — never hand-written
+ * JSON. Every message carries a unique marker, so a caller can prove that everything above a
+ * compaction's cut point was summarised and everything below it was kept.
+ *
+ * Each turn is a user message, an assistant message with `read`/`edit` tool calls, and one tool
+ * result, sized so `turns` turns hold roughly `turns * turnTokens` host-estimated tokens — enough
+ * to cross a real compaction trigger. `createSession` is the caller's own `SessionManager`, so the
+ * file is written by the host that will read it.
+ */
+export function longSession(createSession, { cwd, sessionDir, turns = 40, turnTokens = 1_500, readFilesPerTurn = 2 }) {
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(sessionDir, { recursive: true });
+  const session = createSession.create(realpathSync(cwd), sessionDir);
+  const usage = {
+    input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+  const markers = [];
+  const files = { read: [], modified: [] };
+  // Three messages per turn, each a third of the turn's tokens at four characters per token.
+  const filler = (tokens, marker) => `${marker} ${'x'.repeat(Math.max(0, tokens * 4 - marker.length - 1))}`;
+
+  for (let turn = 0; turn < turns; turn++) {
+    const user = `MARK-u${turn}`;
+    const assistant = `MARK-a${turn}`;
+    const result = `MARK-r${turn}`;
+    markers.push(user, assistant, result);
+    const reads = Array.from({ length: readFilesPerTurn }, (_, index) => `/fixture/read-${turn}-${index}.ts`);
+    const edited = `/fixture/edit-${turn}.ts`;
+    files.read.push(...reads);
+    files.modified.push(edited);
+
+    session.appendMessage({ role: 'user', content: filler(Math.floor(turnTokens / 3), user), timestamp: Date.now() });
+    session.appendMessage({
+      role: 'assistant',
+      content: [
+        { type: 'text', text: filler(Math.floor(turnTokens / 6), assistant) },
+        ...reads.map((path, index) => ({ type: 'toolCall', id: `read-${turn}-${index}`, name: 'read', arguments: { path } })),
+        { type: 'toolCall', id: `edit-${turn}`, name: 'edit', arguments: { path: edited, oldText: 'a', newText: 'b' } },
+      ],
+      timestamp: Date.now(),
+      provider: 'minimax-cn',
+      model: 'pi-compaction-conversation',
+      usage,
+      stopReason: 'toolUse',
+    });
+    session.appendMessage({
+      role: 'toolResult',
+      toolCallId: `read-${turn}-0`,
+      toolName: 'read',
+      content: [{ type: 'text', text: filler(Math.floor(turnTokens / 2), result) }],
+      isError: false,
+      timestamp: Date.now(),
+    });
+  }
+  return { file: session.getSessionFile(), markers, files, session };
 }
 
 /**

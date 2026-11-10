@@ -95,6 +95,8 @@ test('a valid subset keeps the defaults for everything it does not mention', () 
 test('a configuration assembled by the command goes through the same validation', () => {
   assert.equal(validateConfig(defaults()), undefined);
   assert.equal(validateConfig({ ...defaults(), enabled: true, textBudget: 12_000 }), undefined);
-  assert.match(validateConfig({ ...defaults(), thinking: 'extreme' }), /thinking must be/);
+  assert.match(validateConfig({ ...defaults(), thinking: "extreme" }), /thinking must be/);
+  assert.equal(validateConfig({ ...defaults(), summarizerModel: "conversation" }), undefined);
+  assert.match(validateConfig({ ...defaults(), summarizerModel: "gpt-6-luna" }), /summarizerModel must be/);
   assert.match(validateConfig({ ...defaults(), textBudget: 0 }), /textBudget must be an integer/);
 });
