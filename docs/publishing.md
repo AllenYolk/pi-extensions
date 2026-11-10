@@ -13,8 +13,8 @@ enables gallery discovery, and host-provided `@earendil-works/pi-*` imports stay
 `"*"` peers. See [Pi packages](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/docs/packages.md)
 and [Pi extensions](https://github.com/earendil-works/pi/blob/v0.99.1/packages/coding-agent/docs/extensions.md).
 
-The repository root declares both entries, so the repository itself installs as one
-collection. The root is `private: true`; there is no third npm package.
+The repository root declares all three entries, so the repository itself installs as one
+collection. The root is `private: true`; it is not published as a package of its own.
 
 Each package manifest carries `repository.directory`, so npm shows the right subdirectory.
 
@@ -48,8 +48,8 @@ scoped package tag cannot be used as a git ref — pin the collection by commit 
 
 ## Versioning
 
-[Changesets](../.changeset/README.md) manages the two packages independently. `fixed` and
-`linked` are both empty, so a change to one package never bumps the other.
+[Changesets](../.changeset/README.md) manages the packages independently. `fixed` and
+`linked` are both empty, so a change to one package never bumps another.
 
 Add a changeset when an affected package's published behavior, source, metadata or packaged
 README changes; select only that package and the appropriate patch/minor/major intent.
@@ -74,11 +74,16 @@ must have been applied in the reviewed version PR. It publishes with `changeset 
 [trusted publishing](https://docs.npmjs.com/trusted-publishers/) over OIDC, so no npm token is
 stored in this repository.
 
-Both npm packages are bound to this repository through GitHub Actions trusted publishing.
+Both published npm packages are bound to this repository through GitHub Actions trusted publishing.
 When inspecting or repairing that configuration, the expected values are:
 
 - `@allenyolk/pi-delete` → `AllenYolk/pi-extensions`, workflow filename `publish.yml`
 - `@allenyolk/pi-minimal-display` → same repository and workflow
+
+`@allenyolk/pi-compaction` has no binding yet. A package cannot publish through this workflow until
+its own trusted-publisher record exists, so the owner must add `@allenyolk/pi-compaction` →
+`AllenYolk/pi-extensions`, workflow filename `publish.yml`, before its first release. Nothing in this
+repository can create that record.
 
 Leave Environment name empty, matching the workflow's lack of a GitHub environment, and
 allow `npm publish`. Keep credentials in the existing secret/trust mechanisms; do not add an

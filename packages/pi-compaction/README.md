@@ -157,6 +157,7 @@ across providers whose cache lifetimes differ.
 | wrote prompt tokens, read none | read the entry just written | no — `prefix-just-written` |
 | neither read nor wrote | nothing cached to hit | **yes** — `nothing-cached` |
 | reported no usable usage | unknown | the clock fallback, below |
+| no completed request observed yet | nothing says what the next one would read | no — `no-request-observed` |
 
 The three cache facts stay distinct in the status view, because they cost different amounts and
 "warm" on its own hides the case that matters most.
@@ -206,10 +207,12 @@ A window larger than the session's tool results prunes nothing at all.
 
 The host hands its summarization request options straight through, with no output ceiling of its
 own, and this package's wrapper adds the two budgets. What the provider then does with them depends
-on the model's API. Every adapter in `@earendil-works/pi-ai` was read for whether it consumes
-`thinkingBudgets` and which output field it emits; there are four shapes.
+on the model's API. The adapters below were read for whether they consume `thinkingBudgets` and
+which output field they emit; they fall into four shapes. Any other API — a newer adapter, or one
+this package has not read — is treated as a single pool, which asks for a summed ceiling rather than
+only the text budget.
 
-### Answer budget — `anthropic-messages`, `bedrock-conserve-stream`
+### Answer budget — `anthropic-messages`, `bedrock-converse-stream`
 
 `maxTokens` is the answer budget and the adapter adds the thinking budget on top of it, capped by
 `thinkingBudgets`. The package therefore passes the text budget as the output option and the
@@ -261,6 +264,9 @@ thinking tokens against `maxOutputTokens` is provider behaviour, and this packag
 so the resulting envelope is either `textBudget` or `textBudget + reasoningBudget`. The status view
 marks this API provider-dependent. Verify against your provider before relying on a number.
 
+It is classified as an answer-budget API, so the retry ladder's answer-budget rung applies: a retry
+halves both budgets.
+
 ## What changes
 
 Measured on the owner's profile, with the host's prompt and tool declarations at 34,874 tokens — a
@@ -278,8 +284,13 @@ Every clause of the following holds by construction:
 
 - The summary goes from **unbounded** — the summarizer model's own output limit, 128,000 — to
   **bounded**: 6,000, 20,000 or 36,000.
-- Base context goes from a measured **94,000** to **≤56,214 / ≤70,214 / ≤86,214**.
+- Base context goes from a measured **93,152** to **≤56,214 / ≤70,214 / ≤86,214**.
 - Growth per cycle goes from **112,464** to **≥183,018 / ≥169,018 / ≥153,018**.
+
+The 112,464 baseline was measured against an earlier 206,464-token trigger, before the reserved-token
+change; the three bounded figures are derived from today's 239,232-token trigger. The like-for-like
+baseline at that trigger is 146,080 (239,232 less the same measured 93,152 base context), so the
+growth-per-cycle gain is real but smaller than the two columns side by side suggest.
 
 `fast` is the only preset whose number is a promise rather than a bound: its reasoning budget is
 zero, so nothing else competes for the pool and 6,000 is a hard ceiling on the text. That is why the
@@ -405,6 +416,8 @@ worst-case summary and base context, the kept-window target, whether the package
 result of the host-seam check. It does not shadow the host's `/compact`.
 
 ```text
+Config: /home/you/.pi/agent/extensions/pi-compaction/config.json
+Enabled: yes
 Preset: balanced
 Summarizer model: mafia-o/gpt-6.1-sol (openai-responses)
 Thinking: medium
@@ -452,8 +465,8 @@ misbehave, and the status view reports it. Tested signatures decide compatibilit
 
 ## Install
 
-Not yet published to npm. Take it from the [pi-extensions collection](../../README.md#install), or
-load it for one run:
+Not yet published to npm — the first release, `0.1.0`, is a candidate. Take it from the
+[pi-extensions collection](../../README.md#install), or load it for one run:
 
 ```sh
 pi -e ./packages/pi-compaction/src/index.ts
@@ -461,7 +474,9 @@ pi -e ./packages/pi-compaction/src/index.ts
 
 ## Status
 
-Version `0.1.0`, a candidate. Its development host, and the host its checks run against, is
+The first release is `0.1.0`, a candidate; the manifest carries `0.0.0` until the pending changeset is
+applied in a version PR, which is what produces `0.1.0` as the first published version. Its
+development host, and the host its checks run against, is
 `@earendil-works/pi-coding-agent` 1.5.1 — the version whose seams were inspected. It adds no tools,
 so it does not change the host's prompt and tool declarations, and it never patches the host, edits
 an installed Pi or changes the host's compaction settings. It has no runtime dependencies and no peer
@@ -469,3 +484,6 @@ dependency beyond the host itself.
 
 There is no recall tool for pruned content: recovery is by re-running the tool, which is why the
 never-prune list is enforced.
+
+Tested platforms, known limits, rollback instructions, independent-review status and the list of what
+is *not* established live in [validation](docs/validation.md).
