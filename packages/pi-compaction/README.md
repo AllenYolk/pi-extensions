@@ -274,7 +274,7 @@ constant this package cannot reduce, because it adds no tools of its own — a 1
 window at the 16,000 target, and a 239,232-token compaction trigger (a 272,000-token context window
 less 32,768 reserved tokens):
 
-| Preset | Pool | Text ceiling | Base context | Growth per cycle | Guarantee |
+| Preset | Pool | Text ceiling | Base context | Growth per cycle at today's trigger | Guarantee |
 | --- | --- | --- | --- | --- | --- |
 | `fast` | 6,000 | 6,000, hard | ≤56,214 | ≥183,018 | holds by construction |
 | `balanced` | 20,000 | 20,000 | ≤70,214 | ≥169,018 | construction upper bound |
@@ -285,12 +285,19 @@ Every clause of the following holds by construction:
 - The summary goes from **unbounded** — the summarizer model's own output limit, 128,000 — to
   **bounded**: 6,000, 20,000 or 36,000.
 - Base context goes from a measured **93,152** to **≤56,214 / ≤70,214 / ≤86,214**.
-- Growth per cycle goes from **112,464** to **≥183,018 / ≥169,018 / ≥153,018**.
+- Growth per cycle goes from **146,080** to **≥183,018 / ≥169,018 / ≥153,018** — about
+  **1.25× / 1.16× / 1.05×**.
 
-The 112,464 baseline was measured against an earlier 206,464-token trigger, before the reserved-token
-change; the three bounded figures are derived from today's 239,232-token trigger. The like-for-like
-baseline at that trigger is 146,080 (239,232 less the same measured 93,152 base context), so the
-growth-per-cycle gain is real but smaller than the two columns side by side suggest.
+The 146,080 is the like-for-like baseline: the same measured 93,152-token base context, at today's
+239,232-token trigger. It is the only comparison that measures this package rather than the trigger.
+
+The specification's original baseline of 112,464 tokens per cycle was measured against an older
+206,464-token trigger, before the reserved-token change. Comparing it with the table above would
+credit this package with that trigger move as well, and most of the apparent gain is exactly that:
+the reserved-token change accounts for 33,616 of the 70,554 tokens that `fast` appears to gain, and
+33,616 of the 40,554 that `deep` appears to gain. What this package contributes at today's trigger is
+the bounded summary and the prune path — 36,938 / 22,938 / 6,938 tokens per cycle — on top of
+arithmetic that was already true before it existed.
 
 `fast` is the only preset whose number is a promise rather than a bound: its reasoning budget is
 zero, so nothing else competes for the pool and 6,000 is a hard ceiling on the text. That is why the

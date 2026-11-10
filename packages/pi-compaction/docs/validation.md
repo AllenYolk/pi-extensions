@@ -29,6 +29,17 @@ branch cut from `feat/pi-compaction-ladder`:
 | `npm pack --json --ignore-scripts` | 9 entries: `LICENSE`, `README.md`, `package.json`, `src/{config,index,ladder,preparation,prune,summarizer}.ts` |
 | `npm run benchmark` | **deliberately skipped** — see below |
 
+The root suite needed one repository change to stay green with this branch's unapplied changeset.
+`test/publish-gate.test.mjs` asserted that the publish workflow's "Require applied version changes"
+step passes on the working tree, which couples it to the branch's release state: docs/publishing.md's
+flow keeps a changeset pending until a separate version PR, and the gate exists precisely to reject
+that at publication time. The assertion now removes the repository's own pending changesets from the
+scratch clone the test already creates, so the step's real shell runs verbatim against a controlled
+tree and the synthetic pending changeset still proves it rejects one. Both directions were
+mutation-checked: a gate that never rejects and a gate that always rejects each turn the test red.
+This has bitten before — PR #15's first CI run failed the same way — so it is a repository fix, not a
+compaction-package one.
+
 Which host proves what matters here. The package's own checks resolve Pi 1.5.1 from
 `packages/pi-compaction/node_modules`, so every compaction, prune, ladder and degradation assertion —
 including the real packaged-CLI runs — is against 1.5.1. The repository-root checks resolve the root
@@ -169,10 +180,17 @@ The honest gap list. None of these is claimed anywhere in the README or the chan
 - **No Node 22 run locally.** CI covers it; this machine ran Node 24.18.0 only.
 - **The published figures are the owner's, not re-measured here.** The 34,874-token prompt-and-tools
   constant, the 93,152-token measured base context, the 15,340-token kept window and the 239,232-token
-  trigger all come from issue #11's measurements. The README's growth-per-cycle comparison mixed a
-  baseline measured against an older 206,464-token trigger with figures derived from today's
-  239,232-token trigger; the README now states the like-for-like baseline (146,080) alongside it. No
-  figure was re-measured for this ticket.
+  trigger all come from issue #11's measurements. No figure was re-measured for this ticket.
+- **The growth-per-cycle gain is much smaller than the specification's table suggests, and the README
+  now says so.** Issue #11 compares its 112,464-token baseline with the bounded figures, but that
+  baseline was measured against an older 206,464-token trigger, before the reserved-token change.
+  Against the same 93,152-token base context at today's 239,232-token trigger the baseline is
+  146,080, so this package's real improvement is 183,018 / 169,018 / 153,018 against 146,080 —
+  1.25× / 1.16× / 1.05×. Of the apparent gain in the specification's comparison, 33,616 tokens per
+  cycle are the reserved-token change alone (32,768 tokens of trigger plus the 848-token difference
+  between the issue's stated 112,464 and the 113,312 that 206,464 − 93,152 actually gives); only
+  36,938 / 22,938 / 6,938 are this package. Most of the growth improvement belongs to the trigger
+  move, not to the bounded summary.
 - **CI host-drift is a warning, not a gate.** `check.yml`'s `upstream-version` job already enumerates
   `pi-compaction` and reports when a newer Pi than 1.5.1 exists. That surfaces drift; it does not
   certify a host.
