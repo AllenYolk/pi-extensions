@@ -11,9 +11,20 @@ balanced preset sits on such an API. On the same APIs the host reserves a fixed,
 answer room, so a single tight value with a high thinking level yields a summary far smaller than
 the value suggests, or a truncated one.
 
-Two values bound the request on every provider API the extension supports and give the summary text
-a floor that a reasoning phase cannot consume. Neither value is derived from the host's reserved-token
-setting: that setting moves the compaction trigger and has never bounded summary output.
+Two values bound the request on every provider API the extension supports. Neither value is derived
+from the host's reserved-token setting: that setting moves the compaction trigger and has never
+bounded summary output.
+
+What two values do **not** give is a ceiling on the text. On every class that emits an output
+ceiling, the host reaches the provider with `textBudget + reasoningBudget`, and reasoning is drawn
+from inside that envelope, so the text can occupy the whole pool. The reasoning budget is only
+enforced where the adapter reads it: on the answer-budget APIs it caps thinking, so at least
+`textBudget` of room remains available for text; on the single-pool Responses APIs the adapter never
+reads it and sends only a reasoning effort level, which is not a token cap, so it merely enlarges
+the pool and the text has no independent bound. One Responses-family API emits no output-ceiling
+field at all. An earlier draft of this decision claimed the two values gave the text a floor a
+reasoning phase could not consume; that is false on the single-pool and no-ceiling APIs, and the
+package treats an unenforceable ceiling as a reason to hand compaction back rather than to proceed.
 
 The consequence is that the preset tuple is public configuration. Changing its shape later is a
 breaking change for anyone who has written a configuration file, so the four preset names and the
