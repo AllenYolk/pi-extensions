@@ -7,7 +7,16 @@ import { activated, git, profile, repoRoot, runPi, serveRepository, workspace } 
 const served = await serveRepository('served-');
 after(() => served.close());
 
+const all = { delete: true, display: true, compaction: true };
+const none = { delete: false, display: false, compaction: false };
+
 const declared = (agent) => JSON.parse(readFileSync(join(agent, 'settings.json'), 'utf8')).packages ?? [];
+
+/** The entries the served collection declares, in the order its manifest lists them. */
+function declaredEntries(clone) {
+  const manifest = JSON.parse(readFileSync(join(clone, 'package.json'), 'utf8'));
+  return manifest.pi.extensions;
+}
 
 function clonePath(agent) {
   const list = runPi(agent, ['list']);
@@ -17,7 +26,7 @@ function clonePath(agent) {
   return match[1];
 }
 
-test('the git collection installs and loads both extensions from source', { timeout: 300000 }, () => {
+test('the git collection installs and loads all three extensions from source', { timeout: 300000 }, () => {
   assert.equal(git(served.bare, 'rev-parse', 'main'), git(repoRoot, 'rev-parse', 'HEAD'));
   const agent = profile('install-root-');
   const install = runPi(agent, ['install', served.url]);
@@ -25,6 +34,11 @@ test('the git collection installs and loads both extensions from source', { time
   assert.deepEqual(declared(agent), [served.url]);
 
   const clone = clonePath(agent);
+  assert.deepEqual(declaredEntries(clone), [
+    './packages/pi-delete/src/index.ts',
+    './packages/pi-minimal-display/src/index.ts',
+    './packages/pi-compaction/src/index.ts',
+  ], 'the manifest declares three entries');
   assert.equal(
     existsSync(join(clone, 'packages/pi-minimal-display/dist')),
     false,
@@ -35,7 +49,9 @@ test('the git collection installs and loads both extensions from source', { time
     false,
     'a git install omits development dependencies',
   );
-  assert.deepEqual(activated(agent), { delete: true, display: true });
+  assert.deepEqual(activated(agent), all);
+  // The third entry is inert: it activates, and it has no configuration to act on.
+  assert.equal(existsSync(join(agent, 'extensions/pi-compaction/config.json')), false);
 });
 
 test('a detached checkout serves the exact reviewed commit without a local main', async () => {
@@ -57,10 +73,12 @@ test('a detached checkout serves the exact reviewed commit without a local main'
 
 test('a resource filter narrows the collection to one extension', { timeout: 300000 }, () => {
   for (const [only, expected] of [
-    ['packages/pi-delete/src/index.ts', { delete: true, display: false }],
-    ['packages/pi-minimal-display/src/index.ts', { delete: false, display: true }],
+    ['packages/pi-delete/src/index.ts', { ...none, delete: true }],
+    ['packages/pi-minimal-display/src/index.ts', { ...none, display: true }],
+    ['packages/pi-compaction/src/index.ts', { ...none, compaction: true }],
   ]) {
-    const agent = profile(`filter-${only.includes('pi-delete') ? 'delete' : 'display'}-`);
+    const label = only.split('/')[1];
+    const agent = profile(`filter-${label}-`);
     assert.equal(runPi(agent, ['install', served.url]).status, 0);
     writeFileSync(join(agent, 'settings.json'), JSON.stringify({
       theme: 'dark',
@@ -79,7 +97,7 @@ test('a pinned commit stays pinned while an unpinned source follows the branch',
   assert.equal(pinned.status, 0, pinned.stderr);
   const pinnedClone = clonePath(pinnedAgent);
   assert.equal(git(pinnedClone, 'rev-parse', 'HEAD'), head);
-  assert.deepEqual(activated(pinnedAgent), { delete: true, display: true }, 'a pinned install loads too');
+  assert.deepEqual(activated(pinnedAgent), all, 'a pinned install loads too');
 
   const followingAgent = profile('following-');
   assert.equal(runPi(followingAgent, ['install', served.url]).status, 0);

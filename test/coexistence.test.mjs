@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { deleteEntry, displayEntry, drivePi, profile, repoRoot, sessionTree } from './pi-collection.mjs';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
+import {
+  compactionEntry, compactionFixtures, deleteEntry, displayEntry, drivePi, longSession, profile, repoRoot, sessionTree, workspace,
+} from './pi-collection.mjs';
 
-/** Both extensions loaded from source, in the order a collection install uses. */
-const entries = ['-e', deleteEntry, '-e', displayEntry];
+/** All three extensions loaded from source, in the order a collection install uses. */
+const entries = ['-e', deleteEntry, '-e', displayEntry, '-e', compactionEntry];
 const isolation = ['--offline', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-extensions'];
 
 const surviving = (dir) => readdirSync(dir).filter(name => name.endsWith('.jsonl')).length;
@@ -130,4 +133,56 @@ test('both extensions install, group, expand and restore across repeated reloads
   assert.equal(report.reloads, reloads);
   assert.equal(report.groupedCalls, 3);
   assert.match(report.collapsed, /bash ×3/);
+});
+
+test('compaction stays stock while the package is present and not enabled', { timeout: 180000 }, () => {
+  // The agent directory carries no pi-compaction configuration, so the package is inert.
+  const agent = profile('coexistence-inert-');
+  assert.equal(existsSync(join(agent, 'extensions/pi-compaction/config.json')), false);
+
+  const box = workspace('coexistence-inert-');
+  const proj = join(box, 'proj');
+  const sessions = join(box, 'sessions');
+  const session = longSession(SessionManager, { cwd: proj, sessionDir: sessions, turns: 40 });
+  const recordFile = join(box, 'requests.jsonl');
+  const resultFile = join(box, 'report.json');
+
+  const result = drivePi(
+    [...entries,
+      '-e', join(compactionFixtures, 'fake-provider.ts'),
+      '-e', join(compactionFixtures, 'compaction-probe.ts'),
+      ...isolation, '--session', session.file, '--session-dir', sessions, '/compaction-probe'],
+    [],
+    {
+      PI_CODING_AGENT_DIR: agent,
+      PI_COMPACTION_FIXTURE_RECORD: recordFile,
+      PI_COMPACTION_PROBE_RESULT: resultFile,
+      PI_COMPACTION_PROBE_MODEL: 'minimax-cn/pi-compaction-conversation',
+    },
+    150,
+    proj,
+  );
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.doesNotMatch(result.stdout, /PI_DRIVE_TIMEOUT/, result.stderr);
+  const report = JSON.parse(readFileSync(resultFile, 'utf8'));
+  assert.equal(report.error, undefined, report.error);
+  assert.deepEqual(report.compactions.map((compaction) => compaction.ok), [true], JSON.stringify(report.compactions));
+
+  const persisted = readFileSync(session.file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    .filter((entry) => entry.type === 'compaction');
+  assert.equal(persisted.length, 1, 'one compaction');
+  assert.equal(persisted[0].fromHook ?? false, false, 'the compaction must not be hook-originated');
+
+  const summarizers = readFileSync(recordFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    .filter((record) => record.summarization);
+  assert.equal(summarizers.length, 1, 'stock Pi issues exactly one summarization request');
+  assert.equal(summarizers[0].model, 'minimax-cn/pi-compaction-conversation', 'stock Pi summarises with the conversation model');
+  // The package's default preset would have used minimax-cn/minimax-M3.1-Flash and would have set
+  // per-level thinking budgets; the host sets neither. Its own output option is left alone here:
+  // this repository's root host still caps a summary at 0.8 x the reserved tokens, a cap Pi 1.5.1
+  // no longer applies.
+  assert.equal(summarizers[0].options.thinkingBudgets, undefined);
+  // Stock Pi also reuses the session's own thinking level for the summary request, which is the
+  // other half of what the package exists to change; only the model and the budgets discriminate
+  // here, because this profile's session level happens to match the balanced preset's.
 });

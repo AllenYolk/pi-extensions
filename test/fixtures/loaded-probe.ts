@@ -3,11 +3,14 @@ import { Container } from "@earendil-works/pi-tui";
 import { SessionSelectorComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
- * Reports which of the two extensions actually activated, by the host seam each one owns.
+ * Reports which of the three extensions actually activated, by the host seam each one owns.
  * Pi's startup listing abbreviates entry paths once only one extension is present, so the
  * installed set is read from behaviour instead of from that text. The report is produced
  * from a command rather than a lifecycle handler, because handler order does not guarantee
  * that the other extensions have finished installing.
+ *
+ * pi-compaction owns no patched prototype: the seam it owns is the `/compaction` command its
+ * factory registers, which is present whether or not the package is enabled.
  */
 export default function probe(pi: ExtensionAPI) {
   const pristineRender = Container.prototype.render;
@@ -23,6 +26,7 @@ export default function probe(pi: ExtensionAPI) {
         JSON.stringify({
           display: Container.prototype.render !== pristineRender,
           delete: SessionSelectorComponent.prototype.handleInput !== pristineSelector,
+          compaction: pi.getCommands().some((command) => command.name === "compaction" && command.source === "extension"),
           hasUI: ctx.hasUI,
         }),
       );

@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           current=$(npm view @earendil-works/pi-coding-agent version)
           echo "Published Pi: $current" >> "$GITHUB_STEP_SUMMARY"
-          for package in pi-delete pi-minimal-display; do
+          for package in pi-delete pi-minimal-display pi-compaction; do
             tested=$(node -p "require('./packages/$package/package.json').devDependencies['@earendil-works/pi-coding-agent']")
             echo "- \`$package\` latest tested Pi: $tested" >> "$GITHUB_STEP_SUMMARY"
             if [ "$current" != "$tested" ]; then
