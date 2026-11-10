@@ -5,16 +5,69 @@ import { join } from 'node:path';
 import { MAX_FILE_LIST_ENTRIES } from '../src/preparation.ts';
 import { PRESETS, DEFAULT_NEVER_PRUNE } from '../src/config.ts';
 import { HOST_PROMPT_AND_TOOLS_TOKENS } from '../src/summarizer.ts';
-import { persistedCompactions, READY, runCompaction, summarizationRecords } from './run-compaction.mjs';
+import { persistedCompactions, READY, runCompaction, statusScript, summarizationRecords } from './run-compaction.mjs';
 
 const CONVERSATION_MODEL = 'minimax-cn/pi-compaction-conversation';
 const KEPT_WINDOW_TARGET = 16_000;
 /** The pool a preset permits: text budget plus reasoning budget, which is what bounds the request. */
 const poolOf = (tuple) => tuple.textBudget + tuple.reasoningBudget;
+/** The text a length stop carries. Nothing on any path may put it in the session. */
+const PARTIAL = 'PARTIAL-SUMMARY-MUST-NEVER-BE-PERSISTED';
+const HEADLINE = 'degraded — compaction handed back to stock Pi';
 
 const markers = (text) => new Set(text?.match(/MARK-[uar]\d+/g) ?? []);
 const keptTokens = (report) =>
   report.projection.entries.filter((entry) => entry.type !== 'compaction').reduce((sum, entry) => sum + entry.tokens, 0);
+
+/**
+ * The summarization requests this package made. Stock Pi sends no output ceiling and no thinking
+ * budget, which is exactly what distinguishes its request from either of ours.
+ */
+const ours = (records) => summarizationRecords(records).filter((record) => record.options.maxTokens !== undefined);
+const stock = (records) => summarizationRecords(records).filter((record) => record.options.maxTokens === undefined);
+
+/** Every handback announces to the same standard: which preset, why, and what the session now does. */
+function assertAnnounced(run, { preset, summarizer, why }) {
+  assert.match(run.plain, new RegExp(`pi-compaction: ${HEADLINE}`), 'the headline reaches stderr');
+  assert.match(run.plain, new RegExp(`Preset: ${preset} — summarizer ${summarizer}`), 'which preset and summarizer');
+  assert.match(run.plain, new RegExp(`Why: ${why}`), 'why it degraded');
+  assert.match(run.plain, /Now: stock Pi sends no output ceiling at all/, "what the session's behaviour now is");
+  assert.match(run.plain, /3,437 to 26,019 tokens across 16 compactions/, 'roughly what that costs');
+}
+
+/**
+ * The announcement is not a stderr line that scrolls away: the same block is painted again after the
+ * host has repainted the transcript, which only the pinned widget can do.
+ */
+function assertPaintedAfterTheRepaint(run) {
+  const repaint = run.plain.indexOf('[compaction] Compacted from');
+  assert.ok(repaint >= 0, 'the compaction repainted the transcript');
+  const after = run.plain.indexOf(HEADLINE, repaint);
+  assert.ok(after > repaint, `the announcement must be visible after the repaint, not only before it:\n${run.plain.slice(repaint, repaint + 400)}`);
+}
+
+/** The durable half: a custom session entry, which carries no LLM context, and the status view. */
+function assertRecorded(run, { preset, reason }) {
+  const entries = readFileSync(run.session.file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const recorded = entries.filter((entry) => entry.type === 'custom' && entry.customType === 'pi-compaction-degradation');
+  assert.equal(recorded.length, 1, 'the degradation is recorded in the session');
+  assert.equal(recorded[0].data.preset, preset);
+  assert.equal(recorded[0].data.reason, reason);
+  // It is a record, not context: a custom entry contributes no message to the model.
+  const projected = run.report.projection.entries.find((entry) => entry.id === recorded[0].id);
+  assert.ok(projected, 'the record is in the session projection');
+  assert.deepEqual(projected.roles, [], 'a custom entry contributes no message to the model');
+  assert.equal(projected.tokens, 0);
+}
+
+/** Nothing truncated or partial reaches the session, from any path. */
+function assertNoPartialPersisted(run) {
+  const file = readFileSync(run.session.file, 'utf8');
+  assert.equal(file.includes(PARTIAL), false, 'a truncated summary reached the session file');
+  for (const entry of persistedCompactions(run.session.file)) {
+    assert.equal(entry.summary.includes(PARTIAL), false, 'a truncated summary was persisted');
+  }
+}
 
 /** Everything above the cut point was summarised and everything below it was kept, with no overlap. */
 function assertNothingLost(run) {
@@ -123,33 +176,237 @@ test('a summarizer on an API that sends no output ceiling hands compaction back'
     config: { enabled: true, preset: 'balanced', summarizerModel: 'pi-compaction-fixture-codex/codex-summarizer' },
     turns: 30,
   });
-  assert.match(run.plain, /cannot bound the summary: openai-codex-responses sends no output-ceiling field/);
-  assert.match(run.plain, /compaction handed back to Pi/);
+  assertAnnounced(run, {
+    preset: 'balanced',
+    summarizer: 'pi-compaction-fixture-codex/codex-summarizer \\(openai-codex-responses\\)',
+    why: 'openai-codex-responses sends no output-ceiling field, so the 12000-token text budget and the 8000-token reasoning budget would both be dropped',
+  });
+  assertPaintedAfterTheRepaint(run);
   const persisted = persistedCompactions(run.session.file);
   assert.equal(persisted.length, 1);
   assert.equal(persisted[0].fromHook ?? false, false, 'the package must not claim a bound it does not have');
   const records = summarizationRecords(run.records);
   assert.equal(records.length, 1, 'only stock Pi asked for a summary');
   assert.equal(records[0].model, CONVERSATION_MODEL);
-  assert.equal(records.some((record) => record.model.includes('codex-summarizer')), false);
+  assert.equal(records.some((record) => record.model.includes('codex-summarizer')), false, 'no request was made before the handback');
 });
 
-test('a summary over the text budget is never persisted by this package', { timeout: 180_000 }, () => {
+test('a length stop is retried exactly once, with the tighter configuration its API class calls for', { timeout: 300_000 }, () => {
+  // Both enforceable classes, because the retry is not the same shape on each: the difference is
+  // whether the reasoning budget reaches the provider as a token cap.
+  const cases = [
+    {
+      name: 'answer-budget',
+      config: {},
+      model: CONVERSATION_MODEL,
+      api: 'anthropic-messages',
+      first: { maxTokens: 12_000, reasoning: 'medium', thinking: 8_000 },
+      retry: { maxTokens: 6_000, reasoning: 'medium', thinking: 4_000 },
+      instruction: false,
+    },
+    {
+      name: 'single-pool',
+      config: { summarizerModel: 'pi-compaction-fixture-pool/pool-summarizer' },
+      model: 'pi-compaction-fixture-pool/pool-summarizer',
+      api: 'openai-responses',
+      first: { maxTokens: 20_000, reasoning: 'medium', thinking: 8_000 },
+      // The envelope is left alone: the tighter configuration is the reasoning draw, which is the
+      // only thing the adapter cannot bound here, plus the budget stated in words.
+      retry: { maxTokens: 20_000, reasoning: undefined, thinking: undefined },
+      instruction: true,
+    },
+  ];
+
+  for (const shape of cases) {
+    const run = runCompaction({
+      name: `ladder-${shape.name}-`,
+      config: { enabled: true, preset: 'balanced', ...shape.config },
+      fixture: { MODE: 'length', FAIL_FIRST: 1 },
+      turns: 30,
+    });
+    assert.equal(run.report.error, undefined, run.report.error);
+
+    const attempts = ours(run.records);
+    assert.equal(attempts.length, 2, `${shape.name}: exactly one retry`);
+    assert.equal(stock(run.records).length, 0, `${shape.name}: stock Pi was never asked`);
+
+    const [first, retry] = attempts;
+    for (const [index, attempt] of attempts.entries()) {
+      assert.equal(attempt.model, shape.model, shape.name);
+      assert.equal(attempt.api, shape.api, shape.name);
+      assert.equal(attempt.mode, index === 0 ? 'length' : 'normal', `${shape.name}: attempt ${index + 1}`);
+    }
+    for (const [attempt, expected] of [[first, shape.first], [retry, shape.retry]]) {
+      assert.equal(attempt.options.maxTokens, expected.maxTokens, `${shape.name}: maxTokens`);
+      assert.equal(attempt.options.reasoning, expected.reasoning, `${shape.name}: reasoning effort`);
+      assert.equal(attempt.options.thinkingBudgets?.medium, expected.thinking, `${shape.name}: thinking budget`);
+    }
+
+    // The retry really is tighter, in the dimension that class can tighten.
+    if (shape.instruction) {
+      assert.equal(first.options.reasoning, 'medium', 'the first attempt reasons');
+      assert.equal(retry.options.reasoning, undefined, 'the retry does not draw from the pool uncapped');
+      assert.equal(retry.options.thinkingBudgets, undefined, 'and asks for no thinking budget');
+      assert.equal(retry.options.maxTokens, first.options.maxTokens, 'the envelope is left alone');
+    } else {
+      assert.ok(retry.options.maxTokens < first.options.maxTokens, 'the answer budget shrank');
+      assert.ok(retry.options.thinkingBudgets.medium < first.options.thinkingBudgets.medium, 'the thinking budget shrank');
+    }
+
+    // The budget instruction reaches the request, and only the retry's.
+    const focus = /Additional focus: Keep the entire summary within 12000 tokens/;
+    assert.equal(focus.test(first.prompt), false, `${shape.name}: the first attempt carries no instruction`);
+    assert.equal(focus.test(retry.prompt), shape.instruction, `${shape.name}: the retry's instruction`);
+
+    // The retry succeeded, so its summary is the one the session keeps.
+    const [persisted] = persistedCompactions(run.session.file);
+    assert.equal(persisted.fromHook, true, `${shape.name}: the retried summary is ours`);
+    assert.doesNotMatch(run.plain, new RegExp(HEADLINE), `${shape.name}: a successful retry is not a degradation`);
+    assertNoPartialPersisted(run);
+  }
+});
+
+test('a summary over the text budget is retried once, and the retried summary is persisted when it fits', { timeout: 180_000 }, () => {
+  const tuple = PRESETS.balanced;
   const run = runCompaction({
     name: 'oversized-',
     config: { enabled: true, preset: 'balanced' },
-    fixture: { MODE: 'oversized', SUMMARY: 2_000 },
+    fixture: { MODE: 'oversized', FAIL_FIRST: 1, SUMMARY: 2_000 },
     turns: 30,
   });
-  assert.match(run.plain, /pi-compaction: preset balanced produced a \d+-token summary/);
-  assert.match(run.plain, /over its 12000-token text budget/);
-  assert.match(run.plain, /compaction is handed back to Pi/);
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  const attempts = ours(run.records);
+  assert.equal(attempts.length, 2, 'exactly one retry');
+  assert.equal(stock(run.records).length, 0, 'stock Pi was never asked');
+  assert.deepEqual(attempts.map((attempt) => attempt.mode), ['oversized', 'normal']);
+  // Both attempts are judged against the preset's own text budget; the retry's tighter budget only
+  // shapes the request.
+  assert.equal(attempts[0].options.maxTokens, tuple.textBudget);
+  assert.equal(attempts[1].options.maxTokens, tuple.textBudget / 2, 'the retry asks for less');
+  assert.equal(attempts[1].options.thinkingBudgets.medium, tuple.reasoningBudget / 2);
+
+  const [persisted] = persistedCompactions(run.session.file);
+  assert.equal(persisted.fromHook, true, 'the retried summary is ours');
+  const tokens = Math.ceil(persisted.summary.length / 4);
+  assert.ok(tokens <= tuple.textBudget, `the persisted summary is ${tokens} tokens, over the ${tuple.textBudget}-token text budget`);
+  assert.doesNotMatch(run.plain, new RegExp(HEADLINE));
+  assertNoPartialPersisted(run);
+});
+
+test('a second failure degrades to stock Pi, and the ladder cannot loop', { timeout: 180_000 }, () => {
+  const run = runCompaction({
+    name: 'degrade-',
+    config: { enabled: true, preset: 'balanced' },
+    // Two failures, so the third summarization request — stock Pi's — is the one that succeeds. A
+    // ladder that looped would make that third request itself and would report no degradation.
+    fixture: { MODE: 'length', FAIL_FIRST: 2 },
+    turns: 30,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  const attempts = ours(run.records);
+  assert.equal(attempts.length, 2, 'two rungs, not a loop');
+  assert.equal(stock(run.records).length, 1, 'stock Pi then compacted on its own');
+
+  // The session continues, and the compaction it ends up with is the host's.
+  const [compaction] = run.report.compactions;
+  assert.equal(compaction.ok, true, compaction.error);
   const persisted = persistedCompactions(run.session.file);
   assert.equal(persisted.length, 1);
-  assert.equal(persisted[0].fromHook ?? false, false, 'the oversized summary must not be ours');
-  const ours = summarizationRecords(run.records).filter((record) => record.options.thinkingBudgets !== undefined);
-  assert.equal(ours.length, 1, 'we tried once and then handed compaction back');
-  assert.equal(summarizationRecords(run.records).length, 2, 'stock Pi then compacted on its own');
+  assert.equal(persisted[0].fromHook ?? false, false, 'the compaction entry is host-originated');
+
+  const reason =
+    'the summarizer hit its output ceiling, so the summary was incomplete, and after a tighter retry '
+    + '\\(text budget 12000 to 6000, reasoning budget 8000 to 4000\\) the summarizer hit its output ceiling, so the summary was incomplete';
+  assertAnnounced(run, { preset: 'balanced', summarizer: 'minimax-cn/pi-compaction-conversation \\(anthropic-messages\\)', why: reason });
+  assertPaintedAfterTheRepaint(run);
+  assertRecorded(run, { preset: 'balanced', reason: reason.replace(/\\([()])/g, '$1') });
+  assertNoPartialPersisted(run);
+});
+
+test('a cancellation stops the ladder and starts no new work', { timeout: 180_000 }, () => {
+  const run = runCompaction({
+    name: 'cancel-',
+    config: { enabled: true, preset: 'balanced' },
+    // The response that length-stops is the one the user cancels on, which is the moment a ladder
+    // would otherwise start a second request.
+    fixture: { MODE: 'length', ABORT_AFTER_SUMMARIZE: 1 },
+    turns: 30,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+  assert.equal(summarizationRecords(run.records).length, 1, 'no retry, and no fallback compaction behind the user');
+  assert.deepEqual(persistedCompactions(run.session.file), [], 'nothing was persisted');
+  assert.doesNotMatch(run.plain, new RegExp(HEADLINE), 'a cancellation is not a degradation');
+  assertNoPartialPersisted(run);
+});
+
+test('every path that hands compaction back announces to the same standard', { timeout: 300_000 }, () => {
+  const cases = [
+    {
+      name: 'absent-model',
+      config: { enabled: true, preset: 'balanced', summarizerModel: 'pi-compaction-fixture-pool/absent' },
+      fixture: {},
+      summarizer: 'pi-compaction-fixture-pool/absent',
+      why: 'this host does not offer summarizer model pi-compaction-fixture-pool/absent',
+      requests: 0,
+    },
+    {
+      name: 'no-credentials',
+      config: { enabled: true, preset: 'balanced', summarizerModel: 'pi-compaction-fixture-noauth/unauthenticated-summarizer' },
+      fixture: {},
+      summarizer: 'pi-compaction-fixture-noauth/unauthenticated-summarizer \\(anthropic-messages\\)',
+      why: 'the host has no configured credentials for it',
+      requests: 0,
+    },
+    {
+      name: 'model-error',
+      config: { enabled: true, preset: 'balanced' },
+      // Only our attempt errors, so stock Pi's own request is the one that compacts the session.
+      fixture: { MODE: 'error', FAIL_FIRST: 1 },
+      summarizer: 'minimax-cn/pi-compaction-conversation \\(anthropic-messages\\)',
+      why: 'the summarizer reported an error \\(Summarization failed: fixture summarizer is unavailable\\)',
+      // A tighter configuration cannot answer a model error, so it is not paid for twice.
+      requests: 1,
+    },
+    {
+      name: 'over-budget-twice',
+      config: { enabled: true, preset: 'balanced' },
+      fixture: { MODE: 'oversized', SUMMARY: 2_000 },
+      summarizer: 'minimax-cn/pi-compaction-conversation \\(anthropic-messages\\)',
+      why: 'the summarizer produced a \\d+-token summary, over the preset\\\'s 12000-token text budget, and after a tighter retry '
+        + '\\(text budget 12000 to 6000, reasoning budget 8000 to 4000\\) the summarizer produced a \\d+-token summary, over the preset\\\'s 12000-token text budget',
+      requests: 2,
+    },
+  ];
+
+  for (const shape of cases) {
+    const run = runCompaction({
+      name: `announce-${shape.name}-`,
+      config: shape.config,
+      fixture: shape.fixture,
+      turns: 30,
+      hold: true,
+      script: statusScript,
+    });
+    assert.equal(run.report.error, undefined, run.report.error);
+    assert.equal(ours(run.records).length, shape.requests, `${shape.name}: requests this package made`);
+    assert.equal(stock(run.records).length, 1, `${shape.name}: stock Pi compacted on its own`);
+
+    assertAnnounced(run, { preset: 'balanced', summarizer: shape.summarizer, why: shape.why });
+    assertPaintedAfterTheRepaint(run);
+
+    const persisted = persistedCompactions(run.session.file);
+    assert.equal(persisted.length, 1, shape.name);
+    assert.equal(persisted[0].fromHook ?? false, false, `${shape.name}: the compaction is host-originated`);
+    assertNoPartialPersisted(run);
+
+    // The record survives the run and is readable from the package's own status view afterwards.
+    const entries = readFileSync(run.session.file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const recorded = entries.filter((entry) => entry.type === 'custom' && entry.customType === 'pi-compaction-degradation');
+    assert.equal(recorded.length, 1, `${shape.name}: the degradation is recorded in the session`);
+    assert.match(run.plain, /Last degradation: preset balanced — /, `${shape.name}: the status view reports it`);
+  }
 });
 
 test('a second compaction does not inherit the first one\'s file lists', { timeout: 180_000 }, () => {

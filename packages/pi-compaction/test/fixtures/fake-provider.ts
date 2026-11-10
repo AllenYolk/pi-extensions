@@ -1,5 +1,5 @@
 import { appendFileSync } from 'node:fs';
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 /**
  * In-process fake provider. `ProviderConfig` accepts a `streamSimple` handler together with a
@@ -7,10 +7,12 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
  * no HTTP, no loopback, no separate process and no model account are involved.
  *
  * It records the options it is handed — that is where the budget assertions read from — and can
- * return a normal summary, a deliberately oversized one, or an error.
+ * return a normal summary, a deliberately oversized one, an error or a length stop.
  *
  * `PI_COMPACTION_FIXTURE_RECORD`   file the recorded requests are appended to, as JSON lines
  * `PI_COMPACTION_FIXTURE_MODE`     normal (default) | oversized | error | length
+ * `PI_COMPACTION_FIXTURE_FAIL_FIRST`  how many leading summarization requests take `MODE`; unset is
+ *                                      every one of them, so a mode is only left behind on request
  * `PI_COMPACTION_FIXTURE_SUMMARY`  summary size in host-estimated tokens (default 200)
  * `PI_COMPACTION_FIXTURE_WRITE`    path the conversation model asks `write` to create, once
  * `PI_COMPACTION_FIXTURE_CACHE_READ`   cacheRead the conversation response reports (default 0)
@@ -21,7 +23,13 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
  *                                     the host's context accounting reads when it is present
  * `PI_COMPACTION_FIXTURE_CONTEXT_WINDOW` the models' context window (default 200000)
  * `PI_COMPACTION_FIXTURE_MESSAGE_AGE_MS` backdates the conversation response's timestamp
+ * `PI_COMPACTION_FIXTURE_ABORT_AFTER_SUMMARIZE` aborts the compaction once that summarization
+ *                                     response has been produced, which is what a user pressing
+ *                                     Escape mid-compaction does
  */
+
+/** The text a length stop carries. It must never reach a persisted summary from any path. */
+const PARTIAL_TEXT = 'PARTIAL-SUMMARY-MUST-NEVER-BE-PERSISTED';
 
 const ANSWER_BUDGET_API = 'anthropic-messages';
 const POOL_API = 'openai-responses';
@@ -59,6 +67,8 @@ const model = (id: string, api: string, extra: Record<string, unknown> = {}) => 
 export default function fakeProvider(pi: ExtensionAPI) {
   const record = process.env.PI_COMPACTION_FIXTURE_RECORD;
   const mode = process.env.PI_COMPACTION_FIXTURE_MODE ?? 'normal';
+  const failFirst = Number(process.env.PI_COMPACTION_FIXTURE_FAIL_FIRST ?? Number.MAX_SAFE_INTEGER);
+  const abortAfter = Number(process.env.PI_COMPACTION_FIXTURE_ABORT_AFTER_SUMMARIZE ?? 0);
   const summaryTokens = Number(process.env.PI_COMPACTION_FIXTURE_SUMMARY ?? 200);
   const writePath = process.env.PI_COMPACTION_FIXTURE_WRITE;
   const cacheRead = Number(process.env.PI_COMPACTION_FIXTURE_CACHE_READ ?? 0);
@@ -67,18 +77,25 @@ export default function fakeProvider(pi: ExtensionAPI) {
   const totalTokens = process.env.PI_COMPACTION_FIXTURE_TOTAL_TOKENS;
   const messageAgeMs = Number(process.env.PI_COMPACTION_FIXTURE_MESSAGE_AGE_MS ?? 0);
   let conversationTurns = 0;
+  let summarizationTurns = 0;
+  // The compaction's own context, captured so a response can abort the compaction the way a user
+  // pressing Escape does. This handler is registered before the package's and returns nothing.
+  let compactionCtx: ExtensionContext | undefined;
+  pi.on('session_before_compact', (_event, ctx) => {
+    compactionCtx = ctx;
+  });
 
   const handler = (candidate: AnyModel, context: { messages?: Array<{ role: string; content?: unknown }> }, options?: AnyOptions) => {
     const system = [...(context.messages ?? [])].reverse().find((message) => message.role === 'system');
     const systemPrompt = typeof system?.content === 'string' ? system.content : '';
     const summarization = systemPrompt.startsWith(SUMMARIZATION_PROMPT_PREFIX);
-    const turn = summarization ? 0 : ++conversationTurns;
+    const turn = summarization ? ++summarizationTurns : ++conversationTurns;
     const entry = {
       model: `${candidate.provider}/${candidate.id}`,
       api: candidate.api,
       summarization,
       systemPrompt: systemPrompt.slice(0, 80),
-      mode,
+      mode: summarization && turn <= failFirst ? mode : 'normal',
       options: {
         maxTokens: options?.maxTokens,
         reasoning: options?.reasoning,
@@ -106,7 +123,9 @@ export default function fakeProvider(pi: ExtensionAPI) {
       if (record) {
         appendFileSync(record, `${JSON.stringify({ ...entry, sent, prompt: promptOf(context) })}\n`);
       }
-      return respond(candidate, { summarization, turn });
+      const message = respond(candidate, { summarization, turn });
+      if (summarization && turn === abortAfter) compactionCtx?.abort();
+      return message;
     })());
 
     return {
@@ -121,6 +140,7 @@ export default function fakeProvider(pi: ExtensionAPI) {
   };
 
   function respond(candidate: AnyModel, { summarization, turn }: { summarization: boolean; turn: number }) {
+    const failing = summarization && turn <= failFirst;
     const reported = summarization || noUsage ? { cacheRead: 0, cacheWrite: 0 } : { cacheRead, cacheWrite };
     const base = {
       role: 'assistant',
@@ -137,11 +157,11 @@ export default function fakeProvider(pi: ExtensionAPI) {
         ...(totalTokens !== undefined && !summarization && !noUsage ? { totalTokens: Number(totalTokens) } : {}),
       },
     };
-    if (mode === 'error') {
+    if (failing && mode === 'error') {
       return { ...base, content: [], stopReason: 'error', errorMessage: 'fixture summarizer is unavailable' };
     }
-    if (mode === 'length') {
-      return { ...base, content: [{ type: 'text', text: 'partial' }], stopReason: 'length' };
+    if (failing && mode === 'length') {
+      return { ...base, content: [{ type: 'text', text: PARTIAL_TEXT }], stopReason: 'length' };
     }
     if (!summarization && writePath && turn === 1) {
       return {
@@ -153,7 +173,7 @@ export default function fakeProvider(pi: ExtensionAPI) {
     if (!summarization) {
       return { ...base, content: [{ type: 'text', text: 'fixture reply' }], stopReason: 'stop' };
     }
-    const tokens = mode === 'oversized' ? summaryTokens * 10 : summaryTokens;
+    const tokens = failing && mode === 'oversized' ? summaryTokens * 10 : summaryTokens;
     return { ...base, content: [{ type: 'text', text: summaryText(tokens) }], stopReason: 'stop' };
   }
 
@@ -183,6 +203,16 @@ export default function fakeProvider(pi: ExtensionAPI) {
       // the only case in which openai-completions sends a reasoning cap.
       model('pool-summarizer-budgeted', POOL_API, { api: 'openai-completions', compat: { supportsThinkingTokenBudget: true } }),
     ] as never,
+  });
+
+  // No `apiKey`, so the host reports this provider as having no configured credentials. It exists
+  // to reach the handback that a signed-out summarizer takes.
+  pi.registerProvider('pi-compaction-fixture-noauth', {
+    name: 'fixture provider with no credentials',
+    baseUrl: 'http://127.0.0.1:1/fixture',
+    api: ANSWER_BUDGET_API,
+    streamSimple: handler as never,
+    models: [model('unauthenticated-summarizer', ANSWER_BUDGET_API)] as never,
   });
 
   pi.registerProvider('pi-compaction-fixture-codex', {

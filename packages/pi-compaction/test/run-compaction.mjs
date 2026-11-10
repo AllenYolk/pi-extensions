@@ -14,6 +14,19 @@ const isolation = ['--offline', '--no-context-files', '--no-skills', '--no-promp
 
 /** The marker the probe writes on every session start, including after a reload. */
 export const READY = 'PI_COMPACTION_PROBE_READY';
+/** The marker the probe writes once its report is on disk and the CLI is still running. */
+export const DONE = 'PI_COMPACTION_PROBE_DONE';
+
+/**
+ * A script that runs the probe, then renders the status view against the run that just happened, so
+ * a caller can read what the extension itself reports about it. Ctrl-D leaves the CLI on a settled
+ * frame, the way the prune checks do.
+ */
+export const statusScript = [
+  { expect: READY, send: '/compaction-probe\r' },
+  { expect: DONE, send: '/compaction\r' },
+  { expect: 'Host seam:', send: '\u0004' },
+];
 
 /**
  * One real packaged-CLI run: a disposable profile, a synthetic session, the extension and the fake
@@ -32,6 +45,7 @@ export function runCompaction({
   turns = 40,
   turnTokens = 1_500,
   script,
+  hold = false,
   timeoutSeconds = 120,
 } = {}) {
   const box = workspace(`${name}-`);
@@ -57,6 +71,7 @@ export function runCompaction({
       PI_COMPACTION_FIXTURE_RECORD: recordFile,
       PI_COMPACTION_PROBE_RESULT: resultFile,
       PI_COMPACTION_PROBE_MODEL: model,
+      ...(hold ? { PI_COMPACTION_PROBE_HOLD: '1' } : {}),
       ...Object.fromEntries(Object.entries(fixture).map(([key, value]) => [`PI_COMPACTION_FIXTURE_${key}`, String(value)])),
       ...Object.fromEntries(Object.entries(probe).map(([key, value]) => [`PI_COMPACTION_PROBE_${key}`, String(value)])),
     },

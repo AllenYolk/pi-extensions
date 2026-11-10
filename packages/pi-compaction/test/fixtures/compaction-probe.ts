@@ -10,6 +10,8 @@ import { estimateTokens, type ExtensionAPI, type ExtensionCommandContext } from 
  * `PI_COMPACTION_PROBE_THINKING` session thinking level, to prove it does not leak into the summarizer
  * `PI_COMPACTION_PROBE_ROUNDS`   compactions to run; a round after the first appends a turn first
  * `PI_COMPACTION_PROBE_RELOADS`  `/reload` cycles before the first compaction
+ * `PI_COMPACTION_PROBE_HOLD`     when set, leave the CLI running after the report so a following
+ *                                `/compaction` can render against the run that just happened
  */
 
 type Text = { type: 'text'; text: string };
@@ -97,6 +99,10 @@ export default function probe(pi: ExtensionAPI) {
         report.error = String(error);
       }
       writeFileSync(destination, JSON.stringify(report, null, 2));
+      if (process.env.PI_COMPACTION_PROBE_HOLD) {
+        process.stdout.write('\nPI_COMPACTION_PROBE_DONE\n');
+        return;
+      }
       ctx.shutdown();
     },
   });
