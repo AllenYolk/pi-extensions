@@ -166,6 +166,9 @@ export function longSession(createSession, { cwd, sessionDir, turns = 40, turnTo
   mkdirSync(cwd, { recursive: true });
   mkdirSync(sessionDir, { recursive: true });
   const session = createSession.create(realpathSync(cwd), sessionDir);
+  // The session records the model it was written with, the way a real one does, so a reader that
+  // resolves the conversation model before anything selects one finds it.
+  session.appendModelChange('minimax-cn', 'pi-compaction-conversation');
   const usage = {
     input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },

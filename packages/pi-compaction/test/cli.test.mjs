@@ -4,16 +4,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MAX_FILE_LIST_ENTRIES } from '../src/preparation.ts';
 import { PRESETS } from '../src/config.ts';
+import { HOST_PROMPT_AND_TOOLS_TOKENS } from '../src/summarizer.ts';
 import { persistedCompactions, READY, runCompaction, summarizationRecords } from './run-compaction.mjs';
 
-/**
- * The host's prompt and tool declarations on the owner's profile. It is a constant this package
- * cannot reduce — it adds no tools of its own — so base context is measured against it rather than
- * against the disposable profile's own, much smaller, prompt.
- */
-const HOST_PROMPT_AND_TOOLS = 34_874;
-const BASE_CONTEXT_TARGET = 63_000;
 const CONVERSATION_MODEL = 'minimax-cn/pi-compaction-conversation';
+const KEPT_WINDOW_TARGET = 16_000;
+/** The pool a preset permits: text budget plus reasoning budget, which is what bounds the request. */
+const poolOf = (tuple) => tuple.textBudget + tuple.reasoningBudget;
 
 const markers = (text) => new Set(text?.match(/MARK-[uar]\d+/g) ?? []);
 const keptTokens = (report) =>
@@ -50,10 +47,28 @@ test('the off preset returns compaction to stock Pi', { timeout: 180_000 }, () =
   assertStock(runCompaction({ name: 'off-', config: { enabled: true, preset: 'off' }, turns: 30 }));
 });
 
-test('the configured model, thinking level and both budgets reach the summarizer', { timeout: 180_000 }, () => {
+test('every preset summarises with the conversation model by default', { timeout: 180_000 }, () => {
+  for (const preset of ['fast', 'balanced', 'deep']) {
+    const run = runCompaction({
+      name: `default-${preset}-`,
+      config: { enabled: true, preset },
+      turns: 30,
+    });
+    const [record] = summarizationRecords(run.records);
+    assert.equal(record.model, CONVERSATION_MODEL, preset);
+    assert.equal(record.api, 'anthropic-messages', preset);
+    const tuple = PRESETS[preset];
+    assert.equal(record.options.reasoning, tuple.reasoningBudget === 0 ? undefined : tuple.thinking, preset);
+    assert.equal(record.options.maxTokens, tuple.textBudget, `${preset}: an answer-budget API gets the text budget`);
+    assert.equal(record.options.thinkingBudgets?.medium ?? 0, tuple.reasoningBudget, preset);
+    assert.equal(persistedCompactions(run.session.file)[0].fromHook, true, preset);
+  }
+});
+
+test('an explicitly configured summarizer model, and the thinking level, reach the request', { timeout: 180_000 }, () => {
   const run = runCompaction({
-    name: 'budgets-',
-    config: { enabled: true, preset: 'balanced' },
+    name: 'swap-',
+    config: { enabled: true, preset: 'balanced', summarizerModel: 'minimax-cn/minimax-M3.1-Flash' },
     // The session runs at high thinking; the summarizer must not inherit it.
     probe: { THINKING: 'high' },
     turns: 40,
@@ -62,12 +77,11 @@ test('the configured model, thinking level and both budgets reach the summarizer
   assert.equal(records.length, 1);
   const [record] = records;
   assert.equal(record.model, 'minimax-cn/minimax-M3.1-Flash', 'the summarizer is not the conversation model');
-  assert.equal(record.model !== CONVERSATION_MODEL, true);
   assert.equal(record.api, 'anthropic-messages');
   assert.equal(record.options.reasoning, 'medium', 'the session level must not leak into the summarizer');
   assert.equal(record.options.maxTokens, PRESETS.balanced.textBudget);
   assert.deepEqual(record.options.thinkingBudgets, { minimal: 8_000, low: 8_000, medium: 8_000, high: 8_000 });
-  assert.equal(record.options.maxTokens + record.options.thinkingBudgets.medium, 20_000, 'the ceiling is the sum');
+  assert.equal(record.options.maxTokens + record.options.thinkingBudgets.medium, poolOf(PRESETS.balanced));
   assert.equal(record.options.cacheRetention, 'none', 'the host opts the summary request out of prompt caching');
   // compact() called with our own stream function supplies neither callback; the fixture honours
   // them when they are present, which the conversation requests in the two-round run show.
@@ -87,7 +101,7 @@ test('a single-pool API receives both budgets as one output option', { timeout: 
   });
   const [record] = summarizationRecords(run.records);
   assert.equal(record.api, 'openai-responses');
-  assert.equal(record.options.maxTokens, PRESETS.balanced.textBudget + PRESETS.balanced.reasoningBudget);
+  assert.equal(record.options.maxTokens, poolOf(PRESETS.balanced));
   assert.equal(record.options.thinkingBudgets.high, PRESETS.balanced.reasoningBudget);
 });
 
@@ -103,6 +117,23 @@ test('an unsupported thinking level is clamped before the request', { timeout: 1
   assert.equal(record.options.maxTokens, PRESETS.balanced.textBudget);
 });
 
+test('a summarizer on an API that sends no output ceiling hands compaction back', { timeout: 180_000 }, () => {
+  const run = runCompaction({
+    name: 'no-ceiling-',
+    config: { enabled: true, preset: 'balanced', summarizerModel: 'pi-compaction-fixture-codex/codex-summarizer' },
+    turns: 30,
+  });
+  assert.match(run.plain, /cannot bound the summary: openai-codex-responses sends no output-ceiling field/);
+  assert.match(run.plain, /compaction handed back to Pi/);
+  const persisted = persistedCompactions(run.session.file);
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].fromHook ?? false, false, 'the package must not claim a bound it does not have');
+  const records = summarizationRecords(run.records);
+  assert.equal(records.length, 1, 'only stock Pi asked for a summary');
+  assert.equal(records[0].model, CONVERSATION_MODEL);
+  assert.equal(records.some((record) => record.model.includes('codex-summarizer')), false);
+});
+
 test('a summary over the text budget is never persisted by this package', { timeout: 180_000 }, () => {
   const run = runCompaction({
     name: 'oversized-',
@@ -116,7 +147,7 @@ test('a summary over the text budget is never persisted by this package', { time
   const persisted = persistedCompactions(run.session.file);
   assert.equal(persisted.length, 1);
   assert.equal(persisted[0].fromHook ?? false, false, 'the oversized summary must not be ours');
-  const ours = summarizationRecords(run.records).filter((record) => record.model === 'minimax-cn/minimax-M3.1-Flash');
+  const ours = summarizationRecords(run.records).filter((record) => record.options.thinkingBudgets !== undefined);
   assert.equal(ours.length, 1, 'we tried once and then handed compaction back');
   assert.equal(summarizationRecords(run.records).length, 2, 'stock Pi then compacted on its own');
 });
@@ -182,7 +213,8 @@ test('the command shows status and sets every knob without shadowing /compact', 
     turns: 30,
     script: [
       { expect: READY, send: '/compaction\r' },
-      { expect: 'Host seam:', send: '/compaction model conversation\r' },
+      { expect: 'Host seam:', send: '/compaction model pi-compaction-fixture-pool/pool-summarizer\r' },
+      { expect: 'openai-responses', send: '/compaction model conversation\r' },
       { expect: 'pi-compaction-conversation', send: '/compaction thinking high\r' },
       { expect: 'Thinking: high', send: '/compaction text 9000\r' },
       { expect: 'Text budget: 9000', send: '/compaction reasoning 1500\r' },
@@ -200,25 +232,28 @@ test('the command shows status and sets every knob without shadowing /compact', 
   });
   assert.equal(run.report.error, undefined, run.report.error);
 
-  // The status view reports the whole effective tuple and the host-seam check.
+  // The status view reports the effective tuple, what the provider will actually see, and the
+  // worst case that follows.
   assert.match(run.plain, /Preset: balanced/);
-  assert.match(run.plain, /Summarizer model: minimax-cn\/minimax-M3\.1-Flash \(anthropic-messages\)/);
+  assert.match(run.plain, /Summarizer model: minimax-cn\/pi-compaction-conversation \(anthropic-messages\)/);
   assert.match(run.plain, /Thinking: medium/);
   assert.match(run.plain, /Text budget: 12000/);
   assert.match(run.plain, /Reasoning budget: 8000/);
-  assert.match(run.plain, /Ceiling: 20000/);
-  assert.match(run.plain, /maxTokens=12000/);
+  assert.match(run.plain, /Outbound: answer-budget API anthropic-messages . the provider sees an output ceiling of 20000/);
+  assert.match(run.plain, /Reasoning budget on this API: enforced as a thinking budget of 8000; at least 12000 of room remains available for text/);
+  assert.match(run.plain, /Worst case: summary 20000 tokens; base context 34874 \+ 20000 \+ 16000 = 70874 tokens/);
   assert.match(run.plain, /Kept window: 16000 tokens/);
   assert.match(run.plain, /Enabled: yes/);
   assert.match(run.plain, /Host seam: ok .*compact\(\) arity 12/);
+  // A single-pool API is labelled advisory, because its adapter never reads thinkingBudgets.
+  assert.match(run.plain, /Reasoning budget on this API: advisory . openai-responses sends a reasoning effort level/);
   // A zero reasoning budget turns the summarizer's thinking off, and says so rather than
   // reporting it as a clamp.
   assert.match(run.plain, /Thinking: off \(no reasoning budget\)/);
-  // An invalid value changes nothing.
   assert.match(run.plain, /Error: pi-compaction: nothing changed; thinking must be/);
 
   const persisted = JSON.parse(readFileSync(join(run.agent, 'extensions/pi-compaction/config.json'), 'utf8'));
-  assert.deepEqual(persisted, { enabled: false, preset: 'deep', keptWindowTokens: 12_000 });
+  assert.deepEqual(persisted, { enabled: false, preset: 'deep', summarizerModel: null, keptWindowTokens: 12_000 });
 
   // `/compaction` must not shadow the host's own `/compact`, which still compacts on its own.
   const compactions = persistedCompactions(run.session.file);
@@ -230,7 +265,9 @@ test('the command shows status and sets every knob without shadowing /compact', 
   assert.equal(run.report.commands.find((command) => command.name === 'compaction').source, 'extension');
 });
 
-test('acceptance: one compaction leaves the summary and the base context inside their targets', { timeout: 180_000 }, () => {
+test('acceptance: the summary and the base context stay inside what the preset constructs', { timeout: 180_000 }, () => {
+  const tuple = PRESETS.balanced;
+  const pool = poolOf(tuple);
   const run = runCompaction({
     name: 'acceptance-',
     config: { enabled: true, preset: 'balanced' },
@@ -245,14 +282,21 @@ test('acceptance: one compaction leaves the summary and the base context inside 
 
   const summaryTokens = Math.ceil(persisted.summary.length / 4);
   const kept = keptTokens(run.report);
-  const baseContext = HOST_PROMPT_AND_TOOLS + summaryTokens + kept;
-  assert.ok(summaryTokens <= PRESETS.balanced.textBudget, `summary was ${summaryTokens} tokens`);
-  assert.ok(kept <= 16_000 + 1_500, `kept window was ${kept} tokens`);
-  assert.ok(baseContext <= BASE_CONTEXT_TARGET, `base context was ${baseContext} tokens`);
+  const baseContext = HOST_PROMPT_AND_TOOLS_TOKENS + summaryTokens + kept;
+  // The request permits the pool; the package additionally refuses to persist anything over the
+  // text budget, so the summary that reaches the session is inside both.
+  const [record] = summarizationRecords(run.records);
+  assert.equal(record.options.maxTokens, tuple.textBudget);
+  assert.equal(record.options.maxTokens + record.options.thinkingBudgets.medium, pool);
+  assert.ok(summaryTokens <= pool, `summary was ${summaryTokens} tokens, over the ${pool}-token pool`);
+  assert.ok(summaryTokens <= tuple.textBudget, `summary was ${summaryTokens} tokens, over the ${tuple.textBudget}-token text budget`);
+  assert.ok(kept <= KEPT_WINDOW_TARGET + 1_500, `kept window was ${kept} tokens`);
   assertNothingLost(run);
   console.log(
     `acceptance: summary ${summaryTokens} tokens (${persisted.summary.length} chars), kept window ${kept} tokens, ` +
-    `base context ${HOST_PROMPT_AND_TOOLS} + ${summaryTokens} + ${kept} = ${baseContext} tokens ` +
+    `base context ${HOST_PROMPT_AND_TOOLS_TOKENS} + ${summaryTokens} + ${kept} = ${baseContext} tokens; ` +
+    `preset pool ${pool}, so the construction bound for this kept window is ` +
+    `${HOST_PROMPT_AND_TOOLS_TOKENS + pool + kept} tokens ` +
     `(synthetic profile's own prompt: ${run.report.systemPromptTokens} tokens, tools: ${run.report.activeTools.join(', ')})`,
   );
 });

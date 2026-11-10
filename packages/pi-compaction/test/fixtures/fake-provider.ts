@@ -17,6 +17,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 const ANSWER_BUDGET_API = 'anthropic-messages';
 const POOL_API = 'openai-responses';
+const NO_CEILING_API = 'openai-codex-responses';
 const SUMMARIZATION_PROMPT_PREFIX = 'You are a context summarization assistant.';
 
 type AnyModel = { id: string; provider: string; api: string };
@@ -154,7 +155,21 @@ export default function fakeProvider(pi: ExtensionAPI) {
     apiKey: 'fixture',
     api: POOL_API,
     streamSimple: handler as never,
-    models: [model('pool-summarizer', POOL_API)] as never,
+    models: [
+      model('pool-summarizer', POOL_API),
+      // Same pool, but its compatibility settings declare a thinking-token-budget field, which is
+      // the only case in which openai-completions sends a reasoning cap.
+      model('pool-summarizer-budgeted', POOL_API, { api: 'openai-completions', compat: { supportsThinkingTokenBudget: true } }),
+    ] as never,
+  });
+
+  pi.registerProvider('pi-compaction-fixture-codex', {
+    name: 'fixture openai-codex-responses',
+    baseUrl: 'http://127.0.0.1:1/fixture',
+    apiKey: 'fixture',
+    api: NO_CEILING_API,
+    streamSimple: handler as never,
+    models: [model('codex-summarizer', NO_CEILING_API)] as never,
   });
 }
 

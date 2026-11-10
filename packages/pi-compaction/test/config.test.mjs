@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaults, effective, loadConfig, saveConfig, validateConfig, PRESETS } from '../src/config.ts';
 
@@ -14,12 +14,13 @@ const withConfig = (raw) => {
   return agentDir;
 };
 
-test('the package is inert until it is enabled, and the kept window defaults to its target', () => {
+test('the package is inert until it is enabled, and summarises with the conversation model', () => {
   const agentDir = mkdtempSync('work/config-');
   const { config, diagnostic } = loadConfig(agentDir);
   assert.equal(diagnostic, undefined);
   assert.equal(config.enabled, false);
   assert.equal(config.preset, 'balanced');
+  assert.equal(config.summarizerModel, null, 'the persisted default is null, the conversation model');
   assert.equal(config.keptWindowTokens, 16_000);
   // Inert is not the same as unconfigured: the tuple a first enablement would use is the default.
   assert.deepEqual(effective(config).tuple, PRESETS.balanced);
@@ -27,24 +28,21 @@ test('the package is inert until it is enabled, and the kept window defaults to 
 });
 
 test('the four presets carry the tuple the specification fixes', () => {
-  assert.deepEqual(PRESETS.fast, {
-    model: 'minimax-cn/minimax-M3.1-Flash', thinking: 'off', textBudget: 6_000, reasoningBudget: 0,
-  });
-  assert.deepEqual(PRESETS.balanced, {
-    model: 'minimax-cn/minimax-M3.1-Flash', thinking: 'medium', textBudget: 12_000, reasoningBudget: 8_000,
-  });
-  assert.deepEqual(PRESETS.deep, {
-    model: 'conversation', thinking: 'high', textBudget: 12_000, reasoningBudget: 24_000,
-  });
+  assert.deepEqual(PRESETS.fast, { model: null, thinking: 'off', textBudget: 6_000, reasoningBudget: 0 });
+  assert.deepEqual(PRESETS.balanced, { model: null, thinking: 'medium', textBudget: 12_000, reasoningBudget: 8_000 });
+  assert.deepEqual(PRESETS.deep, { model: null, thinking: 'high', textBudget: 12_000, reasoningBudget: 24_000 });
+  for (const tuple of Object.values(PRESETS)) {
+    assert.equal(tuple.model, null, 'every preset summarises with the conversation model by default');
+  }
   const { config } = loadConfig(withConfig({ enabled: true, preset: 'off' }));
   assert.equal(effective(config).tuple, undefined, 'off is the absence of a preset');
 });
 
-test('per-field overrides replace the preset tuple and survive a save and reload', () => {
+test('an explicit summarizer model overrides every preset, and survives a save and reload', () => {
   const agentDir = withConfig({
     enabled: true,
     preset: 'deep',
-    summarizerModel: 'pi-compaction-fixture-pool/pool-summarizer',
+    summarizerModel: 'minimax-cn/minimax-M3.1-Flash',
     thinking: 'low',
     textBudget: 9_000,
     reasoningBudget: 1_000,
@@ -52,12 +50,28 @@ test('per-field overrides replace the preset tuple and survive a save and reload
   });
   const tuple = effective(loadConfig(agentDir).config).tuple;
   assert.deepEqual(tuple, {
-    model: 'pi-compaction-fixture-pool/pool-summarizer', thinking: 'low', textBudget: 9_000, reasoningBudget: 1_000,
+    model: 'minimax-cn/minimax-M3.1-Flash', thinking: 'low', textBudget: 9_000, reasoningBudget: 1_000,
   });
   saveConfig(agentDir, loadConfig(agentDir).config);
   const reloaded = loadConfig(agentDir).config;
   assert.deepEqual(effective(reloaded).tuple, tuple);
   assert.equal(reloaded.keptWindowTokens, 4_000);
+});
+
+test('null and the conversation word both mean the conversation model', () => {
+  for (const raw of [{ summarizerModel: null }, { summarizerModel: 'conversation' }, {}]) {
+    const { config, diagnostic } = loadConfig(withConfig(raw));
+    assert.equal(diagnostic, undefined, JSON.stringify(raw));
+    assert.equal(config.summarizerModel, null, JSON.stringify(raw));
+    assert.equal(effective(config).tuple.model, null, JSON.stringify(raw));
+  }
+  // The persisted default is literally null, not an absent key.
+  const agentDir = mkdtempSync('work/config-');
+  saveConfig(agentDir, defaults());
+  const written = JSON.parse(readFileSync(join(agentDir, 'extensions/pi-compaction/config.json'), 'utf8'));
+  assert.equal('summarizerModel' in written, true);
+  assert.equal(written.summarizerModel, null);
+  assert.deepEqual(written, { enabled: false, preset: 'balanced', summarizerModel: null, keptWindowTokens: 16_000 });
 });
 
 test('an invalid value is rejected whole, and the caller is told where to look', () => {
@@ -70,6 +84,7 @@ test('an invalid value is rejected whole, and the caller is told where to look',
     '{"preset":"fast","extra":1}',
     '{"summarizerModel":"gpt-6-luna"}',
     '{"summarizerModel":42}',
+    '{"summarizerModel":false}',
     '{"thinking":"extreme"}',
     '{"textBudget":0}',
     '{"textBudget":1.5}',
@@ -88,6 +103,7 @@ test('a valid subset keeps the defaults for everything it does not mention', () 
   const { config, diagnostic } = loadConfig(withConfig({ enabled: true }));
   assert.equal(diagnostic, undefined);
   assert.equal(config.preset, 'balanced');
+  assert.equal(config.summarizerModel, null);
   assert.equal(config.keptWindowTokens, 16_000);
   assert.equal(config.textBudget, undefined, 'an unset override must not shadow the preset');
 });
@@ -95,8 +111,9 @@ test('a valid subset keeps the defaults for everything it does not mention', () 
 test('a configuration assembled by the command goes through the same validation', () => {
   assert.equal(validateConfig(defaults()), undefined);
   assert.equal(validateConfig({ ...defaults(), enabled: true, textBudget: 12_000 }), undefined);
-  assert.match(validateConfig({ ...defaults(), thinking: "extreme" }), /thinking must be/);
-  assert.equal(validateConfig({ ...defaults(), summarizerModel: "conversation" }), undefined);
-  assert.match(validateConfig({ ...defaults(), summarizerModel: "gpt-6-luna" }), /summarizerModel must be/);
+  assert.equal(validateConfig({ ...defaults(), summarizerModel: null }), undefined);
+  assert.equal(validateConfig({ ...defaults(), summarizerModel: 'mafia-g/gemini-3.8-flash' }), undefined);
+  assert.match(validateConfig({ ...defaults(), thinking: 'extreme' }), /thinking must be/);
   assert.match(validateConfig({ ...defaults(), textBudget: 0 }), /textBudget must be an integer/);
+  assert.match(validateConfig({ ...defaults(), summarizerModel: 'gpt-6-luna' }), /summarizerModel must be/);
 });

@@ -9,20 +9,27 @@ export type PresetName = 'fast' | 'balanced' | 'deep';
 export type Selection = PresetName | 'off';
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
-/** `conversation` is the sentinel for the `deep` preset's summarizer model. */
+/** The word `/compaction model` and a hand-written config file use for the conversation model. */
 export const CONVERSATION_MODEL = 'conversation';
 
 export interface Tuple {
-  model: string;
+  /** `null` is the conversation model, which is what every preset defaults to. */
+  model: string | null;
   thinking: ThinkingLevel;
   textBudget: number;
   reasoningBudget: number;
 }
 
+/**
+ * All three presets summarise with the conversation model, so the default path never depends on a
+ * second provider being signed in. A cheaper summarizer is an explicit choice: `/compaction model
+ * provider/model`, or the `summarizerModel` field. The presets differ in thinking level and in the
+ * two budgets.
+ */
 export const PRESETS: Record<PresetName, Tuple> = {
-  fast: { model: 'minimax-cn/minimax-M3.1-Flash', thinking: 'off', textBudget: 6_000, reasoningBudget: 0 },
-  balanced: { model: 'minimax-cn/minimax-M3.1-Flash', thinking: 'medium', textBudget: 12_000, reasoningBudget: 8_000 },
-  deep: { model: CONVERSATION_MODEL, thinking: 'high', textBudget: 12_000, reasoningBudget: 24_000 },
+  fast: { model: null, thinking: 'off', textBudget: 6_000, reasoningBudget: 0 },
+  balanced: { model: null, thinking: 'medium', textBudget: 12_000, reasoningBudget: 8_000 },
+  deep: { model: null, thinking: 'high', textBudget: 12_000, reasoningBudget: 24_000 },
 };
 
 export const DEFAULT_KEPT_WINDOW_TOKENS = 16_000;
@@ -31,7 +38,8 @@ export const DEFAULT_KEPT_WINDOW_TOKENS = 16_000;
 export interface Config {
   enabled: boolean;
   preset: Selection;
-  summarizerModel?: string;
+  /** `null` — the default — is the conversation model. */
+  summarizerModel: string | null;
   thinking?: ThinkingLevel;
   textBudget?: number;
   reasoningBudget?: number;
@@ -51,7 +59,12 @@ const LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhi
 const FIELDS = ['enabled', 'preset', 'summarizerModel', 'thinking', 'textBudget', 'reasoningBudget', 'keptWindowTokens'];
 const MAX_TOKENS = 1_000_000;
 
-export const defaults = (): Config => ({ enabled: false, preset: 'balanced', keptWindowTokens: DEFAULT_KEPT_WINDOW_TOKENS });
+export const defaults = (): Config => ({
+  enabled: false,
+  preset: 'balanced',
+  summarizerModel: null,
+  keptWindowTokens: DEFAULT_KEPT_WINDOW_TOKENS,
+});
 
 export function configPath(agentDir: string): string {
   return join(agentDir, 'extensions', 'pi-compaction', 'config.json');
@@ -79,12 +92,15 @@ function parse(raw: unknown): Config {
     if (!SELECTIONS.includes(record.preset as Selection)) throw new Error(`preset must be ${SELECTIONS.join(', ')}`);
     config.preset = record.preset as Selection;
   }
-  if ('summarizerModel' in record) {
+  if ('summarizerModel' in record && record.summarizerModel !== null) {
     const model = record.summarizerModel;
-    if (typeof model !== 'string' || (model !== CONVERSATION_MODEL && !/^[^/\s]+\/[^/\s]+$/.test(model))) {
-      throw new Error(`summarizerModel must be "provider/model" or "${CONVERSATION_MODEL}"`);
+    if (model === CONVERSATION_MODEL) {
+      config.summarizerModel = null;
+    } else if (typeof model !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(model)) {
+      throw new Error(`summarizerModel must be "provider/model", "${CONVERSATION_MODEL}" or null`);
+    } else {
+      config.summarizerModel = model;
     }
-    config.summarizerModel = model;
   }
   if ('thinking' in record) {
     if (!LEVELS.includes(record.thinking as ThinkingLevel)) throw new Error(`thinking must be ${LEVELS.join(', ')}`);
@@ -118,8 +134,12 @@ export function loadConfig(agentDir: string): { config?: Config; diagnostic?: st
 
 /** The persisted shape: no absent keys, so a reload reads back exactly what was written. */
 function toRaw(config: Config): Record<string, unknown> {
-  const raw: Record<string, unknown> = { enabled: config.enabled, preset: config.preset };
-  for (const key of ['summarizerModel', 'thinking', 'textBudget', 'reasoningBudget'] as const) {
+  const raw: Record<string, unknown> = {
+    enabled: config.enabled,
+    preset: config.preset,
+    summarizerModel: config.summarizerModel ?? null,
+  };
+  for (const key of ['thinking', 'textBudget', 'reasoningBudget'] as const) {
     if (config[key] !== undefined) raw[key] = config[key];
   }
   raw.keptWindowTokens = config.keptWindowTokens;

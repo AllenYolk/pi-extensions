@@ -177,12 +177,12 @@ test('compaction stays stock while the package is present and not enabled', { ti
     .filter((record) => record.summarization);
   assert.equal(summarizers.length, 1, 'stock Pi issues exactly one summarization request');
   assert.equal(summarizers[0].model, 'minimax-cn/pi-compaction-conversation', 'stock Pi summarises with the conversation model');
-  // The package's default preset would have used minimax-cn/minimax-M3.1-Flash and would have set
-  // per-level thinking budgets; the host sets neither. Its own output option is left alone here:
-  // this repository's root host still caps a summary at 0.8 x the reserved tokens, a cap Pi 1.5.1
-  // no longer applies.
+  // Stock Pi summarises with the conversation model, which is also this package's default, so the
+  // model no longer discriminates. What does: an enabled package sets per-level thinking budgets,
+  // which no host adapter ever sets, and its compaction is recorded as hook-originated. The host's
+  // own output option is left alone here — this repository's root host still caps a summary at
+  // 0.8 x the reserved tokens, a cap Pi 1.5.1 no longer applies.
   assert.equal(summarizers[0].options.thinkingBudgets, undefined);
   // Stock Pi also reuses the session's own thinking level for the summary request, which is the
-  // other half of what the package exists to change; only the model and the budgets discriminate
-  // here, because this profile's session level happens to match the balanced preset's.
+  // other half of what the package exists to change.
 });

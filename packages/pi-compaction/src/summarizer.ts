@@ -1,6 +1,6 @@
 import { compact, DEFAULT_COMPACTION_SETTINGS } from '@earendil-works/pi-coding-agent';
 import type { ExtensionContext, ModelRegistry } from '@earendil-works/pi-coding-agent';
-import { CONVERSATION_MODEL, type ThinkingLevel, type Tuple } from './config.ts';
+import type { ThinkingLevel, Tuple } from './config.ts';
 
 /**
  * Every type this module needs is derived from `compact()`'s own signature. That signature is one
@@ -16,12 +16,39 @@ type StreamOptions = NonNullable<Parameters<SummarizerStream>[2]>;
 const LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
- * APIs whose output option is the answer budget, with the adapter adding the thinking budget on
- * top. Everywhere else the output option is one pool covering reasoning and text, so the two
- * budgets are passed as their sum. An API this package has not read is treated as one pool, which
- * bounds the request on every adapter rather than only on the ones we know.
+ * Answer-budget adapters that add the thinking budget on top of the output option:
+ * `adjustMaxTokensForThinking()` returns `min(maxTokens + thinkingBudget, model.maxTokens)`.
  */
-const ANSWER_BUDGET_APIS = new Set(['anthropic-messages', 'bedrock-converse-stream', 'google-generative-ai', 'google-vertex']);
+const ADDS_THINKING_ON_TOP = new Set(['anthropic-messages', 'bedrock-converse-stream']);
+
+/**
+ * Answer-budget adapters that emit the output option and the thinking budget as two separate
+ * fields. Whether the provider counts thinking against `maxOutputTokens` is provider behaviour this
+ * package has not tested, so the resulting envelope is reported as provider-dependent.
+ */
+const SEPARATE_THINKING_FIELD = new Set(['google-generative-ai', 'google-vertex']);
+
+/**
+ * Adapters that send no output-ceiling field at all. `openai-codex-responses` builds a body of
+ * `model`, `store`, `stream`, `instructions`, `input`, `text`, `include`, `prompt_cache_key`,
+ * `tool_choice` and `parallel_tool_calls`, plus optional `temperature`, `service_tier`, `tools` and a
+ * reasoning effort — and never reads `maxTokens`. A ceiling handed to it is silently dropped.
+ */
+const NO_CEILING_APIS = new Set(['openai-codex-responses']);
+
+export type ApiClass = 'answer-budget' | 'single-pool' | 'no-ceiling';
+/** Whether the reasoning budget reaches the provider as a token cap. */
+export type ReasoningBudgetEffect = 'enforced' | 'advisory' | 'not sent' | 'not applied';
+
+/**
+ * Which of the three shapes the model's API has. An API this package has not read is treated as one
+ * pool, which asks for a summed ceiling rather than only the text budget.
+ */
+export function apiClassOf(model: SummarizerModel): ApiClass {
+  if (NO_CEILING_APIS.has(model.api)) return 'no-ceiling';
+  if (ADDS_THINKING_ON_TOP.has(model.api) || SEPARATE_THINKING_FIELD.has(model.api)) return 'answer-budget';
+  return 'single-pool';
+}
 
 /** The host estimates a compaction summary at four characters per token. */
 export const estimateSummaryTokens = (summary: string): number => Math.ceil(summary.length / 4);
@@ -32,14 +59,16 @@ export interface OutputBudgets {
 }
 
 /**
- * The two budgets mapped onto whatever the model's adapter exposes, such that their sum is the
- * ceiling. The reasoning budget is absolute, so it is set for every level: an adapter that clamps
- * the requested level must not fall back to its own default budget.
+ * The two budgets mapped onto whatever the model's adapter exposes. On an answer-budget API the
+ * output option is the answer budget, so it carries the text budget and the reasoning budget goes
+ * through the per-level thinking-budget option; everywhere else the output option is one pool and
+ * carries their sum. The reasoning budget is absolute, so it is set for every level: an adapter that
+ * clamps the requested level must not fall back to its own default budget.
  */
 export function outputBudgets(model: SummarizerModel, tuple: Tuple, thinking: ThinkingLevel): OutputBudgets {
   const reasoning = thinking === 'off' ? 0 : tuple.reasoningBudget;
   const budgets: OutputBudgets = {
-    maxTokens: ANSWER_BUDGET_APIS.has(model.api) ? tuple.textBudget : tuple.textBudget + reasoning,
+    maxTokens: apiClassOf(model) === 'answer-budget' ? tuple.textBudget : tuple.textBudget + reasoning,
   };
   if (reasoning > 0) {
     budgets.thinkingBudgets = { minimal: reasoning, low: reasoning, medium: reasoning, high: reasoning };
@@ -48,7 +77,8 @@ export function outputBudgets(model: SummarizerModel, tuple: Tuple, thinking: Th
 }
 
 /** The host's own clamping: prefer a higher supported level, then a lower one. */
-export function clampThinkingLevel(model: SummarizerModel, level: ThinkingLevel): ThinkingLevel {  const available = supportedThinkingLevels(model);
+export function clampThinkingLevel(model: SummarizerModel, level: ThinkingLevel): ThinkingLevel {
+  const available = supportedThinkingLevels(model);
   if (available.includes(level)) return level;
   const requested = LEVELS.indexOf(level);
   if (requested === -1) return available[0] ?? 'off';
@@ -77,9 +107,122 @@ export function summarizerThinkingLevel(model: SummarizerModel, tuple: Tuple): T
 }
 
 export function resolveSummarizerModel(tuple: Tuple, ctx: ExtensionContext): SummarizerModel | undefined {
-  if (tuple.model === CONVERSATION_MODEL) return ctx.model;
+  if (tuple.model === null) return ctx.model;
   const separator = tuple.model.indexOf('/');
   return ctx.modelRegistry.find(tuple.model.slice(0, separator), tuple.model.slice(separator + 1));
+}
+
+/**
+ * The host's prompt and tool declarations on the owner's profile. A constant this package cannot
+ * reduce: it adds no tools of its own. It is what turns a worst-case summary into a worst-case base
+ * context.
+ */
+export const HOST_PROMPT_AND_TOOLS_TOKENS = 34_874;
+
+export interface OutboundRequest {
+  api: string;
+  apiClass: ApiClass;
+  /** The value the provider's own output-ceiling field carries, or null when it sends none. */
+  outputFieldCeiling: number | null;
+  /** The model's own output limit, which caps an adapter that adds thinking on top. */
+  modelLimit: number;
+  reasoningTokens: number;
+  reasoningBudget: ReasoningBudgetEffect;
+  /** Whether at least `textBudget` of room is guaranteed to remain available for text. */
+  textRoomGuaranteed: boolean;
+  /** Whether the envelope depends on provider behaviour this package has not tested. */
+  providerDependent: boolean;
+  /** The largest summary text the request permits, or null when nothing bounds it. */
+  worstCaseSummaryTokens: number | null;
+  /** Host prompt and tools + worst-case summary + the configured kept-window target. */
+  worstCaseBaseContextTokens: number | null;
+}
+
+/**
+ * What the summarization request will actually carry, as opposed to what the two budgets say.
+ *
+ * shortcut: this repeats the adapters' own arithmetic instead of reading it from them, because
+ * pi-ai exposes no way to ask what a request will carry. Each branch below mirrors one adapter:
+ * `adjustMaxTokensForThinking()` adds the thinking budget to the answer budget and caps the result
+ * at the model's output limit on `anthropic-messages` and `bedrock-converse-stream`, after which
+ * `clampMaxTokensToContext()` may lower it again for a large input — so a ceiling reported here is
+ * an upper bound; the Google adapters emit the output option and the thinking budget separately; a
+ * single-pool adapter sends our value through unchanged. Replace this with pi-ai's own projection
+ * when it exposes one, or with a captured request body per API.
+ *
+ * The worst case is the same on both enforceable classes: reasoning draws from the same allowance as
+ * the text on every API this package supports, so a model that spends nothing on reasoning may spend
+ * the whole pool on text. Only a preset whose reasoning budget is zero makes the text budget a hard
+ * ceiling.
+ */
+export function describeOutboundRequest(
+  model: SummarizerModel,
+  tuple: Tuple,
+  thinking: ThinkingLevel,
+  keptWindowTokens: number,
+): OutboundRequest {
+  const reasoning = thinking === 'off' ? 0 : tuple.reasoningBudget;
+  const apiClass = apiClassOf(model);
+  const modelLimit = typeof model.maxTokens === 'number' && model.maxTokens > 0
+    ? model.maxTokens
+    : Number.POSITIVE_INFINITY;
+  const pool = tuple.textBudget + reasoning;
+
+  if (apiClass === 'no-ceiling') {
+    return {
+      api: model.api,
+      apiClass,
+      outputFieldCeiling: null,
+      modelLimit,
+      reasoningTokens: reasoning,
+      reasoningBudget: 'not applied',
+      textRoomGuaranteed: false,
+      providerDependent: false,
+      worstCaseSummaryTokens: null,
+      worstCaseBaseContextTokens: null,
+    };
+  }
+
+  const addsOnTop = ADDS_THINKING_ON_TOP.has(model.api);
+  const separate = SEPARATE_THINKING_FIELD.has(model.api);
+  const enforced = reasoning > 0 && reasoningBudgetReachesProvider(model, apiClass);
+  const outputFieldCeiling = addsOnTop
+    ? Math.min(pool, modelLimit)
+    : separate
+      ? tuple.textBudget
+      : pool;
+  const worstCaseSummaryTokens = addsOnTop ? outputFieldCeiling : pool;
+  return {
+    api: model.api,
+    apiClass,
+    outputFieldCeiling,
+    modelLimit,
+    reasoningTokens: reasoning,
+    reasoningBudget: reasoning === 0 ? 'not sent' : enforced ? 'enforced' : 'advisory',
+    // Thinking capped at the reasoning budget inside an envelope of their sum leaves the text budget
+    // available; an uncapped reasoning phase in a shared pool does not, and a separate thinking field
+    // depends on whether the provider counts it against the output option.
+    textRoomGuaranteed: reasoning === 0 || (enforced && !separate),
+    providerDependent: separate,
+    worstCaseSummaryTokens,
+    worstCaseBaseContextTokens: HOST_PROMPT_AND_TOOLS_TOKENS + worstCaseSummaryTokens + keptWindowTokens,
+  };
+}
+
+/**
+ * Every answer-budget adapter reads `thinkingBudgets`. Of the single-pool adapters only
+ * `openai-completions` does, and only to fill a top-level thinking-token-budget field that the
+ * model's compatibility settings declare (`compat.thinkingTokenBudgetField`, or
+ * `compat.supportsThinkingTokenBudget` for the default `thinking_token_budget` name); it clamps the
+ * budget to leave answer room against `max_tokens ?? max_completion_tokens ?? model.maxTokens`.
+ * `openai-responses`, `azure-openai-responses` and `openai-codex-responses` never read it — there
+ * reasoning is an effort level rather than a token cap.
+ */
+function reasoningBudgetReachesProvider(model: SummarizerModel, apiClass: ApiClass): boolean {
+  if (apiClass === 'answer-budget') return true;
+  if (model.api !== 'openai-completions') return false;
+  const compat = (model as { compat?: { thinkingTokenBudgetField?: unknown; supportsThinkingTokenBudget?: unknown } }).compat;
+  return Boolean(compat?.thinkingTokenBudgetField || compat?.supportsThinkingTokenBudget);
 }
 
 /**
