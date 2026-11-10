@@ -4,5 +4,3 @@ coverage/
 work/
 .DS_Store
 *.tgz
-packages/pi-compaction/work-smoke.mjs
-packages/pi-compaction/work-analyse.mjs

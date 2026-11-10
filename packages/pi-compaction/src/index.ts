@@ -8,7 +8,6 @@ import {
   saveConfig,
   validateConfig,
   type Config,
-  type Effective,
   type Selection,
   type ThinkingLevel,
 } from './config.ts';
@@ -21,7 +20,6 @@ import {
   resolveSummarizerModel,
   summarizerThinkingLevel,
   type SeamResult,
-  type SummarizerModel,
 } from './summarizer.ts';
 
 export default function piCompaction(pi: ExtensionAPI): void {
