@@ -111,7 +111,7 @@ test('a picker subtree cascade holds back the active session', { timeout: 120000
   );
 });
 
-test('both extensions install, group, expand and restore across repeated reloads', { timeout: 240000 }, () => {
+test('all three extensions install, group, expand and restore across repeated reloads', { timeout: 240000 }, () => {
   const agent = profile('coexistence-');
   const resultFile = join(agent, 'result.json');
   const reloads = 4;

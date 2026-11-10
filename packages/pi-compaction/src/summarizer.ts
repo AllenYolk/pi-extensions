@@ -107,6 +107,14 @@ export interface SeamResult {
  * compaction back to the host instead of letting the package misbehave.
  */
 export async function checkHostSeam(compactFn: typeof compact = compact): Promise<SeamResult> {
+  try {
+    return await probeSeam(compactFn);
+  } catch (error) {
+    return { ok: false, detail: `the seam check itself failed: ${String(error)}` };
+  }
+}
+
+async function probeSeam(compactFn: typeof compact): Promise<SeamResult> {
   if (compactFn.length !== 12) {
     return { ok: false, detail: `compact() takes ${compactFn.length} arguments, not 12` };
   }
