@@ -117,6 +117,7 @@ test('a later status wrapper cannot keep a disposed session alive through the to
         builtInHeader: undefined,
         loadedResourcesContainer: new Tui.Container(),
         chatContainer: new Tui.Container(),
+        pendingMessagesContainer: new Tui.Container(),
         ui: { requestRender() {} },
         showStatus() {},
       };
