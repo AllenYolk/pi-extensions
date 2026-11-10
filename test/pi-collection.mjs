@@ -161,15 +161,27 @@ export function git(cwd, ...args) {
  * result, sized so `turns` turns hold roughly `turns * turnTokens` host-estimated tokens — enough
  * to cross a real compaction trigger. `createSession` is the caller's own `SessionManager`, so the
  * file is written by the host that will read it.
+ *
+ * `completeResults` gives every tool call a result, so a caller can prove that nothing orphans a
+ * tool call. It is off by default because the compaction fixtures are sized against the
+ * single-result shape, and it changes the per-turn token split.
  */
-export function longSession(createSession, { cwd, sessionDir, turns = 40, turnTokens = 1_500, readFilesPerTurn = 2 }) {
+export function longSession(createSession, {
+  cwd,
+  sessionDir,
+  turns = 40,
+  turnTokens = 1_500,
+  readFilesPerTurn = 2,
+  completeResults = false,
+  usage: assistantUsage,
+}) {
   mkdirSync(cwd, { recursive: true });
   mkdirSync(sessionDir, { recursive: true });
   const session = createSession.create(realpathSync(cwd), sessionDir);
   // The session records the model it was written with, the way a real one does, so a reader that
   // resolves the conversation model before anything selects one finds it.
   session.appendModelChange('minimax-cn', 'pi-compaction-conversation');
-  const usage = {
+  const usage = assistantUsage ?? {
     input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
@@ -181,8 +193,7 @@ export function longSession(createSession, { cwd, sessionDir, turns = 40, turnTo
   for (let turn = 0; turn < turns; turn++) {
     const user = `MARK-u${turn}`;
     const assistant = `MARK-a${turn}`;
-    const result = `MARK-r${turn}`;
-    markers.push(user, assistant, result);
+    markers.push(user, assistant);
     const reads = Array.from({ length: readFilesPerTurn }, (_, index) => `/fixture/read-${turn}-${index}.ts`);
     const edited = `/fixture/edit-${turn}.ts`;
     files.read.push(...reads);
@@ -202,14 +213,27 @@ export function longSession(createSession, { cwd, sessionDir, turns = 40, turnTo
       usage,
       stopReason: 'toolUse',
     });
-    session.appendMessage({
-      role: 'toolResult',
-      toolCallId: `read-${turn}-0`,
-      toolName: 'read',
-      content: [{ type: 'text', text: filler(Math.floor(turnTokens / 2), result) }],
-      isError: false,
-      timestamp: Date.now(),
-    });
+    const results = completeResults
+      ? [
+        ...reads.map((_, index) => ({ id: `read-${turn}-${index}`, name: 'read', marker: index === 0 ? `MARK-r${turn}` : `MARK-r${turn}-${index}` })),
+        { id: `edit-${turn}`, name: 'edit', marker: `MARK-e${turn}` },
+      ]
+      : [{ id: `read-${turn}-0`, name: 'read', marker: `MARK-r${turn}` }];
+    for (const result of results) {
+      markers.push(result.marker);
+      const body = filler(Math.floor(turnTokens / 2 / results.length), result.marker);
+      session.appendMessage({
+        role: 'toolResult',
+        toolCallId: result.id,
+        toolName: result.name,
+        // The tail marker sits past any bounded excerpt a caller keeps, so a caller can prove a
+        // result is gone from a request rather than merely shortened. Only the complete-results
+        // shape carries it, which is the shape the prune checks use.
+        content: [{ type: 'text', text: completeResults ? `${body} END-${result.marker}` : body }],
+        isError: false,
+        timestamp: Date.now(),
+      });
+    }
   }
   return { file: session.getSessionFile(), markers, files, session };
 }

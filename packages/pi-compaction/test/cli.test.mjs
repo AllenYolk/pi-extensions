@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MAX_FILE_LIST_ENTRIES } from '../src/preparation.ts';
-import { PRESETS } from '../src/config.ts';
+import { PRESETS, DEFAULT_NEVER_PRUNE } from '../src/config.ts';
 import { HOST_PROMPT_AND_TOOLS_TOKENS } from '../src/summarizer.ts';
 import { persistedCompactions, READY, runCompaction, summarizationRecords } from './run-compaction.mjs';
 
@@ -253,7 +253,15 @@ test('the command shows status and sets every knob without shadowing /compact', 
   assert.match(run.plain, /Error: pi-compaction: nothing changed; thinking must be/);
 
   const persisted = JSON.parse(readFileSync(join(run.agent, 'extensions/pi-compaction/config.json'), 'utf8'));
-  assert.deepEqual(persisted, { enabled: false, preset: 'deep', summarizerModel: null, keptWindowTokens: 12_000 });
+  assert.deepEqual(persisted, {
+    enabled: false,
+    preset: 'deep',
+    summarizerModel: null,
+    keptWindowTokens: 12_000,
+    prune: true,
+    pruneWindowTokens: 16_000,
+    neverPrune: DEFAULT_NEVER_PRUNE,
+  });
 
   // `/compaction` must not shadow the host's own `/compact`, which still compacts on its own.
   const compactions = persistedCompactions(run.session.file);

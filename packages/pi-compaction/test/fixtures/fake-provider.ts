@@ -13,6 +13,12 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
  * `PI_COMPACTION_FIXTURE_MODE`     normal (default) | oversized | error | length
  * `PI_COMPACTION_FIXTURE_SUMMARY`  summary size in host-estimated tokens (default 200)
  * `PI_COMPACTION_FIXTURE_WRITE`    path the conversation model asks `write` to create, once
+ * `PI_COMPACTION_FIXTURE_CACHE_READ`   cacheRead the conversation response reports (default 0)
+ * `PI_COMPACTION_FIXTURE_CACHE_WRITE`  cacheWrite the conversation response reports (default 0)
+ * `PI_COMPACTION_FIXTURE_TOTAL_TOKENS` totalTokens the conversation response reports, which is what
+ *                                     the host's context accounting reads when it is present
+ * `PI_COMPACTION_FIXTURE_CONTEXT_WINDOW` the models' context window (default 200000)
+ * `PI_COMPACTION_FIXTURE_MESSAGE_AGE_MS` backdates the conversation response's timestamp
  */
 
 const ANSWER_BUDGET_API = 'anthropic-messages';
@@ -43,7 +49,7 @@ const model = (id: string, api: string, extra: Record<string, unknown> = {}) => 
   reasoning: true,
   input: ['text'],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 200_000,
+  contextWindow: Number(process.env.PI_COMPACTION_FIXTURE_CONTEXT_WINDOW ?? 200_000),
   maxTokens: 64_000,
   ...extra,
 });
@@ -53,6 +59,10 @@ export default function fakeProvider(pi: ExtensionAPI) {
   const mode = process.env.PI_COMPACTION_FIXTURE_MODE ?? 'normal';
   const summaryTokens = Number(process.env.PI_COMPACTION_FIXTURE_SUMMARY ?? 200);
   const writePath = process.env.PI_COMPACTION_FIXTURE_WRITE;
+  const cacheRead = Number(process.env.PI_COMPACTION_FIXTURE_CACHE_READ ?? 0);
+  const cacheWrite = Number(process.env.PI_COMPACTION_FIXTURE_CACHE_WRITE ?? 0);
+  const totalTokens = process.env.PI_COMPACTION_FIXTURE_TOTAL_TOKENS;
+  const messageAgeMs = Number(process.env.PI_COMPACTION_FIXTURE_MESSAGE_AGE_MS ?? 0);
   let conversationTurns = 0;
 
   const handler = (candidate: AnyModel, context: { messages?: Array<{ role: string; content?: unknown }> }, options?: AnyOptions) => {
@@ -108,12 +118,16 @@ export default function fakeProvider(pi: ExtensionAPI) {
   };
 
   function respond(candidate: AnyModel, { summarization, turn }: { summarization: boolean; turn: number }) {
+    const reported = summarization ? { cacheRead: 0, cacheWrite: 0 } : { cacheRead, cacheWrite };
     const base = {
       role: 'assistant',
       provider: candidate.provider,
       model: candidate.id,
-      timestamp: Date.now(),
-      usage: { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, cost },
+      timestamp: Date.now() - (summarization ? 0 : messageAgeMs),
+      usage: {
+        input: 10, output: 20, ...reported, cost,
+        ...(totalTokens !== undefined && !summarization ? { totalTokens: Number(totalTokens) } : {}),
+      },
     };
     if (mode === 'error') {
       return { ...base, content: [], stopReason: 'error', errorMessage: 'fixture summarizer is unavailable' };
@@ -178,7 +192,11 @@ function summaryText(tokens: number): string {
   return `FIXTURE-SUMMARY ${'s'.repeat(Math.max(0, tokens * 4 - 'FIXTURE-SUMMARY '.length - 1))}\n`;
 }
 
-/** The text the request carries, which for a summarization request is the serialized conversation. */
+/**
+ * The text the request carries, which for a summarization request is the serialized conversation.
+ * Tool calls are included, because whether a pruned result's originating call and arguments
+ * survive into the next request is exactly what a prune has to be judged on.
+ */
 function promptOf(context: { messages?: Array<{ role: string; content?: unknown }> }): string {
   return (context.messages ?? [])
     .filter((message) => message.role !== 'system')
@@ -186,7 +204,16 @@ function promptOf(context: { messages?: Array<{ role: string; content?: unknown 
       const content = message.content;
       if (typeof content === 'string') return content;
       if (!Array.isArray(content)) return '';
-      return content.map((block) => (typeof block === 'object' && block && 'text' in block ? String((block as { text: unknown }).text) : '')).join('');
+      return content
+        .map((block) => {
+          if (typeof block !== 'object' || block === null) return '';
+          const record = block as Record<string, unknown>;
+          if (record.type === 'toolCall') {
+            return `TOOLCALL ${String(record.name)} ${String(record.id)} ${JSON.stringify(record.arguments)}`;
+          }
+          return 'text' in record ? String(record.text) : '';
+        })
+        .join('');
     })
     .join('\n');
 }
