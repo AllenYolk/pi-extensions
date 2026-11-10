@@ -1,6 +1,7 @@
 import type { Selection, ThinkingLevel, Tuple } from './config.ts';
 import {
   apiClassOf,
+  clampThinkingLevel,
   outputBudgets,
   type AttemptOutcome,
   type OutputBudgets,
@@ -73,11 +74,19 @@ function tighterRung(model: SummarizerModel, tuple: Tuple, thinking: ThinkingLev
       tightening: `text budget ${tuple.textBudget} to ${textBudget}, reasoning budget ${tuple.reasoningBudget} to ${reasoningBudget}`,
     };
   }
+  // The host only omits its reasoning option for a level of exactly `off`, so a model whose
+  // `thinkingLevelMap` marks `off` unsupported has to be clamped like any other request — handing
+  // the host an unsupported `off` would leave it to its own default effort, which can be higher
+  // than the first rung's.
+  const lowest = clampThinkingLevel(model, 'off');
   return {
-    thinking: 'off',
-    budgets: outputBudgets(model, tuple, 'off', { keepPool: true }),
+    thinking: lowest,
+    budgets: outputBudgets(model, tuple, lowest, { keepPool: true }),
     instruction: budgetInstruction(tuple.textBudget),
-    tightening: `thinking off and an explicit ${tuple.textBudget}-token budget instruction, with the envelope unchanged`,
+    tightening: lowest === 'off'
+      ? `thinking off and an explicit ${tuple.textBudget}-token budget instruction, with the envelope unchanged`
+      : `thinking down to ${lowest}, its lowest supported level, and an explicit ${tuple.textBudget}-token `
+        + 'budget instruction, with the envelope unchanged',
   };
 }
 

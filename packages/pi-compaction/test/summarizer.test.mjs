@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { compact } from '@earendil-works/pi-coding-agent';
 import {
+  acceptedTokens,
   apiClassOf,
   checkHostSeam,
   clampThinkingLevel,
   describeOutboundRequest,
+  estimateModelTokens,
   estimateSummaryTokens,
+  hostRetryPolicy,
   HOST_PROMPT_AND_TOOLS_TOKENS,
   outputBudgets,
   summarizerThinkingLevel,
@@ -176,6 +179,61 @@ test('a summary is measured with the host\'s own four-characters-per-token estim
   assert.equal(estimateSummaryTokens(''), 0);
   assert.equal(estimateSummaryTokens('abcd'), 1);
   assert.equal(estimateSummaryTokens('a'.repeat(48_000)), 12_000);
+});
+
+test('an adapter whose output-ceiling flag is switched off is treated as sending no ceiling', () => {
+  // `openai-responses` writes `max_output_tokens` only while `compat.supportsMaxOutputTokens` is not
+  // false. A model that switches it off drops the ceiling silently, which is the exact failure this
+  // package exists to prevent, so it is read rather than assumed.
+  const off = model('openai-responses', { compat: { supportsMaxOutputTokens: false } });
+  assert.equal(apiClassOf(off), 'no-ceiling');
+  const outbound = describeOutboundRequest(off, balanced, 'medium', 16_000);
+  assert.equal(outbound.outputFieldCeiling, null);
+  assert.equal(outbound.ceilingFlag, 'supportsMaxOutputTokens', 'the status view has to say which flag');
+
+  // Its sibling writes the field unconditionally, so the flag belongs to the one adapter.
+  assert.equal(apiClassOf(model('azure-openai-responses', { compat: { supportsMaxOutputTokens: false } })), 'single-pool');
+  // An undeclared flag is not a switch: the adapter's own default applies.
+  assert.equal(apiClassOf(model('openai-responses')), 'single-pool');
+  assert.equal(apiClassOf(model('openai-responses', { compat: { supportsMaxOutputTokens: true } })), 'single-pool');
+  // The one adapter that never sends a ceiling reports no flag, because none switched it off.
+  assert.equal(describeOutboundRequest(model('openai-codex-responses'), balanced, 'medium', 16_000).ceilingFlag, undefined);
+});
+
+test('what an attempt may hand back is the number the request actually bounds', () => {
+  // An answer-budget API carries the text budget as its output option and the reasoning budget on
+  // top of it, so the text is the number to bound.
+  assert.equal(acceptedTokens(model('anthropic-messages'), balanced), 12_000);
+  // A single pool sends their sum and reasoning draws from inside it. Accepting less than the pool
+  // would leave a dead band where a summary the request permitted is refused — 24,000 tokens wide on
+  // `deep`, and a second full request every time the model lands in it.
+  assert.equal(acceptedTokens(model('openai-responses'), balanced), 20_000);
+  assert.equal(acceptedTokens(model('openai-responses'), PRESETS.deep), 36_000);
+  // `fast` has no reasoning budget, so the two classes agree and its number is the whole envelope.
+  for (const api of ['anthropic-messages', 'openai-responses']) {
+    assert.equal(acceptedTokens(model(api), PRESETS.fast), 6_000, api);
+  }
+  // A no-ceiling API has no acceptance bound to speak of; the hook declines it before any request.
+  assert.equal(acceptedTokens(model('openai-codex-responses'), balanced), 20_000);
+});
+
+test('the model text is measured without the block the host appends', () => {
+  assert.equal(estimateModelTokens('abcd'), 1);
+  assert.equal(estimateModelTokens('abcdefgh', 4), 1, 'the appended block is not the model\'s');
+  assert.equal(estimateModelTokens('ab', 100), 0, 'never negative');
+  assert.equal(estimateModelTokens('abcd'), estimateSummaryTokens('abcd'));
+});
+
+test('the retry policy is resolved the way the host resolves it', () => {
+  // Without a policy the host's own `retryAssistantCall()` wrapper never retries, so a transient
+  // stream drop on a minutes-long summary request fails the whole compaction on the first attempt.
+  assert.deepEqual(hostRetryPolicy({}), {
+    enabled: true, maxRetries: 3, baseDelayMs: 2_000, maxAgentDelayMs: 60_000,
+  });
+  assert.deepEqual(hostRetryPolicy({ retry: { enabled: false, maxRetries: 9 } }), {
+    enabled: false, maxRetries: 9, baseDelayMs: 2_000, maxAgentDelayMs: 60_000,
+  });
+  assert.equal(hostRetryPolicy({ retry: { enabled: true } }).maxRetries, 3, 'one field does not zero the rest');
 });
 
 test('the host seam check accepts this package\'s host and reports what it saw', async () => {

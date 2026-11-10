@@ -73,6 +73,12 @@ text budget because their sum, not either alone, is what bounds the request.
 
 **Ceiling**: text budget plus reasoning budget. The total output a preset permits.
 
+**Acceptance bound**: what one attempt of the ladder may hand back. The text budget on an
+answer-budget API, where the reasoning budget rides on top of the output option; the ceiling on a
+single pool, where reasoning draws from inside it. It is the number the request actually bounds —
+accepting less would leave a dead band in which a response the provider was allowed to produce is
+refused anyway.
+
 **API class**: the shape a provider API gives the ceiling, which is what decides what the two budgets
 mean there. `answer-budget` adds the reasoning budget on top of the text budget, so thinking is capped
 and the text budget is the room guaranteed to remain; `single-pool` sends their sum as one ceiling the
@@ -118,7 +124,9 @@ request would read).
 announced, never silent, and never partial: a truncated summary is never persisted.
 
 **Rung**: one attempt of the retry ladder — everything a single summarization attempt sends that the
-next one changes. The ladder is two rungs, so there is no third attempt to reach.
+next one changes. The ladder is two rungs, so there is no third attempt to reach. A rung's thinking
+level is always one the chosen model supports: the retry asks for the lowest level the model has,
+which is `off` only when the model has an `off`.
 
 ## Code and state ownership
 

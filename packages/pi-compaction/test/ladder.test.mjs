@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { announcement, budgetInstruction, describeFailure, ladder } from '../src/ladder.ts';
+import { summarizerThinkingLevel } from '../src/summarizer.ts';
 import { PRESETS } from '../src/config.ts';
 
 const model = (api, extra = {}) => ({
@@ -39,12 +40,37 @@ test('an answer-budget retry compresses both budgets, because thinking may have 
 });
 
 test('a single-pool retry drops the reasoning draw and leaves the envelope alone', () => {
-  const [, retry] = ladder(model('openai-responses'), balanced, 'medium');
-  assert.equal(retry.thinking, 'off', 'the adapter cannot cap reasoning, so the retry stops asking for it');
-  assert.equal(retry.budgets.maxTokens, 20_000, 'the envelope is unchanged: shrinking it makes a second length stop likelier');
-  assert.equal(retry.budgets.thinkingBudgets, undefined);
-  assert.equal(retry.instruction, budgetInstruction(12_000));
-  assert.match(retry.tightening, /thinking off and an explicit 12000-token budget instruction/);
+  for (const api of ['openai-responses', 'openai-completions']) {
+    const [, retry] = ladder(model(api), balanced, 'medium');
+    assert.equal(retry.thinking, 'off', `${api}: the adapter cannot cap reasoning, so the retry stops asking for it`);
+    assert.equal(retry.budgets.maxTokens, 20_000, `${api}: the envelope is unchanged: shrinking it makes a second length stop likelier`);
+    assert.equal(retry.budgets.thinkingBudgets, undefined, api);
+    assert.equal(retry.instruction, budgetInstruction(12_000), api);
+    assert.match(retry.tightening, /thinking off and an explicit 12000-token budget instruction/, api);
+  }
+});
+
+test('the tighter rung clamps off on a model that does not support it', () => {
+  // The host only omits its reasoning option for a level of exactly `off`, so handing it an
+  // unsupported `off` leaves the adapter to its own default effort — which can be higher than the
+  // first rung's, the opposite of what a tighter retry is for.
+  const noOff = model('openai-responses', {
+    thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: 'medium', high: 'high' },
+  });
+  assert.equal(summarizerThinkingLevel(noOff, balanced), 'medium', 'the first rung still asks for medium');
+  const [, retry] = ladder(noOff, balanced, 'medium');
+  assert.equal(retry.thinking, 'low', 'the lowest level this model actually supports');
+  assert.match(retry.tightening, /thinking down to low, its lowest supported level/);
+  assert.equal(retry.instruction, budgetInstruction(12_000), 'the budget still has to be stated in words');
+  assert.equal(retry.budgets.maxTokens, 20_000, 'and the envelope is still left alone');
+  // The reasoning draw cannot be removed, so the budget that could cap it is sent rather than dropped.
+  assert.deepEqual(retry.budgets.thinkingBudgets, { minimal: 8_000, low: 8_000, medium: 8_000, high: 8_000 });
+});
+
+test('a model with no off at all still gets the lowest level it has', () => {
+  const high = model('openai-responses', { thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: 'high' } });
+  assert.equal(summarizerThinkingLevel(high, PRESETS.fast), 'high', 'fast asks for off and gets the lowest supported level');
+  assert.equal(ladder(high, PRESETS.fast, 'high')[1].thinking, 'high');
 });
 
 test('a zero reasoning budget stays zero, and a one-token text budget is not halved away', () => {

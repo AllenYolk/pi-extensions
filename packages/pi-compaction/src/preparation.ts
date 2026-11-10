@@ -46,7 +46,10 @@ export function prepareCompaction(
   const historyEnd = cut.isSplitTurn ? cut.turnStartIndex : cut.firstKeptEntryIndex;
   const messagesToSummarize = collect(boundaryStart, historyEnd);
   const turnPrefixMessages = cut.isSplitTurn ? collect(cut.turnStartIndex, cut.firstKeptEntryIndex) : [];
-  if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return undefined;
+  // Nothing to summarise. On a split turn with an empty history range the host carries the previous
+  // summary forward verbatim and appends a fresh turn prefix to it, so the result can only grow and
+  // no budget this package sets can bound it. Declining is the only honest answer.
+  if (messagesToSummarize.length === 0) return undefined;
 
   const previous = previousIndex >= 0 ? projected[previousIndex].sourceEntry : undefined;
   return {
@@ -83,6 +86,28 @@ function curateFileOps(hostOps: FileOperations, previous: SessionEntry | undefin
     written: cap(hostOps.written, inherited?.modifiedFiles),
     edited: cap(hostOps.edited, inherited?.modifiedFiles),
   };
+}
+
+/**
+ * How many characters of the file-list block the host will append after the model's text.
+ *
+ * The budget is the model's, and the host appends this block itself, so the acceptance test has to
+ * measure the text alone — otherwise a summary that used exactly its budget is refused for text the
+ * model never wrote, which costs a second full request or a handback.
+ *
+ * shortcut: this repeats the host's `computeFileLists()` and `formatFileOperations()` pair — a set
+ * union, a difference, two sorts and two tagged blocks — because `compact()` returns the summary as
+ * one string with the block already appended. Measure the blocks from the compaction result when
+ * the host returns them separately.
+ */
+export function fileListChars(fileOps: FileOperations): number {
+  const modified = new Set([...fileOps.edited, ...fileOps.written]);
+  const readOnly = [...fileOps.read].filter((path) => !modified.has(path)).sort();
+  const modifiedFiles = [...modified].sort();
+  const block = (tag: string, paths: string[]): number => (paths.length === 0
+    ? 0
+    : `\n\n<${tag}>\n`.length + paths.join('\n').length + `\n</${tag}>`.length);
+  return block('read-files', readOnly) + block('modified-files', modifiedFiles);
 }
 
 function readDetails(details: unknown): { readFiles?: string[]; modifiedFiles?: string[] } | undefined {

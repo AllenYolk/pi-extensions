@@ -11,9 +11,9 @@ owner's explicit authorization.
 ## Tested platforms and versions
 
 Everything below was run on this machine for the release-gate ticket, on the `feat/pi-compaction-release`
-branch cut from `feat/pi-compaction-ladder`, and both gates were re-run on `fix/pi-compaction-review`,
-the branch that resolves the independent review's release-blocking findings. The counts in the table
-are that second run's; the environment is the same machine and the same host versions.
+branch cut from `feat/pi-compaction-ladder`, re-run on `fix/pi-compaction-review` for the review
+findings, and re-run again on `fix/pi-compaction-audit` for the algorithm audit. The counts in the
+table are that last run's; the environment is the same machine and the same host versions.
 
 | | |
 | --- | --- |
@@ -26,8 +26,8 @@ are that second run's; the environment is the same machine and the same host ver
 
 | Check | Result |
 | --- | --- |
-| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **79/79 tests pass** |
-| `npm run check` | **165/165 tests pass** (79 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
+| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **90/90 tests pass** |
+| `npm run check` | **176/176 tests pass** (90 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
 | `npm pack --json --ignore-scripts` | 9 entries: `LICENSE`, `README.md`, `package.json`, `src/{config,index,ladder,preparation,prune,summarizer}.ts` |
 | `npm run benchmark` | **deliberately skipped** — see below |
 
@@ -112,14 +112,20 @@ These are properties of the design, documented in the package README, not defect
   TUI component and adding an `@earendil-works/pi-tui` peer dependency, which this package
   deliberately does not have. The pinned widget carries the visible announcement and `/compaction`
   reports the durable record.
-- **Four `shortcut:` comments in the source carry their own upgrade conditions**: `describeOutboundRequest`
+- **Six `shortcut:` comments in the source carry their own upgrade conditions**: `describeOutboundRequest`
   repeats the adapters' arithmetic instead of reading a projection pi-ai does not expose;
   `prepareCompaction` measures raw entries, so a pruned result counts at full size and the kept window
   lands smaller than its target; `hostCompactionTrigger` repeats the host's `reserveTokens`
-  resolution because an extension is handed merged rather than resolved settings; and `curateFileOps`
+  resolution because an extension is handed merged rather than resolved settings; `curateFileOps`
   keeps the file operations the host extracted, which cover the host's summarised range rather than
   this package's, so paths touched only between the host's cut point and its own are not listed —
-  extract them from this package's own range when a summary's file index proves too thin.
+  extract them from this package's own range when a summary's file index proves too thin;
+  `fileListChars` repeats the host's `computeFileLists()`/`formatFileOperations()` pair to measure the
+  block it appends after the model's text, because `compact()` returns the summary as one string —
+  measure the blocks from the compaction result when the host returns them separately; and
+  `hostRetryPolicy` repeats `SettingsManager.getRetrySettings()`'s four defaults, without which the
+  host's own `retryAssistantCall()` wrapper never retries at all — read the resolved policy from the
+  extension API when the host exposes one.
 - **No project-level configuration overrides**, by design.
 
 ## Rollback
@@ -178,6 +184,65 @@ fixes above.
 The automated OpenCodeReview workflow runs when a pull request first opens; its findings, and the
 owner's own review, are the other half.
 
+### The algorithm audit
+
+After `0.1.0` was published, four independent audits of the algorithm ran against it in parallel, on
+four different models (`mafia-o/gpt-6.1-sol`, `mafia-a/claude-opus-5-5`, `mafia-o/grok-4.7`,
+`minimax-cn/MiniMax-M3.1-Flash`), each with the same brief and a different emphasis: arithmetic,
+architecture, adversarial failure modes, and the owner's own usage scenario. All four were read-only
+and none could see the owner's `models.json` or real session.
+
+Three findings were confirmed by all four, and each is now fixed and regression-tested:
+
+- **The acceptance test and the request disagreed.** A single-pool request asks for text budget plus
+  reasoning budget as one envelope, while the acceptance test accepted only the text budget. That left
+  a dead band — 8,000 tokens on `balanced`, 24,000 on `deep` — in which a summary the provider was
+  allowed to write was refused anyway, costing a second full summary request every time a model landed
+  in it. `deep` was strictly worse than `balanced` for it: the same acceptance bound with three times
+  the room to overshoot into. An attempt now accepts whatever its own request bounds.
+- **A split turn was read through its last response only.** The host makes two summarization requests
+  through the same stream function and concatenates both, so a clean second response said nothing
+  about a partial first one. The `gpt-6.1-sol` audit reproduced it in memory: an `aborted` history
+  response carrying partial text, a clean prefix response, and the existing guard accepting the
+  concatenation. Every response an attempt produces is now checked.
+- **A split turn with an empty history range could not be bounded at all.** The host carries the
+  previous summary forward verbatim and appends a fresh turn prefix, so the result can only grow. That
+  shape is now declined before any request, and announced.
+
+Three further findings, each confirmed by reading the host source and each now fixed:
+
+- **The tighter rung handed the host an unsupported `off`.** The host omits its reasoning option only
+  for a level of exactly `off`, so on a model whose `thinkingLevelMap` marks `off` unsupported the
+  retry left the adapter to its own default effort — which can be higher than the first attempt's, the
+  opposite of the retry's purpose. The rung now asks for the lowest level the model has, and the
+  announcement says which.
+- **The host's file-list block was counted against the model's budget.** A summary that used exactly
+  its budget was refused for text the model never wrote. The block is now excluded.
+- **The host's retry policy was never passed.** `compact()`'s retry argument was `undefined`, and the
+  host's `retryAssistantCall()` wrapper never retries without a policy — so a transient stream drop on
+  a minutes-long summary request failed the whole compaction on the first attempt, strictly worse than
+  the native path it wraps. The resolved policy is now passed.
+
+Two more, both about honesty rather than behaviour:
+
+- **A model can switch its own ceiling off.** `openai-responses` writes `max_output_tokens` only while
+  `compat.supportsMaxOutputTokens` is not false. The flag defaults to on, but a model that switches it
+  off drops the ceiling silently while this package's descriptor still reported one. The
+  `gpt-6.1-sol` audit confirmed it by capturing an adapter payload. The flag is now read, and such a
+  model is treated as sending no ceiling and named in the announcement.
+- **A cut point that leaves nothing to summarise returned silently.** It handed compaction back
+  without the announcement that every other handback makes, contradicting this package's own
+  statement that degradation is never silent. It now goes through the same announcement.
+
+One audit finding was **wrong** and is recorded so it is not re-derived: one auditor reported that
+`openai-responses` probably never sends the ceiling at all, reading the adapter's default as
+`?? false`. It is `?? true`, and the second gate applies only to a ChatGPT sign-in against
+`api.openai.com`. The mechanism it found is real; the severity was not.
+
+What the audits did **not** establish, and what remains open, is in "Not established" below: no
+latency or cost measurement, no real outbound request body, no real-session replay, and no reading of
+`mafia-o`'s own model entry.
+
 ## Not established
 
 The honest gap list. None of these is claimed anywhere in the README or the changeset.
@@ -197,15 +262,17 @@ The honest gap list. None of these is claimed anywhere in the README or the chan
   assertion observes the options where this package hands them to the host's stream function, through
   an in-process fake provider. Proving the intended body after the host's real adapter translates it
   needs the loopback endpoint the spec defers; that is a separate concern and not a blocker for
-  anything else.
-- **A split-turn compaction observes only its last summarization response.** When the cut point
-  lands mid-turn the host makes two summarization requests through the same stream function, and the
-  guard reads the outcome of the last one. A history response that stopped with something other than
-  a clean stop would not be seen, and its partial text is part of the summary the host assembles.
-  Found while resolving the independent review and **not fixed**: it is outside that review's
-  findings, and what "the attempt" means for a two-request compaction is a design decision rather
-  than a mechanical correction. The fix is to keep every outcome observed during a rung and require
-  all of them to be clean.
+  anything else. This matters more than it did: an independent audit confirmed by capturing an
+  adapter payload that a model declaring `compat.supportsMaxOutputTokens: false` receives **no**
+  `max_output_tokens` while this package's own descriptor still reports a ceiling. The flag is now
+  read and such a model is treated as sending no ceiling, but only a real request body proves what a
+  given gateway does.
+- **No independent check of `mafia-o`'s own model entry.** The audit that produced this release could
+  not read the owner's `models.json`. The `api` field, `compat.supportsMaxOutputTokens` and
+  `thinkingLevelMap.off` for that provider decide whether the reasoning budget is enforced, whether
+  the ceiling reaches the provider at all, and whether the ladder can actually lower the reasoning
+  draw. Every conclusion about that specific model in the README is stated against `openai-responses`
+  by way of the identically named built-in entry, which is an inference, not a measurement.
 - **Linux is unverified locally.** Everything above is macOS arm64. `.github/workflows/check.yml` runs
   ubuntu-latest and macos-latest on Node 22.19.0 and 24.12.0, but no run of this branch has been
   observed. Windows is not tested at all, by this candidate or by CI.

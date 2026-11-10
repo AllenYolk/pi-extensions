@@ -256,6 +256,24 @@ ceiling cannot be enforced and names the API, and the hook degrades before any r
 producing a summary it cannot bound. Proceeding would mean claiming a bound we do not have, which is
 worse than being inert.
 
+### A ceiling a model can switch off — `openai-responses`
+
+`openai-responses` writes `max_output_tokens` only while `compat.supportsMaxOutputTokens` is not
+false. The flag defaults to on, so an ordinary model carries the ceiling — but a model that switches
+it off drops the ceiling **silently**, with no error and no change to the request this package
+builds. Its sibling `azure-openai-responses` writes the field unconditionally, so this belongs to the
+one adapter rather than to the Responses family.
+
+The package reads the flag rather than assuming it. A model that switches the ceiling off is treated
+exactly like the no-ceiling case above: the status view says the ceiling cannot be enforced and names
+the flag, and the hook degrades before any request. Check your own `models.json` if a summarizer on
+this API degrades with a reason naming `compat.supportsMaxOutputTokens` — the fix is to stop
+switching it off, not to change this package.
+
+**This is also why the per-model ceiling verification in [validation](docs/validation.md) is not
+optional.** The adapter can be told to drop a ceiling it would otherwise send, and nothing in the
+request reveals it.
+
 ### Untested — `google-generative-ai`, `google-vertex`
 
 The adapter does honour the field: it becomes `thinkingConfig.thinkingBudget`, separate from
@@ -274,11 +292,16 @@ constant this package cannot reduce, because it adds no tools of its own — a 1
 window at the 16,000 target, and a 239,232-token compaction trigger (a 272,000-token context window
 less 32,768 reserved tokens):
 
-| Preset | Pool | Text ceiling | Base context | Growth per cycle at today's trigger | Guarantee |
+| Preset | Pool | Accepted | Base context | Growth per cycle at today's trigger | Guarantee |
 | --- | --- | --- | --- | --- | --- |
-| `fast` | 6,000 | 6,000, hard | ≤56,214 | ≥183,018 | holds by construction |
+| `fast` | 6,000 | 6,000 | ≤56,214 | ≥183,018 | holds by construction |
 | `balanced` | 20,000 | 20,000 | ≤70,214 | ≥169,018 | construction upper bound |
 | `deep` | 36,000 | 36,000 | ≤86,214 | ≥153,018 | construction upper bound |
+
+"Accepted" is what an attempt may hand back, which on a single pool is the whole pool: reasoning draws
+from inside it, so the text has no independent ceiling there. On an answer-budget API the reasoning
+budget rides on top of the output option and the accepted figure is the text budget instead. Read the
+growth column with the like-for-like paragraph below, not on its own.
 
 Every clause of the following holds by construction:
 
@@ -293,21 +316,40 @@ The 146,080 is the like-for-like baseline: the same measured 93,152-token base c
 
 The specification's original baseline of 112,464 tokens per cycle was measured against an older
 206,464-token trigger, before the reserved-token change. Comparing it with the table above would
-credit this package with that trigger move as well, and most of the apparent gain is exactly that:
-the reserved-token change accounts for 33,616 of the 70,554 tokens that `fast` appears to gain, and
-33,616 of the 40,554 that `deep` appears to gain. What this package contributes at today's trigger is
-the bounded summary and the prune path — 36,938 / 22,938 / 6,938 tokens per cycle — on top of
-arithmetic that was already true before it existed.
+credit this package with that trigger move as well, and most of the apparent gain is exactly that.
+The trigger move itself is **32,768** tokens (239,232 − 206,464); the remaining 848 of the 33,616
+this document previously attributed to it is a baseline difference, not a trigger change.
 
-`fast` is the only preset whose number is a promise rather than a bound: its reasoning budget is
-zero, so nothing else competes for the pool and 6,000 is a hard ceiling on the text. That is why the
-three presets are not redundant — `balanced` and `deep` buy a thinking phase, and pay for it with the
-certainty that the text may use whatever the thinking phase leaves.
+What this package contributes at today's trigger splits into two independent parts, and the table's
+`36,938 / 22,938 / 6,938` is their sum:
+
+| Part | `fast` | `balanced` | `deep` | What it is |
+| --- | --- | --- | --- | --- |
+| The bounded summary | 20,019 | 6,019 | −9,981 | 26,019 − the pool the preset permits |
+| The smaller kept window | 16,919 | 16,919 | 16,919 | 32,259 − 15,340, from your own `keptWindowTokens` |
+
+The prune path contributes **nothing** to these figures: base context is measured immediately after a
+compaction, before a prune can run. `deep`'s summary term is negative because its pool is larger than
+the measured 26,019-token summary it would replace — on this profile `deep` costs capacity rather
+than saving it.
+
+Read like for like, hold the kept window at the measured 32,259 and the whole comparison changes: the
+per-cycle growth becomes 166,099 / 152,099 / 136,099 against stock's 146,080 — **1.14× / 1.04× /
+0.93×**. The 32,259 is this profile's own measured kept window (93,152 − 34,874 − 26,019), which the
+specification describes as landing "between 20K and 32K"; the 15,340 in the table is what this
+package's 16,000-token target measured. Mixing the two is what made the gain look larger than it is.
+
+`fast` is the only preset whose pool equals its text budget, so it is the only one whose number is a
+bound the request enforces on its own. `balanced` and `deep` buy a thinking phase and pay for it with
+the certainty that the text may use whatever the thinking phase leaves — and on a model that does not
+support a thinking level of `off`, `fast` buys less than it appears to, because the retry ladder can
+only lower thinking to the lowest level the model has.
 
 The status view computes the same figures from your own configured kept-window target, so its
 numbers move with that setting.
 
-Beyond the request, the package refuses to persist a summary longer than the text budget. That refusal
+Beyond the request, the package refuses to persist a summary longer than the acceptance bound — the
+text budget on an answer-budget API, the pool on a single pool. That refusal
 is not the end of it: see the retry ladder below.
 
 ## The retry ladder
@@ -333,16 +375,28 @@ The difference is whether the reasoning budget reaches the provider as a token c
 | Class | Why a length stop happened | The retry |
 | --- | --- | --- |
 | Answer budget | `thinkingBudgets` is honoured, so the thinking phase may simply have eaten the quota the text needed | **Compress both budgets**: text budget and reasoning budget are each halved, so the envelope shrinks with them and the provider enforces the smaller text budget itself |
-| Single pool | The adapter never reads `thinkingBudgets`, so reasoning drew from one envelope uncapped and the envelope really was exhausted | **Drop the reasoning draw**: thinking off, and an explicit budget instruction appended to the request. The envelope is left at the pool |
+| Single pool | The adapter never reads `thinkingBudgets`, so reasoning drew from one envelope uncapped and the envelope really was exhausted | **Lower the reasoning draw**: the lowest thinking level the model actually supports, and an explicit budget instruction appended to the request. The envelope is left at the pool |
 | No ceiling | — | Never reaches the ladder; handed back before any request |
 
-Halving is the aim, not a new contract. **Both attempts are judged against the preset's own text
-budget**, so the persisted summary is always inside the number you configured; the retry's smaller
-budgets only shape the request.
+Halving is the aim, not a new contract. **An attempt may hand back whatever its own request bounds** —
+the text budget on an answer-budget API, the pool on a single pool. The retry's smaller budgets shape
+the request; they do not move the acceptance test.
 
-Leaving the envelope alone on a single pool is deliberate. The acceptance test is on the text, and a
-model told to stay inside the text budget still needs room to *stop cleanly* rather than hit the cap
-again — shrinking the envelope there would make the second length stop more likely, not less.
+That distinction is the whole point. Accepting less than the request permitted leaves a dead band in
+which a summary the provider was allowed to write is refused anyway: 8,000 tokens wide on `balanced`
+and 24,000 on `deep`, and a second full summary request every time a model lands in it. Earlier
+versions had exactly that band, and `deep` was strictly worse than `balanced` for it — the same
+acceptance bound with three times the room to overshoot into.
+
+Lowering the reasoning draw rather than removing it is deliberate. The host only omits its reasoning
+option for a level of exactly `off`, so on a model whose `thinkingLevelMap` marks `off` unsupported
+the retry asks for the lowest level that model has. Handing the host an unsupported `off` would leave
+the adapter to its own default effort, which can be higher than the first attempt's. The announcement
+says which level the retry actually used.
+
+Leaving the envelope alone on a single pool is deliberate. A model told to stay inside the text
+budget still needs room to *stop cleanly* rather than hit the cap again — shrinking the envelope
+there would make the second length stop more likely, not less.
 
 ### The budget instruction
 
@@ -363,14 +417,24 @@ Any custom instructions the compaction already carried are kept, and this is app
 A truncated or partial summary is never persisted, at any step, including from a retry:
 
 - The host throws on a length stop and on a tool call, so those never reach a result at all.
-- The package additionally refuses any response whose `stopReason` is not a clean stop, read from the
-  response itself through the stream function it owns — the host returns a partially written summary
-  unchanged for a stop reason it does not recognise, `aborted` being the case the specification names.
-- An attempt whose response the package never observed is refused as well. It has proved nothing
+- The package refuses any response whose `stopReason` is not a clean stop, read from the response
+  itself through the stream function it owns — the host returns a partially written summary unchanged
+  for a stop reason it does not recognise, `aborted` being the case the specification names.
+- **Every** response an attempt produced is checked, not only the last one. A split turn makes two
+  summarization requests through the same stream function and the host concatenates both into one
+  summary, so a clean second response says nothing about a partial first one.
+- An attempt whose responses the package never observed is refused as well. It has proved nothing
   about the summary, so it is not treated as a clean one. See the host-seam check: the package
   verifies at activation that the host does await the response, so on a host that passes the check
   this cannot happen.
-- A summary over the preset's text budget is refused, from either attempt.
+- A summary over what its own request bounds is refused, from either attempt.
+- The host appends a file-list block after the model's text. That block is **not** counted against
+  the budget, which is the model's: a summary that used exactly its budget is accepted rather than
+  refused for text the model never wrote.
+
+A split turn whose history range is empty is declined before any request. The host would carry the
+previous summary forward verbatim and append a fresh turn prefix to it, so the result can only grow
+and no budget this package sets can bound it. Declining is announced like any other handback.
 
 A cancellation stops everything. It is checked before every attempt, after every attempt and before
 every handback, and it answers `{cancel: true}`: no retry, and never a fallback that begins a fresh
@@ -380,15 +444,20 @@ compaction behind your back.
 
 Degradation is handing compaction back to stock Pi after the package's own attempts fail. It is never
 silent, and it is the same announcement whatever caused it: a host seam mismatch, an unavailable
-summarizer model, missing credentials, a no-ceiling API, a model error, a summary over the text
-budget, or a second length stop.
+summarizer model, missing credentials, a no-ceiling API, a model whose compatibility settings switch
+its ceiling off, a model error, a summary over what its request bounds, a second length stop, or a
+cut point that leaves no history this package can bound.
+
+The host's own retry policy applies to every summarization request this package makes, so a transient
+stream drop on a minutes-long summary request is retried rather than degrading the whole compaction.
+Earlier versions passed no policy, which silently disabled that wrapper.
 
 ```text
 pi-compaction: degraded — compaction handed back to stock Pi
 Preset: balanced — summarizer mafia-o/gpt-6.1-sol (openai-responses)
 Why: the summarizer hit its output ceiling, so the summary was incomplete, and after a tighter retry
-  (thinking off and an explicit 12000-token budget instruction, with the envelope unchanged) the
-  summarizer hit its output ceiling, so the summary was incomplete
+  (thinking down to low, its lowest supported level, and an explicit 12000-token budget instruction,
+  with the envelope unchanged) the summarizer hit its output ceiling, so the summary was incomplete
 Now: stock Pi sends no output ceiling at all, so the summary is bounded only by the summarizer
   model's own output limit. Measured on the profile this package was built against, summaries grew
   3,437 to 26,019 tokens across 16 compactions, each taking 289 to 490 seconds, and base context grew
@@ -481,8 +550,11 @@ just unchecked — so it is probed rather than assumed.
 
 ## Install
 
-Not yet published to npm — the first release, `0.1.0`, is a candidate. Take it from the
-[pi-extensions collection](../../README.md#install), or load it for one run:
+```sh
+pi install npm:@allenyolk/pi-compaction
+```
+
+Or take it from the [pi-extensions collection](../../README.md#install), or load it for one run:
 
 ```sh
 pi -e ./packages/pi-compaction/src/index.ts
@@ -490,9 +562,7 @@ pi -e ./packages/pi-compaction/src/index.ts
 
 ## Status
 
-The first release is `0.1.0`, a candidate; the manifest carries `0.0.0` until the pending changeset is
-applied in a version PR, which is what produces `0.1.0` as the first published version. Its
-development host, and the host its checks run against, is
+`0.1.0` is published. Its development host, and the host its checks run against, is
 `@earendil-works/pi-coding-agent` 1.5.1 — the version whose seams were inspected. It adds no tools,
 so it does not change the host's prompt and tool declarations, and it never patches the host, edits
 an installed Pi or changes the host's compaction settings. It has no runtime dependencies and no peer

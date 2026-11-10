@@ -36,6 +36,15 @@ const SEPARATE_THINKING_FIELD = new Set(['google-generative-ai', 'google-vertex'
  */
 const NO_CEILING_APIS = new Set(['openai-codex-responses']);
 
+/**
+ * Adapters that gate their output-ceiling field on a compatibility flag, and the flag that gates it.
+ * `openai-responses` writes `max_output_tokens` only while `compat.supportsMaxOutputTokens` is not
+ * false — its sibling `azure-openai-responses` writes it unconditionally, so the flag belongs to the
+ * one adapter, not to the API family. A model that switches it off drops the ceiling silently, which
+ * is the failure this package exists to prevent, so it is read rather than assumed.
+ */
+const CEILING_FLAG = new Map([['openai-responses', 'supportsMaxOutputTokens']]);
+
 export type ApiClass = 'answer-budget' | 'single-pool' | 'no-ceiling';
 /** Whether the reasoning budget reaches the provider as a token cap. */
 export type ReasoningBudgetEffect = 'enforced' | 'advisory' | 'not sent' | 'not applied';
@@ -46,12 +55,45 @@ export type ReasoningBudgetEffect = 'enforced' | 'advisory' | 'not sent' | 'not 
  */
 export function apiClassOf(model: SummarizerModel): ApiClass {
   if (NO_CEILING_APIS.has(model.api)) return 'no-ceiling';
+  const flag = CEILING_FLAG.get(model.api);
+  if (flag && readsCompatFlag(model, flag) === false) return 'no-ceiling';
   if (ADDS_THINKING_ON_TOP.has(model.api) || SEPARATE_THINKING_FIELD.has(model.api)) return 'answer-budget';
   return 'single-pool';
 }
 
+/** A compatibility flag's value, or undefined when the model does not declare it. */
+function readsCompatFlag(model: SummarizerModel, flag: string): boolean | undefined {
+  const compat = (model as { compat?: Record<string, unknown> }).compat;
+  const value = compat?.[flag];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+/**
+ * What one attempt is allowed to hand back.
+ *
+ * On an answer-budget API the output option carries the text budget and the reasoning budget rides
+ * on top of it, so the text is the number to bound. On a single pool the output option is their sum
+ * and reasoning draws from inside it, so the pool is the only figure the request actually bounds.
+ * Accepting less than the pool would leave a dead band in which a summary the request permitted is
+ * refused by the acceptance test — which on a preset like `deep` is 24,000 tokens wide, and costs a
+ * second full request every time the model lands in it.
+ */
+export function acceptedTokens(model: SummarizerModel, tuple: Tuple): number {
+  return apiClassOf(model) === 'answer-budget' ? tuple.textBudget : tuple.textBudget + tuple.reasoningBudget;
+}
+
 /** The host estimates a compaction summary at four characters per token. */
-export const estimateSummaryTokens = (summary: string): number => Math.ceil(summary.length / 4);
+export const estimateSummaryTokens = (summary: string): number => estimateModelTokens(summary);
+
+/**
+ * The same estimate over the model's own text.
+ *
+ * `appendedChars` is what the host appends after the model stops — the file-list block — which the
+ * budget was never meant to cover, so counting it would refuse a summary that used exactly the
+ * budget it was given.
+ */
+export const estimateModelTokens = (summary: string, appendedChars = 0): number =>
+  Math.ceil(Math.max(0, summary.length - appendedChars) / 4);
 
 export interface OutputBudgets {
   maxTokens: number;
@@ -132,6 +174,8 @@ export const HOST_PROMPT_AND_TOOLS_TOKENS = 34_874;
 export interface OutboundRequest {
   api: string;
   apiClass: ApiClass;
+  /** Which compatibility flag switched the ceiling off, when that is why there is none. */
+  ceilingFlag?: string;
   /** The value the provider's own output-ceiling field carries, or null when it sends none. */
   outputFieldCeiling: number | null;
   /** The model's own output limit, which caps an adapter that adds thinking on top. */
@@ -179,9 +223,11 @@ export function describeOutboundRequest(
   const pool = tuple.textBudget + reasoning;
 
   if (apiClass === 'no-ceiling') {
+    const flag = CEILING_FLAG.get(model.api);
     return {
       api: model.api,
       apiClass,
+      ...(flag && readsCompatFlag(model, flag) === false ? { ceilingFlag: flag } : {}),
       outputFieldCeiling: null,
       modelLimit,
       reasoningTokens: reasoning,
@@ -285,6 +331,33 @@ function outcomeOf(message: unknown): AttemptOutcome {
   return {
     ...(typeof response.stopReason === 'string' ? { stopReason: response.stopReason } : {}),
     toolCall: content.some((block) => (block as { type?: unknown } | null)?.type === 'toolCall'),
+  };
+}
+
+export interface RetryPolicy {
+  enabled: boolean;
+  maxRetries: number;
+  baseDelayMs: number;
+  maxAgentDelayMs: number;
+}
+
+/**
+ * The host's resolved retry policy for a summarization request.
+ *
+ * shortcut: this repeats `SettingsManager.getRetrySettings()` — the same four defaults over the raw
+ * merged settings — because an extension is handed merged rather than resolved settings. Passing no
+ * policy at all is worse than it looks: the host wraps every summarization call in
+ * `retryAssistantCall()` precisely so a transient stream drop does not fail the compaction, and that
+ * wrapper never retries without a policy. On a summary request that runs for minutes, a dropped
+ * socket would then fail the whole compaction on the first attempt — strictly worse than the native
+ * path it wraps. Read the resolved policy from the extension API when the host exposes one.
+ */
+export function hostRetryPolicy(settings: { retry?: Partial<RetryPolicy> }): RetryPolicy {
+  return {
+    enabled: settings.retry?.enabled ?? true,
+    maxRetries: settings.retry?.maxRetries ?? 3,
+    baseDelayMs: settings.retry?.baseDelayMs ?? 2_000,
+    maxAgentDelayMs: settings.retry?.maxAgentDelayMs ?? 60_000,
   };
 }
 

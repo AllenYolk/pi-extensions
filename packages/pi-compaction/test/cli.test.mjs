@@ -358,6 +358,88 @@ test('a response that did not stop cleanly is refused, and its partial text is n
   assertRecorded(run, { preset: 'balanced', reason });
 });
 
+test('a split turn refuses a partial first response even when its second one is clean', { timeout: 180_000 }, () => {
+  // A split turn makes two summarization requests through the same stream function and the host
+  // concatenates both into one summary, so the last response alone says nothing about the first.
+  // The host returns an `aborted` response as a normal result carrying partial text, which is why
+  // the package has to read every response the attempt produced.
+  const run = runCompaction({
+    name: 'split-partial-',
+    // A kept window this small puts the cut point inside a turn rather than at a turn's start.
+    config: { enabled: true, preset: 'balanced', keptWindowTokens: 1_000 },
+    fixture: { STOP_REASON: 'aborted', FAIL_FIRST: 1 },
+    turns: 30,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  const attempts = ours(run.records);
+  assert.equal(attempts.length, 2, 'a split turn makes two summarization requests through our stream function');
+  assert.equal(attempts[0].stopReason, 'aborted', 'the first response carries the partial text');
+  assert.equal(attempts[1].stopReason, undefined, 'the second is clean — all a last-response-only check would see');
+  assert.equal(stock(run.records).length, 1, 'stock Pi then compacted on its own');
+
+  // The host was willing to concatenate the partial history into the summary; the session must not.
+  const persisted = persistedCompactions(run.session.file);
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].fromHook ?? false, false, 'the compaction that reached the session is the host\'s, not ours');
+  assertNoPartialPersisted(run);
+  assert.match(run.plain, /Why: the summarizer's response stopped with "aborted"/);
+});
+
+test('a summary that used exactly its budget is not refused for the block the host appends', { timeout: 180_000 }, () => {
+  // The host appends the file-list block after the model's text. The budget is the model's, so a
+  // summary that used all of it has to be accepted: counting the appended block would refuse it and
+  // cost a second full request, or a handback, every time a model landed on its budget.
+  const tuple = PRESETS.balanced;
+  const run = runCompaction({
+    name: 'budget-edge-',
+    config: { enabled: true, preset: 'balanced' },
+    fixture: { SUMMARY: tuple.textBudget },
+    turns: 30,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+  assert.equal(ours(run.records).length, 1, 'one attempt: the summary was inside the budget it was given');
+  assert.equal(stock(run.records).length, 0, 'stock Pi was never asked');
+
+  const [persisted] = persistedCompactions(run.session.file);
+  assert.equal(persisted.fromHook, true, 'the summary is ours');
+  assert.ok(persisted.summary.includes('<read-files>'), 'the host appended the file-list block');
+  // The persisted total exceeds the text budget precisely because the block is in it — which is the
+  // whole reason the acceptance test measures the model's text alone.
+  assert.ok(
+    Math.ceil(persisted.summary.length / 4) > tuple.textBudget,
+    `the persisted total was ${Math.ceil(persisted.summary.length / 4)} tokens, expected more than ${tuple.textBudget}`,
+  );
+  assert.doesNotMatch(run.plain, new RegExp(HEADLINE), 'and none of that is a degradation');
+});
+
+test('a single-pool summary may use the whole envelope the request asked for', { timeout: 180_000 }, () => {
+  // The request asks for text budget + reasoning budget as one envelope, and on a single pool
+  // reasoning draws from inside it. Refusing anything above the text budget alone left a dead band
+  // — 8,000 tokens wide on `balanced`, 24,000 on `deep` — in which a summary the request permitted
+  // was rejected, costing a second full request every time a model landed in it.
+  const tuple = PRESETS.balanced;
+  const run = runCompaction({
+    name: 'pool-band-',
+    config: { enabled: true, preset: 'balanced', summarizerModel: 'pi-compaction-fixture-pool/pool-summarizer' },
+    // Above the text budget, inside the envelope.
+    fixture: { SUMMARY: 15_000 },
+    turns: 30,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  const attempts = ours(run.records);
+  assert.equal(attempts.length, 1, 'one attempt: the summary was inside the envelope the request asked for');
+  assert.equal(attempts[0].options.maxTokens, tuple.textBudget + tuple.reasoningBudget, 'and that envelope is the pool');
+  assert.equal(stock(run.records).length, 0, 'stock Pi was never asked');
+
+  const [persisted] = persistedCompactions(run.session.file);
+  assert.equal(persisted.fromHook, true, 'the summary is ours');
+  const tokens = Math.ceil(persisted.summary.length / 4);
+  assert.ok(tokens > tuple.textBudget, `the summary was ${tokens} tokens, expected more than the ${tuple.textBudget}-token text budget`);
+  assert.doesNotMatch(run.plain, new RegExp(HEADLINE), 'and that is not a degradation');
+});
+
 test('a cancellation stops the ladder and starts no new work', { timeout: 180_000 }, () => {
   const run = runCompaction({
     name: 'cancel-',
@@ -407,8 +489,9 @@ test('every path that hands compaction back announces to the same standard', { t
       config: { enabled: true, preset: 'balanced' },
       fixture: { MODE: 'oversized', SUMMARY: 2_000 },
       summarizer: 'minimax-cn/pi-compaction-conversation \\(anthropic-messages\\)',
-      why: 'the summarizer produced a \\d+-token summary, over the preset\\\'s 12000-token text budget, and after a tighter retry '
-        + '\\(text budget 12000 to 6000, reasoning budget 8000 to 4000\\) the summarizer produced a \\d+-token summary, over the preset\\\'s 12000-token text budget',
+      why: 'the summarizer produced a \\d+-token summary, over the 12000 tokens this attempt permits, and after a tighter retry '
+        + '\\(text budget 12000 to 6000, reasoning budget 8000 to 4000\\) the summarizer produced a \\d+-token summary, '
+        + 'over the 12000 tokens this attempt permits',
       requests: 2,
     },
   ];

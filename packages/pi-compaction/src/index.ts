@@ -17,7 +17,7 @@ import {
   type Selection,
   type ThinkingLevel,
 } from './config.ts';
-import { prepareCompaction } from './preparation.ts';
+import { fileListChars, prepareCompaction } from './preparation.ts';
 import {
   announcement,
   DEGRADATION_ENTRY,
@@ -36,10 +36,12 @@ import {
   planPrune,
 } from './prune.ts';
 import {
+  acceptedTokens,
   boundedStream,
   checkHostSeam,
   describeOutboundRequest,
-  estimateSummaryTokens,
+  estimateModelTokens,
+  hostRetryPolicy,
   HOST_PROMPT_AND_TOOLS_TOKENS,
   resolveSummarizerModel,
   summarizerThinkingLevel,
@@ -148,22 +150,34 @@ export default function piCompaction(pi: ExtensionAPI): void {
     const outbound = describeOutboundRequest(model, tuple, thinking, settings.keptWindowTokens);
     if (outbound.apiClass === 'no-ceiling') {
       // Proceeding would mean claiming a bound we do not have, which is worse than being inert.
+      const dropped = outbound.ceilingFlag
+        ? `${outbound.api} on this model switches its output-ceiling field off (compat.${outbound.ceilingFlag} is false)`
+        : `${outbound.api} sends no output-ceiling field`;
       return handBack(
         named,
-        `${outbound.api} sends no output-ceiling field, so the ${tuple.textBudget}-token text budget `
-        + `and the ${tuple.reasoningBudget}-token reasoning budget would both be dropped`,
+        `${dropped}, so the ${tuple.textBudget}-token text budget and the ${tuple.reasoningBudget}-token `
+        + 'reasoning budget would both be dropped',
       );
     }
     const prepared = prepareCompaction(event.branchEntries, event.preparation, settings.keptWindowTokens);
-    if (!prepared) return;
+    if (!prepared) {
+      return handBack(
+        named,
+        'the cut point leaves no history to summarise, so the host would carry the previous summary '
+        + 'forward and this package could not bound the result',
+      );
+    }
 
     // Two rungs, so the ladder cannot loop: the preset's own configuration, then one tighter one.
     const rungs = ladder(model, tuple, thinking);
+    const retry = hostRetryPolicy(pi.getSettings());
+    const accepted = acceptedTokens(model, tuple);
+    const fileList = fileListChars(prepared.fileOps);
     const failures: string[] = [];
     for (const [index, rung] of rungs.entries()) {
       if (event.signal.aborted) return { cancel: true };
       const last = index === rungs.length - 1;
-      let outcome: AttemptOutcome | undefined;
+      const outcomes: AttemptOutcome[] = [];
       let result;
       try {
         result = await compact(
@@ -174,30 +188,37 @@ export default function piCompaction(pi: ExtensionAPI): void {
           withInstruction(event.customInstructions, rung.instruction),
           event.signal,
           rung.thinking as never,
-          boundedStream(ctx.modelRegistry, rung.budgets, (seen) => { outcome = seen; }),
+          boundedStream(ctx.modelRegistry, rung.budgets, (seen) => { outcomes.push(seen); }),
           undefined,
-          undefined,
+          retry,
           undefined,
           ctx.sessionManager.getSessionId(),
         );
       } catch (error) {
         if (event.signal.aborted) return { cancel: true };
-        failures.push(describeFailure(outcome, error));
+        failures.push(describeFailure(outcomes.at(-1), error));
         // A tighter configuration answers a length stop and an overlong summary, and nothing else:
         // a model error, a timeout or a malformed result would only be paid for twice.
-        if (last || outcome?.stopReason !== 'length') break;
+        if (last || !outcomes.some((seen) => seen.stopReason === 'length')) break;
         continue;
       }
       if (event.signal.aborted) return { cancel: true };
-      // Nothing the provider did not finish cleanly is persisted, whatever the host handed back —
-      // and an attempt whose response this package never observed proves nothing about its summary.
-      if (!outcome || outcome.stopReason !== 'stop') {
-        failures.push(outcome ? describeFailure(outcome, undefined) : UNOBSERVED_RESPONSE);
+      /**
+       * Every response the attempt produced has to have finished cleanly. A split turn makes two
+       * summarization requests through the same stream function and the host concatenates both into
+       * one summary, so the last response alone says nothing about the first — and an attempt whose
+       * responses were never observed proves nothing at all.
+       */
+      const unclean = outcomes.find((seen) => seen.stopReason !== 'stop');
+      if (outcomes.length === 0 || unclean) {
+        failures.push(unclean ? describeFailure(unclean, undefined) : UNOBSERVED_RESPONSE);
         break;
       }
-      const tokens = estimateSummaryTokens(result.summary);
-      if (tokens <= tuple.textBudget) return { compaction: result };
-      failures.push(`the summarizer produced a ${tokens}-token summary, over the preset's ${tuple.textBudget}-token text budget`);
+      // The budget is the model's. The host appends the file-list block itself, so it is not counted
+      // against a budget the model was never given.
+      const tokens = estimateModelTokens(result.summary, fileList);
+      if (tokens <= accepted) return { compaction: result };
+      failures.push(`the summarizer produced a ${tokens}-token summary, over the ${accepted} tokens this attempt permits`);
     }
 
     return handBack(named, failures.length > 1
