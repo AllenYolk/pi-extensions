@@ -199,6 +199,11 @@ export default function fakeProvider(pi: ExtensionAPI) {
       model('minimax-M3.1-Flash', ANSWER_BUDGET_API),
       // `medium` is unsupported here, so a preset asking for it has to be clamped.
       model('minimax-M3.1-Flash-no-medium', ANSWER_BUDGET_API, { thinkingLevelMap: { medium: null } }),
+      // Neither `off` nor `minimal` is supported, which is the shape a reasoning model that cannot
+      // be told not to reason has — `mafia-o/gpt-6.1-sol` among them.
+      model('pi-compaction-no-off', ANSWER_BUDGET_API, {
+        thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: 'medium', high: 'high' },
+      }),
       model('pi-compaction-conversation', ANSWER_BUDGET_API),
     ] as never,
   });

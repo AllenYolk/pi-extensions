@@ -47,7 +47,7 @@ const CEILING_FLAG = new Map([['openai-responses', 'supportsMaxOutputTokens']]);
 
 export type ApiClass = 'answer-budget' | 'single-pool' | 'no-ceiling';
 /** Whether the reasoning budget reaches the provider as a token cap. */
-export type ReasoningBudgetEffect = 'enforced' | 'advisory' | 'not sent' | 'not applied';
+export type ReasoningBudgetEffect = 'enforced' | 'advisory' | 'not sent' | 'not applied' | 'uncapped';
 
 /**
  * Which of the three shapes the model's API has. An API this package has not read is treated as one
@@ -216,6 +216,13 @@ export function describeOutboundRequest(
   keptWindowTokens: number,
 ): OutboundRequest {
   const reasoning = thinking === 'off' ? 0 : tuple.reasoningBudget;
+  /**
+   * A zero reasoning budget asks for `off`, but a model whose `thinkingLevelMap` marks `off`
+   * unsupported gets its lowest level instead. It then reasons anyway, with no budget of its own,
+   * drawing from the same envelope as the text — so "the summarizer does not reason" would be false
+   * and the text has no guaranteed room.
+   */
+  const reasonsWithoutBudget = thinking !== 'off' && tuple.reasoningBudget === 0;
   const apiClass = apiClassOf(model);
   const modelLimit = typeof model.maxTokens === 'number' && model.maxTokens > 0
     ? model.maxTokens
@@ -254,11 +261,13 @@ export function describeOutboundRequest(
     outputFieldCeiling,
     modelLimit,
     reasoningTokens: reasoning,
-    reasoningBudget: reasoning === 0 ? 'not sent' : enforced ? 'enforced' : 'advisory',
+    reasoningBudget: reasonsWithoutBudget
+      ? 'uncapped'
+      : reasoning === 0 ? 'not sent' : enforced ? 'enforced' : 'advisory',
     // Thinking capped at the reasoning budget inside an envelope of their sum leaves the text budget
     // available; an uncapped reasoning phase in a shared pool does not, and a separate thinking field
     // depends on whether the provider counts it against the output option.
-    textRoomGuaranteed: reasoning === 0 || (enforced && !separate),
+    textRoomGuaranteed: !reasonsWithoutBudget && (reasoning === 0 || (enforced && !separate)),
     providerDependent: separate,
     worstCaseSummaryTokens,
     worstCaseBaseContextTokens: HOST_PROMPT_AND_TOOLS_TOKENS + worstCaseSummaryTokens + keptWindowTokens,

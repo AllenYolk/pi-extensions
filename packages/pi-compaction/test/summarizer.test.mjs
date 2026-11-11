@@ -181,6 +181,31 @@ test('a summary is measured with the host\'s own four-characters-per-token estim
   assert.equal(estimateSummaryTokens('a'.repeat(48_000)), 12_000);
 });
 
+test('a zero reasoning budget does not mean the summarizer will not reason', () => {
+  // A zero budget asks for `off`. A model whose `thinkingLevelMap` marks `off` unsupported gets its
+  // lowest level instead and then reasons anyway, drawing from the same envelope as the text with no
+  // budget of its own. Saying "the summarizer does not reason" would be false, and so would promising
+  // the text any room.
+  const noOff = model('openai-responses', {
+    thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: 'medium', high: 'high' },
+  });
+  assert.equal(summarizerThinkingLevel(noOff, PRESETS.fast), 'low', 'off is unavailable, so the lowest level wins');
+
+  const outbound = describeOutboundRequest(noOff, PRESETS.fast, 'low', 16_000);
+  assert.equal(outbound.reasoningBudget, 'uncapped');
+  assert.equal(outbound.textRoomGuaranteed, false, 'the text has no guaranteed room');
+  assert.equal(outbound.reasoningTokens, 0, 'no budget is sent');
+  // The envelope is still the whole pool, so the worst case for the summary is unchanged.
+  assert.equal(outbound.worstCaseSummaryTokens, 6_000);
+
+  // A model that does have `off` really does not reason.
+  const withOff = model('openai-responses', { thinkingLevelMap: { off: 'none', low: 'low' } });
+  assert.equal(summarizerThinkingLevel(withOff, PRESETS.fast), 'off');
+  const quiet = describeOutboundRequest(withOff, PRESETS.fast, 'off', 16_000);
+  assert.equal(quiet.reasoningBudget, 'not sent');
+  assert.equal(quiet.textRoomGuaranteed, true, 'the text has the whole pool');
+});
+
 test('an adapter whose output-ceiling flag is switched off is treated as sending no ceiling', () => {
   // `openai-responses` writes `max_output_tokens` only while `compat.supportsMaxOutputTokens` is not
   // false. A model that switches it off drops the ceiling silently, which is the exact failure this

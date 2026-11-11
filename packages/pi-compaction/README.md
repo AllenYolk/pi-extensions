@@ -274,6 +274,25 @@ switching it off, not to change this package.
 optional.** The adapter can be told to drop a ceiling it would otherwise send, and nothing in the
 request reveals it.
 
+### A model that cannot be told not to reason
+
+Some models mark `off` unsupported in their `thinkingLevelMap`. A zero reasoning budget asks for
+`off`, and on such a model the request is clamped to its lowest supported level instead — at which
+point **the summarizer reasons anyway**, with no budget of its own.
+
+| Class | What happens then |
+| --- | --- |
+| Single pool | The reasoning phase draws uncapped from the same envelope as the text, so the text has no guaranteed room |
+| Answer budget | The adapter adds a thinking budget of its own when none is supplied. What it picks is not readable from the model, so **the ceiling the status view reports is a lower bound** |
+
+`fast` therefore buys less than it appears to on such a model: its pool is still the smallest and its
+number is still the whole envelope, but nothing stops the thinking phase from eating into it. The
+status view says `none, and none is available` and names the level the request actually used, rather
+than claiming the summarizer does not reason.
+
+Check `Thinking:` in `/compaction` before relying on `fast` for a hard text ceiling. A model whose
+`thinkingLevelMap` has `"off": "none"` really does stop; one with `"off": null` does not.
+
 ### Untested — `google-generative-ai`, `google-vertex`
 
 The adapter does honour the field: it becomes `thinkingConfig.thinkingBudget`, separate from

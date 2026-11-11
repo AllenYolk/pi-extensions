@@ -38,6 +38,18 @@ Such a model is now treated as sending no ceiling, and the announcement names th
 **A cut point that leaves nothing to summarise is announced.** It handed compaction back silently,
 contradicting the package's own statement that degradation is never silent.
 
+**A zero reasoning budget no longer claims the summarizer will not reason.** Reading the owner's own
+model configuration afterwards showed that their conversation model marks both `off` and `minimal`
+unsupported, so `fast` is clamped to `low` and reasons anyway — while a sibling model on the same
+provider declares `"off": "none"` and genuinely stops. The status view used to print "the summarizer
+does not reason" and "no reasoning budget" for both, which is false for the first. There is now an
+`uncapped` reasoning-budget effect, the status view names the level the request actually used, and on
+an answer-budget API it says the reported ceiling is a lower bound because the adapter adds a thinking
+budget of its own.
+
+The same read ruled out the audits' worst fear for that provider: `compat.supportsMaxOutputTokens` is
+unset, so the output ceiling does reach it.
+
 The README's per-cycle figures are also corrected. The `36,938 / 22,938 / 6,938` previously credited to
 "the bounded summary and the prune path" splits into a summary term, a kept-window term, and nothing
 at all from pruning — base context is measured before a prune can run. Read like for like at the same

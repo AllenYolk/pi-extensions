@@ -413,6 +413,35 @@ test('a summary that used exactly its budget is not refused for the block the ho
   assert.doesNotMatch(run.plain, new RegExp(HEADLINE), 'and none of that is a degradation');
 });
 
+test('the status view tells the truth about a model that cannot stop reasoning', { timeout: 180_000 }, () => {
+  // `off` and `minimal` unsupported is the shape of a reasoning model that cannot be told not to
+  // reason — `mafia-o/gpt-6.1-sol` among them. A zero reasoning budget then buys no reasoning
+  // silence at all, and the status view has to say so rather than claim the summarizer does not
+  // reason.
+  const run = runCompaction({
+    name: 'no-off-',
+    config: { enabled: true, preset: 'fast', summarizerModel: 'minimax-cn/pi-compaction-no-off' },
+    turns: 30,
+    hold: true,
+    script: statusScript,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  assert.match(run.plain, /Summarizer model: minimax-cn\/pi-compaction-no-off/);
+  assert.match(run.plain, /Thinking: low \(clamped from off; this model has no off, so its reasoning phase still draws from the pool\)/);
+  assert.match(run.plain, /Reasoning budget on this API: none, and none is available . this model's lowest thinking level is low, not off/);
+  assert.doesNotMatch(run.plain, /the summarizer does not reason/, 'that claim would be false here');
+  // On an answer-budget API the adapter adds a thinking budget of its own when none is supplied, so
+  // the ceiling this package reports is a lower bound rather than the whole story.
+  assert.match(run.plain, /the adapter may add a default thinking budget of its own, which makes the ceiling above a lower bound/);
+
+  // And the request really does carry an effort level rather than no reasoning at all.
+  const [record] = ours(run.records);
+  assert.equal(record.options.reasoning, 'low', 'the host is told to reason at the lowest level this model has');
+  assert.equal(record.options.thinkingBudgets, undefined, 'with no budget to cap it');
+  assert.equal(record.options.maxTokens, PRESETS.fast.textBudget);
+});
+
 test('a single-pool summary may use the whole envelope the request asked for', { timeout: 180_000 }, () => {
   // The request asks for text budget + reasoning budget as one envelope, and on a single pool
   // reasoning draws from inside it. Refusing anything above the text budget alone left a dead band

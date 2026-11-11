@@ -357,9 +357,17 @@ export default function piCompaction(pi: ExtensionAPI): void {
       const wanted = tuple.model === null ? `${CONVERSATION_MODEL} model` : tuple.model;
       const described = model ? `${model.provider}/${model.id} (${model.api})` : `${wanted} — not available on this host`;
       const thinking = model ? summarizerThinkingLevel(model, tuple) : tuple.thinking;
+      /**
+       * Why the effective level differs from the configured one. A zero reasoning budget asks for
+       * `off`; a model whose `thinkingLevelMap` marks `off` unsupported gets its lowest level
+       * instead, and at that point the reasoning phase is real — so calling it "no reasoning budget"
+       * would be the wrong thing to say.
+       */
       const why = thinking === tuple.thinking ? ''
-        : tuple.reasoningBudget === 0 ? ' (no reasoning budget)'
-          : ` (clamped from ${tuple.thinking})`;
+        : thinking === 'off' ? ' (no reasoning budget)'
+          : tuple.reasoningBudget === 0
+            ? ` (clamped from off; this model has no off, so its reasoning phase still draws from the pool)`
+            : ` (clamped from ${tuple.thinking})`;
       lines.push(`Summarizer model: ${described}`);
       lines.push(`Thinking: ${thinking}${why}`);
       lines.push(`Text budget: ${tuple.textBudget}`);
@@ -384,7 +392,15 @@ export default function piCompaction(pi: ExtensionAPI): void {
               : `enforced as a thinking budget of ${outbound.reasoningTokens}; the room left for text depends on the provider`
             : outbound.reasoningBudget === 'advisory'
               ? `advisory — ${outbound.api} sends a reasoning effort level, not a token cap, so the reasoning phase draws uncapped from the same pool and the text has no independent ceiling`
-              : 'not sent — the summarizer does not reason';
+              : outbound.reasoningBudget === 'uncapped'
+                ? `none, and none is available — this model's lowest thinking level is ${thinking}, not off, `
+                  + 'so it reasons anyway with no budget of its own'
+                  + (outbound.apiClass === 'answer-budget'
+                    // The adapter adds a thinking budget of its own when none is supplied, and what
+                    // it picks is not readable from the model, so the ceiling above is a lower bound.
+                    ? '; the adapter may add a default thinking budget of its own, which makes the ceiling above a lower bound, and the text has no guaranteed room'
+                    : '; the reasoning phase draws uncapped from the same pool and the text has no guaranteed room')
+                : 'not sent — the summarizer does not reason';
           lines.push(`Reasoning budget on this API: ${effect}`);
           lines.push(
             `Worst case: summary ${outbound.worstCaseSummaryTokens} tokens; base context ` +

@@ -26,8 +26,8 @@ table are that last run's; the environment is the same machine and the same host
 
 | Check | Result |
 | --- | --- |
-| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **90/90 tests pass** |
-| `npm run check` | **176/176 tests pass** (90 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
+| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **92/92 tests pass** |
+| `npm run check` | **178/178 tests pass** (92 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
 | `npm pack --json --ignore-scripts` | 9 entries: `LICENSE`, `README.md`, `package.json`, `src/{config,index,ladder,preparation,prune,summarizer}.ts` |
 | `npm run benchmark` | **deliberately skipped** — see below |
 
@@ -240,8 +240,26 @@ One audit finding was **wrong** and is recorded so it is not re-derived: one aud
 `api.openai.com`. The mechanism it found is real; the severity was not.
 
 What the audits did **not** establish, and what remains open, is in "Not established" below: no
-latency or cost measurement, no real outbound request body, no real-session replay, and no reading of
-`mafia-o`'s own model entry.
+latency or cost measurement, no real outbound request body, and no real-session replay.
+
+### Reading the owner's own model entry
+
+The audits could not see `~/.pi/agent/models.json`, so three of their conclusions about the owner's
+provider were inferences. Reading it afterwards — with authorization, and only the fields below —
+turned one of those inferences into a measurement and corrected another:
+
+- `compat.supportsMaxOutputTokens` is unset, so the ceiling **does** reach the provider. One auditor
+  had reported it probably never did.
+- The owner's conversation model marks **both `off` and `minimal` unsupported**. Two auditors had
+  derived this from the identically named built-in entry; it is now confirmed against the real
+  configuration, and it is worse than the built-in entry alone suggested.
+- A sibling model on the same provider declares `"off": "none"`. So this is a per-model property, not
+  a property of the gateway, and a preset's value depends on which model it runs on.
+
+That last point produced a further fix beyond the audit's findings: a zero reasoning budget does not
+mean the summarizer will not reason, and the status view used to claim it did. There is now an
+`uncapped` reasoning-budget effect, the announcement names the level the request actually used, and
+`README.md` has a section on models that cannot be told not to reason.
 
 ## Not established
 
@@ -267,12 +285,20 @@ The honest gap list. None of these is claimed anywhere in the README or the chan
   `max_output_tokens` while this package's own descriptor still reports a ceiling. The flag is now
   read and such a model is treated as sending no ceiling, but only a real request body proves what a
   given gateway does.
-- **No independent check of `mafia-o`'s own model entry.** The audit that produced this release could
-  not read the owner's `models.json`. The `api` field, `compat.supportsMaxOutputTokens` and
-  `thinkingLevelMap.off` for that provider decide whether the reasoning budget is enforced, whether
-  the ceiling reaches the provider at all, and whether the ladder can actually lower the reasoning
-  draw. Every conclusion about that specific model in the README is stated against `openai-responses`
-  by way of the identically named built-in entry, which is an inference, not a measurement.
+- **`mafia-o`'s own model entry has been read** (with the owner's authorization, and only the three
+  fields below — no credentials). `api` is `openai-responses` at the provider level, so the class is
+  single pool and the reasoning budget is advisory on every model there.
+  `compat.supportsMaxOutputTokens` is **not** set at either level, so the adapter's `?? true` default
+  applies and the output ceiling does reach the provider — the audit's worst fear for this provider is
+  ruled out by configuration, not by argument. `thinkingLevelMap` differs per model and is the finding
+  that mattered: the owner's own conversation model marks **both `off` and `minimal` unsupported**, so
+  `fast` is clamped to `low` and reasons anyway, while a sibling model on the same provider declares
+  `"off": "none"` and genuinely stops. That is now stated in the README, reflected by a new
+  `uncapped` reasoning-budget effect, and covered by a real-CLI test.
+- **On an answer-budget API with no `off`, the reported ceiling is a lower bound.** The adapter adds a
+  thinking budget of its own when none is supplied, and what it picks is not readable from the model,
+  so `describeOutboundRequest` cannot state the resulting envelope. The status view says so. This does
+  not affect `mafia-o`, which is single pool.
 - **Linux is unverified locally.** Everything above is macOS arm64. `.github/workflows/check.yml` runs
   ubuntu-latest and macos-latest on Node 22.19.0 and 24.12.0, but no run of this branch has been
   observed. Windows is not tested at all, by this candidate or by CI.
