@@ -371,93 +371,68 @@ Beyond the request, the package refuses to persist a summary longer than the acc
 text budget on an answer-budget API, the pool on a single pool. That refusal
 is not the end of it: see the retry ladder below.
 
-## The retry ladder
+## One request, and what each way it can end means
 
-A hard ceiling on a model that wants to write more produces a **length stop**, and a model that
-ignores the budget produces a summary **over the text budget**. Both used to end in the same place —
-warn, and hand compaction back to stock Pi, which is the unbounded summary this package exists to
-remove. So the package's own guardrail no longer routes into the bug it was built to fix.
+A compaction makes **one** summarization request. There is no retry, because every way that request
+can end already has a bounded outcome, and a second request would only pay twice for a result the
+ceiling has already decided. The reasoning is in
+[ADR 0004](docs/adr/0004-accept-a-length-stop-as-the-budget-working.md).
 
-1. Attempt with the preset's model, thinking level and both budgets.
-2. On a length stop, or on a summary over the text budget, retry **once** with a tighter
-   configuration.
-3. On any further failure — a second length stop, a model error, a timeout, a malformed result —
-   degrade to stock Pi.
+| How the request ended | What happens |
+| --- | --- |
+| Clean stop, inside the envelope | The summary is persisted |
+| Clean stop, over the envelope | Refused. The request permitted less than the model wrote, and this package will not persist more than it asked for |
+| **Length stop** | **Accepted.** The provider cut the response at the ceiling we asked for — that is the budget working, not a failure. The truncated summary is persisted |
+| Error, timeout, or a response this package never observed | Handed back to stock Pi, announced |
+| Any other stop reason (`aborted`, a tool call) | Refused, announced. The host returns a partially written summary unchanged for a stop reason it does not recognise, and this package will not persist one |
 
-The retry is **two rungs, not a loop**: the configuration list is a fixed array, so there is no third
-attempt to reach however the second one fails.
+A length stop is the case worth understanding. The host treats it as a summarization failure and
+throws, which is right for a caller that sets no ceiling: there, running out of room is an accident.
+Here the ceiling was chosen and the provider enforced it, so the response is exactly as long as it was
+asked to be. Treating that as a failure would turn the one bounded outcome into a handback — and a
+handback is the unbounded summary this package exists to remove.
 
-### The tighter configuration depends on the API class
+The summary is then incomplete. That is the honest meaning of a ceiling: you asked for N tokens and
+got N tokens. On a session whose previous summary already exceeds the budget this is the *expected*
+result, not a rare one, because the host's own prompt asks the model to preserve everything.
 
-The difference is whether the reasoning budget reaches the provider as a token cap.
-
-| Class | Why a length stop happened | The retry |
-| --- | --- | --- |
-| Answer budget | `thinkingBudgets` is honoured, so the thinking phase may simply have eaten the quota the text needed | **Compress both budgets**: text budget and reasoning budget are each halved, so the envelope shrinks with them and the provider enforces the smaller text budget itself |
-| Single pool | The adapter never reads `thinkingBudgets`, so reasoning drew from one envelope uncapped and the envelope really was exhausted | **Lower the reasoning draw**: the lowest thinking level the model actually supports, and an explicit budget instruction appended to the request. The envelope is left at the pool |
-| No ceiling | — | Never reaches the ladder; handed back before any request |
-
-Halving is the aim, not a new contract. **An attempt may hand back whatever its own request bounds** —
-the text budget on an answer-budget API, the pool on a single pool. The retry's smaller budgets shape
-the request; they do not move the acceptance test.
-
-That distinction is the whole point. Accepting less than the request permitted leaves a dead band in
-which a summary the provider was allowed to write is refused anyway: 8,000 tokens wide on `balanced`
-and 24,000 on `deep`, and a second full summary request every time a model lands in it. Earlier
-versions had exactly that band, and `deep` was strictly worse than `balanced` for it — the same
-acceptance bound with three times the room to overshoot into.
-
-Lowering the reasoning draw rather than removing it is deliberate. The host only omits its reasoning
-option for a level of exactly `off`, so on a model whose `thinkingLevelMap` marks `off` unsupported
-the retry asks for the lowest level that model has. Handing the host an unsupported `off` would leave
-the adapter to its own default effort, which can be higher than the first attempt's. The announcement
-says which level the retry actually used.
-
-Leaving the envelope alone on a single pool is deliberate. A model told to stay inside the text
-budget still needs room to *stop cleanly* rather than hit the cap again — shrinking the envelope
-there would make the second length stop more likely, not less.
-
-### The budget instruction
-
-The host appends `customInstructions` to its summarization prompt as an "Additional focus" section,
-which is the only place a budget can be stated in words on an API whose ceiling is one pool the
-adapter will not divide. Only the single-pool retry uses it:
-
-```text
-Additional focus: Keep the entire summary within 12000 tokens. An earlier attempt ran past its
-output ceiling and was discarded, so write a shorter summary rather than an incomplete one: drop
-detail, and keep exact file paths, function names and error messages.
-```
-
-Any custom instructions the compaction already carried are kept, and this is appended after them.
+**There is no "retry with a tighter configuration" any more.** The single-pool retry leaned on a
+written "stay within N tokens" instruction, which assumes the model follows instructions. The
+answer-budget retry halved both budgets, which makes a length stop *more* likely, not less. Both cost
+a second full request — minutes, on a real summary — for an outcome the ceiling had already decided.
 
 ### What is never persisted
 
-A truncated or partial summary is never persisted, at any step, including from a retry:
+A summary this package cannot vouch for is never persisted:
 
-- The host throws on a length stop and on a tool call, so those never reach a result at all.
-- The package refuses any response whose `stopReason` is not a clean stop, read from the response
-  itself through the stream function it owns — the host returns a partially written summary unchanged
-  for a stop reason it does not recognise, `aborted` being the case the specification names.
-- **Every** response an attempt produced is checked, not only the last one. A split turn makes two
+- The host throws on an error and on a tool call, so those never reach a result at all.
+- The package refuses any response whose `stopReason` is neither a clean stop nor the budget stop,
+  read from the response itself through the stream function it owns — the host returns a partially
+  written summary unchanged for a stop reason it does not recognise, `aborted` being the case the
+  specification names.
+- **Every** response the request produced is checked, not only the last one. A split turn makes two
   summarization requests through the same stream function and the host concatenates both into one
   summary, so a clean second response says nothing about a partial first one.
 - An attempt whose responses the package never observed is refused as well. It has proved nothing
   about the summary, so it is not treated as a clean one. See the host-seam check: the package
   verifies at activation that the host does await the response, so on a host that passes the check
   this cannot happen.
-- A summary over what its own request bounds is refused, from either attempt.
+- A summary over what its own request bounds is refused.
 - The host appends a file-list block after the model's text. That block is **not** counted against
   the budget, which is the model's: a summary that used exactly its budget is accepted rather than
   refused for text the model never wrote.
+
+A **length stop is the exception**, and it is accepted on purpose — see the section above and
+[ADR 0004](docs/adr/0004-accept-a-length-stop-as-the-budget-working.md). The provider cut the response
+at the ceiling we asked for. It is incomplete, and it is persisted, because that is what a ceiling
+means.
 
 A split turn whose history range is empty is declined before any request. The host would carry the
 previous summary forward verbatim and append a fresh turn prefix to it, so the result can only grow
 and no budget this package sets can bound it. Declining is announced like any other handback.
 
-A cancellation stops everything. It is checked before every attempt, after every attempt and before
-every handback, and it answers `{cancel: true}`: no retry, and never a fallback that begins a fresh
-compaction behind your back.
+A cancellation stops everything. It is checked before the request, after it and before every handback,
+and it answers `{cancel: true}`: no fallback that begins a fresh compaction behind your back.
 
 ## Degradation
 

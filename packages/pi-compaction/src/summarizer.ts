@@ -69,24 +69,20 @@ function readsCompatFlag(model: SummarizerModel, flag: string): boolean | undefi
 }
 
 /**
- * What one attempt is allowed to hand back.
+ * What one attempt is allowed to hand back: the pool on both classes.
  *
- * On an answer-budget API the output option carries the text budget and the reasoning budget rides
- * on top of it, so the text is the number to bound. On a single pool the output option is their sum
- * and reasoning draws from inside it, so the pool is the only figure the request actually bounds.
- * Accepting less than the pool would leave a dead band in which a summary the request permitted is
- * refused by the acceptance test — which on a preset like `deep` is 24,000 tokens wide, and costs a
- * second full request every time the model lands in it.
+ * On an answer-budget API the reasoning budget rides on top of the output option, so the provider's
+ * ceiling is their sum too. Accepting less would leave a dead band where a response the request
+ * permitted is refused — as wide as the reasoning budget, and a second full request every time a
+ * model landed in it. Whether the text has guaranteed room inside the pool is a separate question,
+ * reported by `textRoomGuaranteed`.
  */
-export function acceptedTokens(model: SummarizerModel, tuple: Tuple): number {
-  return apiClassOf(model) === 'answer-budget' ? tuple.textBudget : tuple.textBudget + tuple.reasoningBudget;
+export function acceptedTokens(tuple: Tuple): number {
+  return tuple.textBudget + tuple.reasoningBudget;
 }
 
-/** The host estimates a compaction summary at four characters per token. */
-export const estimateSummaryTokens = (summary: string): number => estimateModelTokens(summary);
-
 /**
- * The same estimate over the model's own text.
+ * The host's four-characters-per-token estimate over the model's own text.
  *
  * `appendedChars` is what the host appends after the model stops — the file-list block — which the
  * budget was never meant to cover, so counting it would refuse a summary that used exactly the
@@ -298,14 +294,23 @@ export interface AttemptOutcome {
   toolCall: boolean;
 }
 
+/** A stop reason that means the ceiling we asked for was the reason the response ended. */
+export const BUDGET_STOP = 'length';
+
 /**
  * The injection point: the host hands its summarization request options straight through, with no
  * output ceiling of its own, and this is where the two budgets are added.
  *
- * `observe` reports what the response actually said. The host turns a length stop, an error and a
- * tool call into thrown errors whose prose would otherwise have to be string-matched to tell them
- * apart — and it returns a partially written summary unchanged when a response stops for any other
- * reason. We own this function, so we read the response instead.
+ * `observe` reports what the response actually said. The host turns an error and a tool call into
+ * thrown errors whose prose would otherwise have to be string-matched to tell them apart — and it
+ * returns a partially written summary unchanged when a response stops for any other reason. We own
+ * this function, so we read the response instead.
+ *
+ * A length stop is the exception, and the reason this function rewrites the response rather than only
+ * observing it: see ADR 0004. The provider cut the response at the ceiling we asked for, which is the
+ * budget working, and the host would turn that into a thrown error and leave us to hand an unbounded
+ * summary back to stock Pi. The real stop reason still reaches `observe`, so the acceptance test and
+ * the announcement know the summary was cut.
  *
  * That read rests on a third host seam: the host awaits `result()` on whatever this function
  * returns, so the replacement installed below is the one it calls. Without it `observe` never runs
@@ -323,12 +328,14 @@ export function boundedStream(
       maxTokens: budgets.maxTokens,
       ...(budgets.thinkingBudgets ? { thinkingBudgets: budgets.thinkingBudgets } : {}),
     }) as { result: () => Promise<unknown> };
-    if (!observe) return stream;
     const result = stream.result.bind(stream);
     stream.result = async () => {
       const message = await result();
-      observe(outcomeOf(message));
-      return message;
+      const outcome = outcomeOf(message);
+      observe?.(outcome);
+      return outcome.stopReason === BUDGET_STOP
+        ? { ...(message as object), stopReason: 'stop' }
+        : message;
     };
     return stream;
   }) as unknown as SummarizerStream;

@@ -8,7 +8,6 @@ import {
   clampThinkingLevel,
   describeOutboundRequest,
   estimateModelTokens,
-  estimateSummaryTokens,
   hostRetryPolicy,
   HOST_PROMPT_AND_TOOLS_TOKENS,
   outputBudgets,
@@ -176,9 +175,9 @@ test('the published per-preset numbers hold on both enforceable classes', () => 
 });
 
 test('a summary is measured with the host\'s own four-characters-per-token estimate', () => {
-  assert.equal(estimateSummaryTokens(''), 0);
-  assert.equal(estimateSummaryTokens('abcd'), 1);
-  assert.equal(estimateSummaryTokens('a'.repeat(48_000)), 12_000);
+  assert.equal(estimateModelTokens(''), 0);
+  assert.equal(estimateModelTokens('abcd'), 1);
+  assert.equal(estimateModelTokens('a'.repeat(48_000)), 12_000);
 });
 
 test('a zero reasoning budget does not mean the summarizer will not reason', () => {
@@ -225,28 +224,31 @@ test('an adapter whose output-ceiling flag is switched off is treated as sending
   assert.equal(describeOutboundRequest(model('openai-codex-responses'), balanced, 'medium', 16_000).ceilingFlag, undefined);
 });
 
-test('what an attempt may hand back is the number the request actually bounds', () => {
-  // An answer-budget API carries the text budget as its output option and the reasoning budget on
-  // top of it, so the text is the number to bound.
-  assert.equal(acceptedTokens(model('anthropic-messages'), balanced), 12_000);
-  // A single pool sends their sum and reasoning draws from inside it. Accepting less than the pool
-  // would leave a dead band where a summary the request permitted is refused — 24,000 tokens wide on
-  // `deep`, and a second full request every time the model lands in it.
-  assert.equal(acceptedTokens(model('openai-responses'), balanced), 20_000);
-  assert.equal(acceptedTokens(model('openai-responses'), PRESETS.deep), 36_000);
-  // `fast` has no reasoning budget, so the two classes agree and its number is the whole envelope.
-  for (const api of ['anthropic-messages', 'openai-responses']) {
-    assert.equal(acceptedTokens(model(api), PRESETS.fast), 6_000, api);
+test('an attempt accepts the whole pool on every class, so no dead band exists', () => {
+  // The pool is what the request bounds on both classes: an answer-budget adapter adds the reasoning
+  // budget on top of the output option, and a single pool carries their sum in one field. Accepting
+  // less than the request permitted would leave a dead band where a response the provider was allowed
+  // to produce is refused anyway — 8,000 tokens wide on `balanced`, 24,000 on `deep`.
+  assert.equal(acceptedTokens(PRESETS.fast), 6_000);
+  assert.equal(acceptedTokens(balanced), 20_000);
+  assert.equal(acceptedTokens(PRESETS.deep), 36_000);
+
+  // Whether the text has guaranteed room inside the pool is a separate question, and it is the one
+  // that differs between the classes.
+  assert.equal(describeOutboundRequest(model('anthropic-messages'), balanced, 'medium', 16_000).textRoomGuaranteed, true);
+  assert.equal(describeOutboundRequest(model('openai-responses'), balanced, 'medium', 16_000).textRoomGuaranteed, false);
+
+  // And the acceptance bound is the same number the status view reports as the envelope.
+  for (const [name, tuple] of Object.entries(PRESETS)) {
+    const outbound = describeOutboundRequest(model('anthropic-messages'), tuple, thinkingOf(tuple), MEASURED_KEPT_WINDOW);
+    assert.equal(acceptedTokens(tuple), outbound.outputFieldCeiling, name);
   }
-  // A no-ceiling API has no acceptance bound to speak of; the hook declines it before any request.
-  assert.equal(acceptedTokens(model('openai-codex-responses'), balanced), 20_000);
 });
 
 test('the model text is measured without the block the host appends', () => {
   assert.equal(estimateModelTokens('abcd'), 1);
   assert.equal(estimateModelTokens('abcdefgh', 4), 1, 'the appended block is not the model\'s');
   assert.equal(estimateModelTokens('ab', 100), 0, 'never negative');
-  assert.equal(estimateModelTokens('abcd'), estimateSummaryTokens('abcd'));
 });
 
 test('the retry policy is resolved the way the host resolves it', () => {

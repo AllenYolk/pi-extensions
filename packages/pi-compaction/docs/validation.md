@@ -26,9 +26,9 @@ table are that last run's; the environment is the same machine and the same host
 
 | Check | Result |
 | --- | --- |
-| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **92/92 tests pass** |
-| `npm run check` | **178/178 tests pass** (92 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
-| `npm pack --json --ignore-scripts` | 9 entries: `LICENSE`, `README.md`, `package.json`, `src/{config,index,ladder,preparation,prune,summarizer}.ts` |
+| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **85/85 tests pass** |
+| `npm run check` | **171/171 tests pass** (85 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
+| `npm pack --json --ignore-scripts` | 9 entries: `LICENSE`, `README.md`, `package.json`, `src/{config,degradation,index,preparation,prune,summarizer}.ts` |
 | `npm run benchmark` | **deliberately skipped** — see below |
 
 The root suite needed one repository change to stay green with this branch's unapplied changeset.
@@ -43,7 +43,7 @@ This has bitten before — PR #15's first CI run failed the same way — so it i
 compaction-package one.
 
 Which host proves what matters here. The package's own checks resolve Pi 1.5.1 from
-`packages/pi-compaction/node_modules`, so every compaction, prune, ladder and degradation assertion —
+`packages/pi-compaction/node_modules`, so every compaction, prune and degradation assertion —
 including the real packaged-CLI runs — is against 1.5.1. The repository-root checks resolve the root
 host, 0.99.1, and they exercise the package at the seams a collection user meets: it installs from
 its own packed tarball, activates, deactivates on removal, stays inert when it is present and not
@@ -241,6 +241,38 @@ One audit finding was **wrong** and is recorded so it is not re-derived: one aud
 
 What the audits did **not** establish, and what remains open, is in "Not established" below: no
 latency or cost measurement, no real outbound request body, and no real-session replay.
+
+### The subtraction
+
+After the audits, the owner restated the requirement: do not assume the summarizer can respond to
+complex instructions. Three things in the design assumed it did, and all three are gone.
+
+- **The retry ladder is removed.** Both rungs depended on compliance. The single-pool rung appended a
+  written "keep the summary within N tokens" instruction, which is precisely the compliance the new
+  requirement rules out. The answer-budget rung halved both budgets, which makes a length stop *more*
+  likely — it was answering "the thinking phase ate the quota" with a smaller quota. Both cost a second
+  full request, minutes on a real summary, for an outcome the ceiling had already decided. A
+  compaction now makes **one** request.
+- **A length stop is accepted.** This is the change that makes the one request sufficient, and it is
+  recorded as [ADR 0004](adr/0004-accept-a-length-stop-as-the-budget-working.md) because it
+  deliberately overrides a host decision: the host throws on a length stop so that an incomplete
+  summary cannot become a checkpoint, which is right for a caller that sets no ceiling and wrong for
+  one that does. The stream function this package owns reports the stop to the host as a normal stop
+  and records the real reason for its own acceptance test. Truncated summaries are now persisted, and
+  the test fixture distinguishes them (`TRUNCATED-AT-THE-CEILING`) from the partial text that must
+  never be persisted (`PARTIAL-SUMMARY-MUST-NEVER-BE-PERSISTED`).
+- **The acceptance bound is the pool on both API classes.** It was the text budget on answer-budget
+  APIs, which left a dead band as wide as the reasoning budget. Whether the text has guaranteed room
+  inside the pool is a separate question, reported by `textRoomGuaranteed`.
+
+Considered and rejected, at the owner's direction: truncating an over-budget summary (it produces one
+that reads as complete when it is not), and an index-shaped fallback summary when the model fails
+entirely (the owner chose to keep handing back to stock Pi, so a model error still costs an unbounded
+native compaction — unchanged, and now the only path that does).
+
+What the owner asked for, and what remains: pick the summarizer model, pick its thinking level, and
+bound the length. All three were already supported; what changed is that the bound now holds on the
+path where the model does not cooperate.
 
 ### Reading the owner's own model entry
 

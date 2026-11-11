@@ -23,10 +23,9 @@ import {
   DEGRADATION_ENTRY,
   DEGRADATION_WIDGET,
   describeFailure,
-  ladder,
   UNOBSERVED_RESPONSE,
   type Degradation,
-} from './ladder.ts';
+} from './degradation.ts';
 import {
   editedTargets,
   evaluatePruneGate,
@@ -38,20 +37,18 @@ import {
 import {
   acceptedTokens,
   boundedStream,
+  BUDGET_STOP,
   checkHostSeam,
   describeOutboundRequest,
   estimateModelTokens,
   hostRetryPolicy,
   HOST_PROMPT_AND_TOOLS_TOKENS,
+  outputBudgets,
   resolveSummarizerModel,
   summarizerThinkingLevel,
   type AttemptOutcome,
   type SeamResult,
 } from './summarizer.ts';
-
-/** The host's custom instructions plus a rung's budget instruction, in the order it appends them. */
-const withInstruction = (base: string | undefined, extra: string | undefined): string | undefined =>
-  (extra ? (base ? `${base}\n\n${extra}` : extra) : base);
 
 export default function piCompaction(pi: ExtensionAPI): void {
   let config: Config = defaults();
@@ -168,62 +165,50 @@ export default function piCompaction(pi: ExtensionAPI): void {
       );
     }
 
-    // Two rungs, so the ladder cannot loop: the preset's own configuration, then one tighter one.
-    const rungs = ladder(model, tuple, thinking);
+    // One request. Every way it can end has a bounded outcome, so there is nothing a second request
+    // would improve — see ADR 0004 for why a length stop is one of those outcomes rather than a failure.
     const retry = hostRetryPolicy(pi.getSettings());
-    const accepted = acceptedTokens(model, tuple);
+    const accepted = acceptedTokens(tuple);
     const fileList = fileListChars(prepared.fileOps);
-    const failures: string[] = [];
-    for (const [index, rung] of rungs.entries()) {
+    const outcomes: AttemptOutcome[] = [];
+    let result;
+    try {
+      result = await compact(
+        prepared,
+        model,
+        undefined,
+        undefined,
+        event.customInstructions,
+        event.signal,
+        thinking as never,
+        boundedStream(ctx.modelRegistry, outputBudgets(model, tuple, thinking), (seen) => { outcomes.push(seen); }),
+        undefined,
+        retry,
+        undefined,
+        ctx.sessionManager.getSessionId(),
+      );
+    } catch (error) {
       if (event.signal.aborted) return { cancel: true };
-      const last = index === rungs.length - 1;
-      const outcomes: AttemptOutcome[] = [];
-      let result;
-      try {
-        result = await compact(
-          prepared,
-          model,
-          undefined,
-          undefined,
-          withInstruction(event.customInstructions, rung.instruction),
-          event.signal,
-          rung.thinking as never,
-          boundedStream(ctx.modelRegistry, rung.budgets, (seen) => { outcomes.push(seen); }),
-          undefined,
-          retry,
-          undefined,
-          ctx.sessionManager.getSessionId(),
-        );
-      } catch (error) {
-        if (event.signal.aborted) return { cancel: true };
-        failures.push(describeFailure(outcomes.at(-1), error));
-        // A tighter configuration answers a length stop and an overlong summary, and nothing else:
-        // a model error, a timeout or a malformed result would only be paid for twice.
-        if (last || !outcomes.some((seen) => seen.stopReason === 'length')) break;
-        continue;
-      }
-      if (event.signal.aborted) return { cancel: true };
-      /**
-       * Every response the attempt produced has to have finished cleanly. A split turn makes two
-       * summarization requests through the same stream function and the host concatenates both into
-       * one summary, so the last response alone says nothing about the first — and an attempt whose
-       * responses were never observed proves nothing at all.
-       */
-      const unclean = outcomes.find((seen) => seen.stopReason !== 'stop');
-      if (outcomes.length === 0 || unclean) {
-        failures.push(unclean ? describeFailure(unclean, undefined) : UNOBSERVED_RESPONSE);
-        break;
-      }
-      // The budget is the model's. The host appends the file-list block itself, so it is not counted
-      // against a budget the model was never given.
-      const tokens = estimateModelTokens(result.summary, fileList);
-      if (tokens <= accepted) return { compaction: result };
-      failures.push(`the summarizer produced a ${tokens}-token summary, over the ${accepted} tokens this attempt permits`);
+      return handBack(named, describeFailure(outcomes.at(-1), error));
     }
+    if (event.signal.aborted) return { cancel: true };
 
-    return handBack(named, failures.length > 1
-      ? `${failures[0]}, and after a tighter retry (${rungs[1].tightening}) ${failures[1]}`
-      : failures[0]);
+    /**
+     * Every response the attempt produced has to have finished cleanly, except a length stop: that one
+     * is the ceiling we asked for doing its job, and ADR 0004 is why it is accepted. A split turn makes
+     * two summarization requests through the same stream function and the host concatenates both into
+     * one summary, so the last response alone says nothing about the first — and an attempt whose
+     * responses were never observed proves nothing at all.
+     */
+    const unclean = outcomes.find((seen) => seen.stopReason !== 'stop' && seen.stopReason !== BUDGET_STOP);
+    if (outcomes.length === 0 || unclean) {
+      return handBack(named, unclean ? describeFailure(unclean, undefined) : UNOBSERVED_RESPONSE);
+    }
+    // The budget is the model's. The host appends the file-list block itself, so it is not counted
+    // against a budget the model was never given.
+    const tokens = estimateModelTokens(result.summary, fileList);
+    if (tokens <= accepted) return { compaction: result };
+    return handBack(named, `the summarizer produced a ${tokens}-token summary, over the ${accepted} tokens this attempt permits`);
   });
 
   /**

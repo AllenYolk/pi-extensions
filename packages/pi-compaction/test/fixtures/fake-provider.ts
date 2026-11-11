@@ -32,7 +32,9 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
  *                                     Escape mid-compaction does
  */
 
-/** The text a length stop carries. It must never reach a persisted summary from any path. */
+/** The text a length stop carries. The budget cut it, so it is persisted — see ADR 0004. */
+const TRUNCATED_TEXT = 'TRUNCATED-AT-THE-CEILING';
+/** The text an aborted response carries. It must never reach a persisted summary from any path. */
 const PARTIAL_TEXT = 'PARTIAL-SUMMARY-MUST-NEVER-BE-PERSISTED';
 
 const ANSWER_BUDGET_API = 'anthropic-messages';
@@ -173,7 +175,7 @@ export default function fakeProvider(pi: ExtensionAPI) {
       return { ...base, content: [], stopReason: 'error', errorMessage: 'fixture summarizer is unavailable' };
     }
     if (failing && mode === 'length') {
-      return { ...base, content: [{ type: 'text', text: PARTIAL_TEXT }], stopReason: 'length' };
+      return { ...base, content: [{ type: 'text', text: TRUNCATED_TEXT }], stopReason: 'length' };
     }
     if (!summarization && writePath && turn === 1) {
       return {

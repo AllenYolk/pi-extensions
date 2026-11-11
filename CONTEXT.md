@@ -73,11 +73,13 @@ text budget because their sum, not either alone, is what bounds the request.
 
 **Ceiling**: text budget plus reasoning budget. The total output a preset permits.
 
-**Acceptance bound**: what one attempt of the ladder may hand back. The text budget on an
-answer-budget API, where the reasoning budget rides on top of the output option; the ceiling on a
-single pool, where reasoning draws from inside it. It is the number the request actually bounds —
-accepting less would leave a dead band in which a response the provider was allowed to produce is
-refused anyway.
+**Acceptance bound**: what one summarization request may hand back: text budget plus reasoning
+budget. It is the number the request actually bounds — accepting less would leave a dead band in
+which a response the provider was allowed to produce is refused anyway.
+
+**Budget stop**: a response the provider cut at the output ceiling. The budget worked, so the summary
+is incomplete by choice rather than by accident, and it is persisted. Distinct from every other
+truncated response, which is refused.
 
 **API class**: the shape a provider API gives the ceiling, which is what decides what the two budgets
 mean there. `answer-budget` adds the reasoning budget on top of the text budget, so thinking is capped
@@ -120,13 +122,9 @@ invalidate), `compaction-imminent` (the prefix is about to be destroyed, so inva
 lifetime), and `inside-fallback-ttl` and `no-request-observed` (nothing yet says what the next
 request would read).
 
-**Degradation**: handing compaction back to stock Pi after the extension's own attempts fail. Always
-announced, never silent, and never partial: a truncated summary is never persisted.
-
-**Rung**: one attempt of the retry ladder — everything a single summarization attempt sends that the
-next one changes. The ladder is two rungs, so there is no third attempt to reach. A rung's thinking
-level is always one the chosen model supports: the retry asks for the lowest level the model has,
-which is `off` only when the model has an `off`.
+**Degradation**: handing compaction back to stock Pi after the extension's own attempt fails. Always
+announced, never silent. A budget stop is not a degradation: the summary was bounded, which is what
+the extension is for.
 
 ## Code and state ownership
 
@@ -141,10 +139,10 @@ Paths below are relative to `packages/` unless stated otherwise.
 | Display activation and configuration | `pi-minimal-display/src/index.ts`, `pi-minimal-display/src/config.ts` | The entry owns the disposer/status; config is read from Pi's actual agent directory. |
 | Display projection and private host access | `pi-minimal-display/src/presentation.ts` | Owns fingerprint checks and presentation/mouse/expansion wrappers; execution and saved data remain Pi-owned. |
 | Compaction activation, configuration and the compaction hook | `pi-compaction/src/index.ts` | Registers `/compaction`, owns the inert-until-enabled switch, the slash-command surface and the `session_before_compact` hook that supplies a compaction or hands it back. |
-| Summarizer budgets, API classification and the host seam | `pi-compaction/src/summarizer.ts` | Owns the two output budgets, the per-API classification, thinking-level clamping, the bounded stream function and the activation-time host-seam check. |
+| Summarizer budgets, API classification and the host seam | `pi-compaction/src/summarizer.ts` | Owns the two output budgets, the per-API classification, thinking-level clamping, the bounded stream function, the acceptance bound and the activation-time host-seam check. |
 | The cut point and the summarised range | `pi-compaction/src/preparation.ts` | Chooses the kept-window boundary and builds the range to summarise from the branch entries, so nothing between the two is lost. |
 | Pruning, its gates and the never-prune list | `pi-compaction/src/prune.ts` | Owns the durable context-edit replacements, the bounded placeholder, the cache and imminence gates and the never-prune list. |
-| The retry ladder and the degradation announcement | `pi-compaction/src/ladder.ts` | Owns the two rungs, the per-class tightening, the announcement and the durable record of a degradation. |
+| The degradation announcement | `pi-compaction/src/degradation.ts` | Owns the failure wording, the announcement and the durable record of a degradation. |
 | Collection/package boundaries | Repository-root manifest, `test/` and `.github/workflows/` | Aggregate installation, independent-package checks, coexistence and shared development/release tooling. |
 
 Pi session records and parent links are the source of ancestry; the plugins do not maintain

@@ -191,122 +191,90 @@ test('a summarizer on an API that sends no output ceiling hands compaction back'
   assert.equal(records.some((record) => record.model.includes('codex-summarizer')), false, 'no request was made before the handback');
 });
 
-test('a length stop is retried exactly once, with the tighter configuration its API class calls for', { timeout: 300_000 }, () => {
-  // Both enforceable classes, because the retry is not the same shape on each: the difference is
-  // whether the reasoning budget reaches the provider as a token cap.
+test('a length stop is accepted: the budget cut the summary, and that is the bound', { timeout: 300_000 }, () => {
+  // The provider cut the response at the ceiling we asked for. The host treats that as a
+  // summarization failure; here it is the budget working, so the truncated summary is persisted and
+  // stock Pi is never asked for an unbounded one. See ADR 0004.
   const cases = [
-    {
-      name: 'answer-budget',
-      config: {},
-      model: CONVERSATION_MODEL,
-      api: 'anthropic-messages',
-      first: { maxTokens: 12_000, reasoning: 'medium', thinking: 8_000 },
-      retry: { maxTokens: 6_000, reasoning: 'medium', thinking: 4_000 },
-      instruction: false,
-    },
+    { name: 'answer-budget', config: {}, model: CONVERSATION_MODEL, api: 'anthropic-messages', maxTokens: 12_000, thinking: 8_000 },
     {
       name: 'single-pool',
       config: { summarizerModel: 'pi-compaction-fixture-pool/pool-summarizer' },
       model: 'pi-compaction-fixture-pool/pool-summarizer',
       api: 'openai-responses',
-      first: { maxTokens: 20_000, reasoning: 'medium', thinking: 8_000 },
-      // The envelope is left alone: the tighter configuration is the reasoning draw, which is the
-      // only thing the adapter cannot bound here, plus the budget stated in words.
-      retry: { maxTokens: 20_000, reasoning: undefined, thinking: undefined },
-      instruction: true,
+      maxTokens: 20_000,
+      thinking: 8_000,
     },
   ];
 
   for (const shape of cases) {
     const run = runCompaction({
-      name: `ladder-${shape.name}-`,
+      name: `length-${shape.name}-`,
       config: { enabled: true, preset: 'balanced', ...shape.config },
-      fixture: { MODE: 'length', FAIL_FIRST: 1 },
+      fixture: { MODE: 'length' },
       turns: 30,
     });
     assert.equal(run.report.error, undefined, run.report.error);
 
     const attempts = ours(run.records);
-    assert.equal(attempts.length, 2, `${shape.name}: exactly one retry`);
-    assert.equal(stock(run.records).length, 0, `${shape.name}: stock Pi was never asked`);
+    assert.equal(attempts.length, 1, `${shape.name}: one request, and no retry`);
+    assert.equal(attempts[0].model, shape.model, shape.name);
+    assert.equal(attempts[0].api, shape.api, shape.name);
+    assert.equal(attempts[0].mode, 'length', `${shape.name}: the response really did stop at the ceiling`);
+    assert.equal(attempts[0].options.maxTokens, shape.maxTokens, `${shape.name}: the ceiling we asked for`);
+    assert.equal(attempts[0].options.thinkingBudgets?.medium, shape.thinking, `${shape.name}: the reasoning budget`);
+    assert.equal(stock(run.records).length, 0, `${shape.name}: stock Pi was never asked for an unbounded summary`);
 
-    const [first, retry] = attempts;
-    for (const [index, attempt] of attempts.entries()) {
-      assert.equal(attempt.model, shape.model, shape.name);
-      assert.equal(attempt.api, shape.api, shape.name);
-      assert.equal(attempt.mode, index === 0 ? 'length' : 'normal', `${shape.name}: attempt ${index + 1}`);
-    }
-    for (const [attempt, expected] of [[first, shape.first], [retry, shape.retry]]) {
-      assert.equal(attempt.options.maxTokens, expected.maxTokens, `${shape.name}: maxTokens`);
-      assert.equal(attempt.options.reasoning, expected.reasoning, `${shape.name}: reasoning effort`);
-      assert.equal(attempt.options.thinkingBudgets?.medium, expected.thinking, `${shape.name}: thinking budget`);
-    }
-
-    // The retry really is tighter, in the dimension that class can tighten.
-    if (shape.instruction) {
-      assert.equal(first.options.reasoning, 'medium', 'the first attempt reasons');
-      assert.equal(retry.options.reasoning, undefined, 'the retry does not draw from the pool uncapped');
-      assert.equal(retry.options.thinkingBudgets, undefined, 'and asks for no thinking budget');
-      assert.equal(retry.options.maxTokens, first.options.maxTokens, 'the envelope is left alone');
-    } else {
-      assert.ok(retry.options.maxTokens < first.options.maxTokens, 'the answer budget shrank');
-      assert.ok(retry.options.thinkingBudgets.medium < first.options.thinkingBudgets.medium, 'the thinking budget shrank');
-    }
-
-    // The budget instruction reaches the request, and only the retry's.
-    const focus = /Additional focus: Keep the entire summary within 12000 tokens/;
-    assert.equal(focus.test(first.prompt), false, `${shape.name}: the first attempt carries no instruction`);
-    assert.equal(focus.test(retry.prompt), shape.instruction, `${shape.name}: the retry's instruction`);
-
-    // The retry succeeded, so its summary is the one the session keeps.
+    // The truncated text is in the session, because that is what a ceiling means.
     const [persisted] = persistedCompactions(run.session.file);
-    assert.equal(persisted.fromHook, true, `${shape.name}: the retried summary is ours`);
-    assert.doesNotMatch(run.plain, new RegExp(HEADLINE), `${shape.name}: a successful retry is not a degradation`);
+    assert.equal(persisted.fromHook, true, `${shape.name}: the truncated summary is ours and it is persisted`);
+    assert.match(persisted.summary, /TRUNCATED-AT-THE-CEILING/, `${shape.name}: and it is the cut text`);
     assertNoPartialPersisted(run);
+    assert.doesNotMatch(run.plain, new RegExp(HEADLINE), `${shape.name}: a budget cut is not a degradation`);
   }
 });
 
-test('a summary over the text budget is retried once, and the retried summary is persisted when it fits', { timeout: 180_000 }, () => {
+test('a summary over the envelope the request permits is refused, and stock Pi takes over', { timeout: 180_000 }, () => {
   const tuple = PRESETS.balanced;
   const run = runCompaction({
     name: 'oversized-',
     config: { enabled: true, preset: 'balanced' },
-    fixture: { MODE: 'oversized', FAIL_FIRST: 1, SUMMARY: 2_000 },
+    // The request asked for the pool; the model wrote well past it. Only our attempt does, so stock
+    // Pi's own request is the one that compacts the session.
+    fixture: { MODE: 'oversized', SUMMARY: 3_000, FAIL_FIRST: 1 },
     turns: 30,
   });
   assert.equal(run.report.error, undefined, run.report.error);
 
   const attempts = ours(run.records);
-  assert.equal(attempts.length, 2, 'exactly one retry');
-  assert.equal(stock(run.records).length, 0, 'stock Pi was never asked');
-  assert.deepEqual(attempts.map((attempt) => attempt.mode), ['oversized', 'normal']);
-  // Both attempts are judged against the preset's own text budget; the retry's tighter budget only
-  // shapes the request.
-  assert.equal(attempts[0].options.maxTokens, tuple.textBudget);
-  assert.equal(attempts[1].options.maxTokens, tuple.textBudget / 2, 'the retry asks for less');
-  assert.equal(attempts[1].options.thinkingBudgets.medium, tuple.reasoningBudget / 2);
+  assert.equal(attempts.length, 1, 'one request, and no retry: a tighter configuration cannot answer this');
+  // An answer-budget API carries the text budget as its output option and the adapter adds the
+  // reasoning budget on top, so the provider's ceiling is the pool — which is what we accept.
+  assert.equal(attempts[0].options.maxTokens, tuple.textBudget, 'the output option this class takes');
+  assert.equal(stock(run.records).length, 1, 'stock Pi then compacted on its own');
 
-  const [persisted] = persistedCompactions(run.session.file);
-  assert.equal(persisted.fromHook, true, 'the retried summary is ours');
-  const tokens = Math.ceil(persisted.summary.length / 4);
-  assert.ok(tokens <= tuple.textBudget, `the persisted summary is ${tokens} tokens, over the ${tuple.textBudget}-token text budget`);
-  assert.doesNotMatch(run.plain, new RegExp(HEADLINE));
+  const persisted = persistedCompactions(run.session.file);
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].fromHook ?? false, false, 'the compaction that reached the session is the host\'s');
+  assertAnnounced(run, {
+    preset: 'balanced',
+    summarizer: 'minimax-cn/pi-compaction-conversation \\(anthropic-messages\\)',
+    why: 'the summarizer produced a \\d+-token summary, over the 20000 tokens this attempt permits',
+  });
   assertNoPartialPersisted(run);
 });
 
-test('a second failure degrades to stock Pi, and the ladder cannot loop', { timeout: 180_000 }, () => {
+test('a model error hands compaction back to stock Pi', { timeout: 180_000 }, () => {
   const run = runCompaction({
     name: 'degrade-',
     config: { enabled: true, preset: 'balanced' },
-    // Two failures, so the third summarization request — stock Pi's — is the one that succeeds. A
-    // ladder that looped would make that third request itself and would report no degradation.
-    fixture: { MODE: 'length', FAIL_FIRST: 2 },
+    // Only our attempt errors, so stock Pi's own request is the one that compacts the session.
+    fixture: { MODE: 'error', FAIL_FIRST: 1 },
     turns: 30,
   });
   assert.equal(run.report.error, undefined, run.report.error);
 
-  const attempts = ours(run.records);
-  assert.equal(attempts.length, 2, 'two rungs, not a loop');
+  assert.equal(ours(run.records).length, 1, 'one request, and no retry: a tighter configuration cannot answer a model error');
   assert.equal(stock(run.records).length, 1, 'stock Pi then compacted on its own');
 
   // The session continues, and the compaction it ends up with is the host's.
@@ -316,10 +284,12 @@ test('a second failure degrades to stock Pi, and the ladder cannot loop', { time
   assert.equal(persisted.length, 1);
   assert.equal(persisted[0].fromHook ?? false, false, 'the compaction entry is host-originated');
 
-  const reason =
-    'the summarizer hit its output ceiling, so the summary was incomplete, and after a tighter retry '
-    + '\\(text budget 12000 to 6000, reasoning budget 8000 to 4000\\) the summarizer hit its output ceiling, so the summary was incomplete';
-  assertAnnounced(run, { preset: 'balanced', summarizer: 'minimax-cn/pi-compaction-conversation \\(anthropic-messages\\)', why: reason });
+  const reason = 'the summarizer reported an error \\(Summarization failed: fixture summarizer is unavailable\\)';
+  assertAnnounced(run, {
+    preset: 'balanced',
+    summarizer: 'minimax-cn/pi-compaction-conversation \\(anthropic-messages\\)',
+    why: reason,
+  });
   assertPaintedAfterTheRepaint(run);
   assertRecorded(run, { preset: 'balanced', reason: reason.replace(/\\([()])/g, '$1') });
   assertNoPartialPersisted(run);
@@ -469,17 +439,17 @@ test('a single-pool summary may use the whole envelope the request asked for', {
   assert.doesNotMatch(run.plain, new RegExp(HEADLINE), 'and that is not a degradation');
 });
 
-test('a cancellation stops the ladder and starts no new work', { timeout: 180_000 }, () => {
+test('a cancellation stops the compaction and starts no new work', { timeout: 180_000 }, () => {
   const run = runCompaction({
     name: 'cancel-',
     config: { enabled: true, preset: 'balanced' },
-    // The response that length-stops is the one the user cancels on, which is the moment a ladder
-    // would otherwise start a second request.
-    fixture: { MODE: 'length', ABORT_AFTER_SUMMARIZE: 1 },
+    // The user cancels on the summarization response, which is after our request and before anything
+    // is persisted — the one moment a handback would start a fresh compaction behind them.
+    fixture: { MODE: 'normal', ABORT_AFTER_SUMMARIZE: 1 },
     turns: 30,
   });
   assert.equal(run.report.error, undefined, run.report.error);
-  assert.equal(summarizationRecords(run.records).length, 1, 'no retry, and no fallback compaction behind the user');
+  assert.equal(summarizationRecords(run.records).length, 1, 'one request, and no fallback compaction behind the user');
   assert.deepEqual(persistedCompactions(run.session.file), [], 'nothing was persisted');
   assert.doesNotMatch(run.plain, new RegExp(HEADLINE), 'a cancellation is not a degradation');
   assertNoPartialPersisted(run);
@@ -514,14 +484,12 @@ test('every path that hands compaction back announces to the same standard', { t
       requests: 1,
     },
     {
-      name: 'over-budget-twice',
+      name: 'over-envelope',
       config: { enabled: true, preset: 'balanced' },
-      fixture: { MODE: 'oversized', SUMMARY: 2_000 },
+      fixture: { MODE: 'oversized', SUMMARY: 3_000, FAIL_FIRST: 1 },
       summarizer: 'minimax-cn/pi-compaction-conversation \\(anthropic-messages\\)',
-      why: 'the summarizer produced a \\d+-token summary, over the 12000 tokens this attempt permits, and after a tighter retry '
-        + '\\(text budget 12000 to 6000, reasoning budget 8000 to 4000\\) the summarizer produced a \\d+-token summary, '
-        + 'over the 12000 tokens this attempt permits',
-      requests: 2,
+      why: 'the summarizer produced a \\d+-token summary, over the 20000 tokens this attempt permits',
+      requests: 1,
     },
   ];
 
