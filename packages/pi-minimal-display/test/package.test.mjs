@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { sandbox } from '../../../test/sandbox.mjs';
 import { runCliProbe } from './run-cli.mjs';
 
 test('the actual tarball contains a self-contained Pi entry and loads without peer installation', { timeout: 60000 }, () => {
-  mkdirSync('work', { recursive: true });
-  const workspace = resolve(mkdtempSync('work/package-'));
+  const workspace = sandbox('package-');
   const pack = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', workspace], { encoding: 'utf8', timeout: 20000 });
   assert.equal(pack.status, 0, pack.stderr);
   const packed = JSON.parse(pack.stdout);

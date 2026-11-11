@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { sandbox } from './sandbox.mjs';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 export const repoRoot = dirname(testDir);
@@ -29,9 +30,7 @@ const loopbackGitEnv = {
 };
 
 export function workspace(prefix) {
-  const work = join(repoRoot, 'work');
-  mkdirSync(work, { recursive: true });
-  return realpathSync(resolve(mkdtempSync(join(work, prefix))));
+  return sandbox(prefix, join(repoRoot, 'work'));
 }
 
 /** A disposable Pi profile. Nothing here reads or writes the real ~/.pi directory. */

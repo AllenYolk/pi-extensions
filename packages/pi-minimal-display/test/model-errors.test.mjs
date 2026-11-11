@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import * as Pi from '@earendil-works/pi-coding-agent';
+import { sandbox } from '../../../test/sandbox.mjs';
 import { loadConfig } from '../dist/config.js';
 import { installPresentation } from '../dist/presentation.js';
 
@@ -20,8 +20,7 @@ function errorMessage(errorMessage, provider = 'fixture') {
 }
 
 async function harness(settings = {}) {
-  mkdirSync('work', { recursive: true });
-  const profile = resolve(mkdtempSync('work/model-errors-'));
+  const profile = sandbox('model-errors-');
   const manager = Pi.SessionManager.inMemory(profile);
   const services = await Pi.createAgentSessionServices({
     cwd: profile, agentDir: profile,

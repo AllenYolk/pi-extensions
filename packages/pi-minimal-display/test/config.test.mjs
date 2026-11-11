@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { sandbox } from '../../../test/sandbox.mjs';
 import { loadConfig } from '../dist/config.js';
 
-mkdirSync('work', { recursive: true });
-
 test('ordinary tools and questionnaires default to compact while plan-mode controls remain native', () => {
-  const agentDir = mkdtempSync('work/config-');
+  const agentDir = sandbox('config-');
   const result = loadConfig(agentDir);
   assert.equal(result.diagnostic, undefined);
   assert.equal(result.config.grouping, true);
@@ -21,7 +20,7 @@ test('ordinary tools and questionnaires default to compact while plan-mode contr
 });
 
 test('an explicit native questionnaire override is preserved', () => {
-  const agentDir = mkdtempSync('work/config-');
+  const agentDir = sandbox('config-');
   const dir = join(agentDir, 'extensions/pi-minimal-display');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'config.json'), JSON.stringify({ tools: { ask_user_question: 'native' } }));
@@ -29,7 +28,7 @@ test('an explicit native questionnaire override is preserved', () => {
 });
 
 test('config file follows the supplied profile and supports exact tool overrides', () => {
-  const agentDir = mkdtempSync('work/config-');
+  const agentDir = sandbox('config-');
   const dir = join(agentDir, 'extensions/pi-minimal-display');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'config.json'), JSON.stringify({ default: 'native', modelErrors: 'native', tools: { read: 'native', web_search: 'count_only', ask_user_question: 'count_only' }, hideThinking: false }));
@@ -46,7 +45,7 @@ test('config file follows the supplied profile and supports exact tool overrides
 
 test('invalid configuration falls back entirely with an actionable path', () => {
   for (const raw of ['{', 'null', '[]', 'true', '{"grouping":"false"}', '{"hideThinking":"false"}', '{"hideThnking":true}', '{"modelErrors":"hidden"}', '{"tools":{"bash":"invisible"}}', '{"tools":null}', '{"bash":{"outputLines":-1}}', '{"bash":{"maxCommandChars":0}}', '{"bash":{"outputLines":1.5}}']) {
-    const agentDir = mkdtempSync('work/config-');
+    const agentDir = sandbox('config-');
     const dir = join(agentDir, 'extensions/pi-minimal-display');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'config.json'), raw);
