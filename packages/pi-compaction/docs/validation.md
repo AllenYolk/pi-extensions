@@ -1,8 +1,12 @@
 # Validation
 
-Release evidence for `@allenyolk/pi-compaction`. This records what is established today and, just as
-importantly, what is not. It is the release record CONTRIBUTING.md's release checklist asks for; it is
-not a second status ledger.
+Release evidence for `@allenyolk/pi-compaction`, whose first release is `0.2.0`. This records what is
+established today and, just as importantly, what is not. It is the release record CONTRIBUTING.md's
+release checklist asks for; it is not a second status ledger.
+
+A version PR for `0.1.0` was merged but never published — the package does not exist on npm. So `0.2.0`
+is the first release a user can install, and the changelog describes the package rather than a diff
+against a version nobody could obtain.
 
 The spec is [issue #11](https://github.com/AllenYolk/pi-extensions/issues/11). That issue describes a
 package that bounds the summary and prunes old tool results. Both were built, reviewed and then
@@ -113,7 +117,7 @@ Two rounds happened, and both changed the package.
 ### The release review
 
 An independent two-axis review — Standards and Spec — ran against the first release candidate on
-`main` at `3238649`. It raised four release-blocking findings, all resolved before `0.1.0`: a third
+`main` at `3238649`. It raised four release-blocking findings, all resolved before the first release: a third
 host seam that was load-bearing and unchecked (the host awaits `result()` on what the stream function
 returns); a partial-summary guard that no test reached and that treated an unobserved attempt as a
 clean one; five terms missing from CONTEXT.md; and an undercount of the `shortcut:` comments in this
@@ -121,8 +125,8 @@ document.
 
 ### The algorithm audit
 
-After `0.1.0` was published, four independent audits of the algorithm ran in parallel on four
-different models, each with the same brief and a different emphasis: arithmetic, architecture,
+After the version PR, four independent audits of the algorithm ran in parallel on four different
+models, each with the same brief and a different emphasis: arithmetic, architecture,
 adversarial failure modes, and the owner's own usage scenario. All were read-only and none could see
 the owner's `models.json` or real session.
 

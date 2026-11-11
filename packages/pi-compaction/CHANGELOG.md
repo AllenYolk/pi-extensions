@@ -4,105 +4,73 @@
 
 ### Minor Changes
 
-- 86afaad: Reduce the package to what it should have been: choose the summarizer model, choose its thinking
-  level, and never persist a summary that is not whole.
-  
-  ## Removed
-  
-  **The output ceiling.** The two absolute budgets, the `maxTokens` injection, the acceptance test and
-  the per-API classification that mapped budgets onto adapters are all gone. This package now sends no
-  `max_output_tokens` on the summarization request — the same as stock Pi — so the summary is as long as
-  the host's prompt and the model make it.
-  
-  **The prune path.** `turn_end` no longer writes `context_edit` entries and the `prune`,
-  `pruneWindowTokens` and `neverPrune` settings are gone, along with `src/prune.ts`.
-  
-  **The retry ladder.** Two rungs, both of which assumed the summarizer follows instructions: one
-  appended a written "stay within N tokens" instruction, and the other halved both budgets — which
-  makes a length stop more likely, not less. Both cost a second full request for an outcome the ceiling
-  had already decided.
-  
-  **The presets.** `fast` / `balanced` / `deep` encoded a combination of two budgets, and
-  `textBudget` / `reasoningBudget` no longer exist. Configuration is four fields: `enabled`,
-  `summarizerModel`, `thinking`, `keptWindowTokens`.
-  
-  **Why:** every mechanism that could shorten a summary produces one that ends before the model
-  finished, and the host's prompt puts `## Next Steps` and `## Critical Context` — the two sections a
-  continuing model most needs — at the very end, so a cut removes them first. A shorter summary is not
-  worth a wrong one. [ADR 0005](https://github.com/AllenYolk/pi-extensions/blob/main/packages/pi-compaction/docs/adr/0005-bound-by-not-bounding.md)
-  records the decision and marks ADR 0002, 0003 and 0004 superseded.
-  
-  ## Changed
-  
-  **A length stop is now refused.** `0.1.0` sent an output ceiling and treated a length stop as that
-  ceiling working as intended. With no ceiling sent, a length stop means the summarizer hit the
-  model's own output limit — a genuinely incomplete summary — so it degrades like any other failure.
-  
-  **A handback costs the model and the thinking level, and nothing else.** The announcement used to
-  describe an unbounded summary; it now says what actually changes, which is that stock Pi compacts with
-  the conversation model and the session's own thinking level.
-  
-  **`/compaction` is much shorter.** It reports the summarizer, the thinking level that will actually
-  run, the kept-window target, and states plainly that the summary length is not bounded by this
-  package.
-  
-  ## Breaking
-  
-  Existing configuration files are rejected. `preset`, `textBudget`, `reasoningBudget`, `prune`,
-  `pruneWindowTokens` and `neverPrune` are unknown fields now, and `loadConfig` rejects a file whole
-  rather than half-applying it — so a stale file leaves compaction on stock Pi with a diagnostic naming
-  the field. The replacement is:
-  
-  ```json
-  {
-    "enabled": true,
-    "summarizerModel": "provider/model",
-    "thinking": "off",
-    "keptWindowTokens": 16000
-  }
-  ```
-  
-  `summarizerModel: null` — the default — is the conversation model, so installing the package never
-  silently lowers summary quality. Choosing a cheaper summarizer is explicit.
-  
-  ## Unchanged, and what was added to it
-  
-  `0.1.0` already refused to persist a summary whose response it could not vouch for, and already
-  probed three host seams. What `0.2.0` adds is that **every** response a request produced is now
-  checked, not only the last one: a split turn makes two summarization requests through the same
-  stream function and the host concatenates both into one summary, so a clean second response said
-  nothing about a partial first one.
-  
-  That refusal is now the package's entire quality guarantee, and it is why the stream function
-  survives even though it no longer injects anything: it is how the stop reason is read.
+First release. Choose the model and thinking level Pi compacts with, and never persist a summary that
+is not whole.
 
-## 0.1.0
+## What it does
 
-### Minor Changes
+Pi's compaction summarises with the conversation model at the session's thinking level, and there is
+no way to change either — so a long session pays for its summary with the most expensive model it has,
+at whatever thinking level interactive work needed. This package lets you choose both.
 
-- 3238649: First release: bounded context compaction for Pi.
-  
-  The summary request carries a hard ceiling expressed as two absolute token values — a text budget and
-  a reasoning budget — neither derived from the host's reserved-token setting. The summarizer gets its
-  own model and its own thinking level, independent of the conversation model and the session's.
-  
-  - Four presets (`fast`, `balanced`, `deep`, `off`) switch the whole tuple from `/compaction` while a
-    session runs; `off` returns compaction to stock Pi. Every knob is settable from the same command
-    and written back to the configuration file.
-  - The kept window is this package's own token target rather than the host's recent-token setting, and
-    the read-files and modified-files blocks are capped without inheriting the previous compaction's
-    lists.
-  - Pruning replaces an old tool result with a bounded placeholder as a persisted `context_edit`,
-    keeping the originating tool call, and only when invalidating the provider prompt cache is already
-    free or compaction is imminent. Results the agent cannot recover by re-running their tool are never
-    pruned.
-  - A length stop or an over-budget summary is retried once with the tighter configuration the model's
-    API class calls for. Anything that still fails degrades to stock Pi with an announced reason, a
-    widget pinned above the editor and a durable session record. A truncated or partial summary is
-    never persisted, at any step.
-  - The status view reports what the provider will actually receive, including the APIs where the
-    reasoning budget is advisory and the one that sends no output ceiling at all.
-  
-  The package ships inert: installing it changes nothing until it is explicitly enabled. It adds no
-  tools, never patches the host, and has no runtime dependencies and no peer dependency beyond Pi
-  itself.
+- `summarizerModel` — `provider/model`, or `null` for the conversation model. Defaults to `null`, so
+  installing the package never silently lowers your summary quality; choosing a cheaper summarizer is
+  explicit.
+- `thinking` — `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, clamped to what the chosen
+  model supports. Check `/compaction` for the level that actually ran: a model whose `thinkingLevelMap`
+  marks `off` unsupported gets its lowest level instead, and reasons anyway.
+- `keptWindowTokens` — the cut point is this package's own token target rather than the host's
+  recent-token setting.
+
+Those three fields plus `enabled`, in `~/.pi/agent/extensions/pi-compaction/config.json`,
+hot-reloadable through `/reload`, and every knob settable from `/compaction`.
+
+## What it does not do
+
+**It does not bound the summary.** The host sends no `max_output_tokens` on its summarization request
+and neither does this package, so the summary is as long as the host's prompt and the model make it —
+the same as stock Pi. Every mechanism that could shorten one produces a summary that ends before the
+model finished, and the host's prompt puts `## Next Steps` and `## Critical Context`, the two sections
+a continuing model most needs, at the very end, so a cut removes them first. A shorter summary is not
+worth a wrong one.
+[ADR 0005](https://github.com/AllenYolk/pi-extensions/blob/main/packages/pi-compaction/docs/adr/0005-bound-by-not-bounding.md)
+records the decision and the alternatives that were rejected.
+
+**It does not prune.** Replacing old tool results with placeholders would change what the summarizer
+reads, which makes the summary this package's responsibility rather than the host's.
+
+What it improves is speed: the same summary request, on a model and a thinking level chosen for the
+job rather than inherited from the conversation.
+
+## The one guarantee
+
+A partial summary is never persisted.
+
+The host rejects a summarization response that stopped with `error` or `length`, and one that tried to
+call a tool. For any **other** stop reason it returns the partially written summary unchanged —
+`aborted` being the case the specification names. That matters more than it looks: a summary the model
+did not finish is a silent change to the session's history, the next compaction is told to preserve
+everything in the previous summary so an incomplete one propagates, and nothing in the transcript says
+the checkpoint is short.
+
+This package reads the stop reason from the response, through the stream function it owns, and refuses:
+
+- any response whose stop reason is not a clean stop;
+- **every** response the request produced, not only the last one. A split turn makes two summarization
+  requests through the same stream function and the host concatenates both into one summary, so a
+  clean second response says nothing about a partial first one;
+- an attempt whose responses were never observed at all.
+
+Reading the stop reason requires owning the stream function, which is why this package wraps it rather
+than handing `compact()` a model and walking away — a wrapper that only swaps the model never sees a
+response at all.
+
+A failure hands compaction back to stock Pi with an announcement, a widget pinned above the editor and
+a durable session entry. That gives up the model and the thinking level, and changes nothing about the
+summary's length.
+
+## If you used a pre-release build
+
+A configuration file carrying `preset`, `textBudget`, `reasoningBudget`, `prune`, `pruneWindowTokens`
+or `neverPrune` is rejected whole, with a diagnostic naming the field. Those knobs existed during
+development and were removed before this release; the shape above replaces them.
