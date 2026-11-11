@@ -9,7 +9,7 @@ and can be installed, updated and used independently.
 | --- | --- |
 | [`@allenyolk/pi-delete`](packages/pi-delete/README.md) | Delete the current session and exit, optionally including its descendants; delete a subtree from Pi's session picker. |
 | [`@allenyolk/pi-minimal-display`](packages/pi-minimal-display/README.md) | Group tool activity into compact cards, with native details available on expansion. |
-| [`@allenyolk/pi-compaction`](packages/pi-compaction/README.md) | Bound Pi's compaction summary with two absolute token budgets, give the summarizer its own model and thinking level, and prune old tool results between compactions. Inert until you enable it. |
+| [`@allenyolk/pi-compaction`](packages/pi-compaction/README.md) | Give the compaction summarizer its own model and thinking level, and never persist a summary that is not whole. Inert until you enable it. |
 
 ## Install
 
@@ -19,11 +19,8 @@ independently:
 ```sh
 pi install npm:@allenyolk/pi-delete
 pi install npm:@allenyolk/pi-minimal-display
+pi install npm:@allenyolk/pi-compaction
 ```
-
-`@allenyolk/pi-compaction` is not on npm yet — its first release is a candidate. Until it is
-published, take it from the collection below or load it for one run with
-`pi -e ./packages/pi-compaction/src/index.ts`.
 
 Or install this repository as one collection, which enables all three:
 
@@ -36,7 +33,7 @@ pi install git:github.com/AllenYolk/pi-extensions
 where `enabled` defaults to `false`. Installing or updating the collection therefore changes nobody's
 compaction: until you set that field or run `/compaction enable`, compaction is exactly what stock Pi
 does. Enabling it is the only step that hands compaction to this package, and `/compaction disable`
-or `"preset": "off"` hands it straight back.
+hands it straight back.
 
 To take only one extension from the collection, narrow it in `~/.pi/agent/settings.json`:
 
