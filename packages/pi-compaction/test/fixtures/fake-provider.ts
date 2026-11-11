@@ -10,7 +10,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
  * return a normal summary, a deliberately oversized one, an error or a length stop.
  *
  * `PI_COMPACTION_FIXTURE_RECORD`   file the recorded requests are appended to, as JSON lines
- * `PI_COMPACTION_FIXTURE_MODE`     normal (default) | oversized | error | length
+ * `PI_COMPACTION_FIXTURE_MODE`     normal (default) | oversized | error | length | no-stop-reason
  * `PI_COMPACTION_FIXTURE_STOP_REASON`  stop reason a failing summarization response carries instead
  *                                      of MODE's; the host returns anything but `error` and `length`
  *                                      as a normal result carrying partial text, which is the only
@@ -173,6 +173,12 @@ export default function fakeProvider(pi: ExtensionAPI) {
     }
     if (failing && mode === 'error') {
       return { ...base, content: [], stopReason: 'error', errorMessage: 'fixture summarizer is unavailable' };
+    }
+    if (failing && mode === 'no-stop-reason') {
+      // A response that carries no stop reason at all. The host's own failure check looks for `error`
+      // and `length` and returns anything else unchanged, so this reaches the package as a normal
+      // result — which is exactly the shape it cannot prove is complete.
+      return { ...base, content: [{ type: 'text', text: PARTIAL_TEXT }] };
     }
     if (failing && mode === 'length') {
       return { ...base, content: [{ type: 'text', text: TRUNCATED_TEXT }], stopReason: 'length' };

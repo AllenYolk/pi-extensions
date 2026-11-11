@@ -30,8 +30,8 @@ output ceiling and the prune path.
 
 | Check | Result |
 | --- | --- |
-| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **39/39 tests pass** |
-| `npm run check` | **125/125 tests pass** (39 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
+| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **45/45 tests pass** |
+| `npm run check` | **131/131 tests pass** (45 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
 | `npm run benchmark` | **deliberately skipped** — the presentation benchmark is for `@allenyolk/pi-minimal-display`; this package registers no TUI component and patches nothing. CI runs it on every push regardless. |
 
 Which host proves what matters here. The package's own checks resolve Pi 1.5.1 from
@@ -161,6 +161,60 @@ One audit finding was **wrong** and is recorded so it is not re-derived: one aud
 `openai-responses` probably never sends `max_output_tokens` at all, reading the adapter's default as
 `?? false`. It is `?? true`, and the second gate applies only to a ChatGPT sign-in against
 `api.openai.com`. The mechanism it found is real; the severity was not.
+
+### The automated review
+
+OpenCodeReview ran on the release PR and found nine issues. Six were real, and two of those were
+introduced by this branch's own changes — both in the same way, by adding a value to a call without
+extending what verifies it:
+
+- **A retried response could fail the attempt.** Passing the host's retry policy means the stream
+  function can be called more than once for one summarization request, and only the response the host
+  finally returns is the one `compact()` acted on. The completeness check read the discarded failure
+  and handed compaction back to stock Pi after a summary that had succeeded. Responses are now grouped
+  by the context they came from — one group per summarization request, a later response replacing an
+  earlier one in its group — so a retried-away failure is not the outcome, while a split turn's two
+  ranges stay separate and both are checked.
+- **The seam probe did not cover the tenth argument.** Arity proves the *count* of `compact()`'s
+  parameters and nothing about their order, and every argument this package passed after the stream
+  function used to be `undefined`, so a reorder was harmless. The retry policy is the first value where
+  a wrong slot would silently misroute something the package depends on. The probe now fails its first
+  attempt retryably and requires a second call, so a host that ignores or reorders that slot is
+  detected instead of trusted.
+
+The other four:
+
+- **`describeFailure` could print `"undefined"` and drop the real error.** `stopReason` is optional, so
+  a response with none — or one this package does not model — produced `stopped with "undefined"`, and
+  in the catch branch the thrown error, the only real diagnostic, was discarded. There is now a
+  distinct sentence for a response carrying no stop reason, and the error is quoted when there is one.
+- **Provider-originated error text reached the terminal unsanitised.** The announcement is printed and
+  pinned as a widget, so control characters in a provider's message could rewrite the display and a
+  newline could break the one-fact-per-line shape. Quoted text is now stripped of control characters,
+  whitespace-collapsed and length-bounded.
+- **The split-turn test was vacuous.** Its filter could not match half of what it claimed and its
+  assertion was trivially satisfiable, so it did not prove the guarantee it was named for. It now pins
+  the request count and the stop reason of each of the three requests in order.
+- **The acceptance test no longer checked the kept window.** The assertion was dropped along with the
+  output ceiling, which left the cut point — one of the three things this package still controls, and
+  the only one with a number attached — described but unverified. It is asserted again, against both
+  this package's target and the host's 20,000-token default.
+
+Two findings were about the announcement and one about dead code: it claimed the model and the thinking
+level were "the whole of what this package controls" when the cut point is the third, its guidance
+listed five of the seven thinking levels the command accepts, and a helper that could no longer
+distinguish this package's request from the host's was left in the suite. All three are fixed.
+
+One finding was checked and **does not hold as stated**: a test for the split-turn record ordering does
+not turn red when weakened, because those assertions verify the test's *premise* — that a split turn
+happened and that its first response was the partial one — rather than the package's behaviour. They
+are kept for that reason, and the behavioural claim is verified separately: removing the completeness
+check, or reducing it to the last response only, each turns the test red.
+
+Every fix here is mutation-checked in the direction that matters, and two coverage gaps the mutations
+exposed were closed rather than argued away: a response carrying no stop reason now has its own
+real-CLI test, and the retry-policy defaults are asserted against the host's own source instead of
+against constants the test invented.
 
 ### What the audits led to
 

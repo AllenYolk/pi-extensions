@@ -132,9 +132,15 @@ export default function piCompaction(pi: ExtensionAPI): void {
       );
     }
 
-    // One request. The model and its thinking level are the whole of what this package changes; the
-    // summary is otherwise the host's, at whatever length the host's prompt and the model produce.
-    const outcomes: AttemptOutcome[] = [];
+    // One request. The model and its thinking level are two of the three things this package changes;
+    // the summary is otherwise the host's, at whatever length the host's prompt and the model produce.
+    //
+    // Responses are grouped by the context they came from. The host's retry policy calls the stream
+    // function again with the same context after a transient failure, and only the response it
+    // finally returns is the one `compact()` acted on — so a later response replaces an earlier one,
+    // and a failure that was retried away must not be read as this attempt's outcome. A split turn
+    // summarises two ranges through two contexts, and both of those have to be clean.
+    const outcomes = new Map<object, AttemptOutcome>();
     let result;
     try {
       result = await compact(
@@ -145,7 +151,7 @@ export default function piCompaction(pi: ExtensionAPI): void {
         event.customInstructions,
         event.signal,
         summarizerThinkingLevel(model, tuple) as never,
-        observingStream(ctx.modelRegistry, (seen) => { outcomes.push(seen); }),
+        observingStream(ctx.modelRegistry, (group, seen) => { outcomes.set(group, seen); }),
         undefined,
         hostRetryPolicy(pi.getSettings()),
         undefined,
@@ -153,23 +159,23 @@ export default function piCompaction(pi: ExtensionAPI): void {
       );
     } catch (error) {
       if (event.signal.aborted) return { cancel: true };
-      return handBack(named, describeFailure(outcomes.at(-1), error));
+      return handBack(named, describeFailure([...outcomes.values()].at(-1), error));
     }
     if (event.signal.aborted) return { cancel: true };
 
     /**
      * The whole of this package's quality guarantee: a summary it cannot vouch for is never
      * persisted. The host throws on an error and on a tool call, so those never reach here; it
-     * returns a partially written summary **unchanged** for any other stop reason, which is what
-     * this check exists to refuse.
+     * returns a partially written summary **unchanged** for any other stop reason, which is what this
+     * check exists to refuse.
      *
-     * Every response the request produced is checked, not only the last one: a split turn makes two
-     * summarization requests through the same stream function and the host concatenates both into
-     * one summary, so a clean second response says nothing about a partial first one. And an attempt
-     * whose responses were never observed proves nothing at all.
+     * Every response the attempt kept is checked, not only the last one — see the grouping above —
+     * and a response with no stop reason this package recognises is refused too, because an
+     * unrecognised response is not a proven-complete one.
      */
-    const unclean = outcomes.find((seen) => seen.stopReason !== 'stop');
-    if (outcomes.length === 0 || unclean) {
+    const responses = [...outcomes.values()];
+    const unclean = responses.find((seen) => seen.stopReason !== 'stop');
+    if (responses.length === 0 || unclean) {
       return handBack(named, unclean ? describeFailure(unclean, undefined) : UNOBSERVED_RESPONSE);
     }
     return { compaction: result };

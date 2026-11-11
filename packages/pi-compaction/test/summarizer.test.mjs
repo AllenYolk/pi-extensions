@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { compact } from '@earendil-works/pi-coding-agent';
 import {
   checkHostSeam,
   clampThinkingLevel,
   hostRetryPolicy,
+  observingStream,
   summarizerThinkingLevel,
 } from '../src/summarizer.ts';
 
@@ -55,16 +59,73 @@ test('a model with no off cannot be told not to reason', () => {
   assert.equal(summarizerThinkingLevel(high, tuple('off')), 'high');
 });
 
-test('the retry policy is resolved the way the host resolves it', () => {
+test('the retry policy defaults match the host\'s own, and a user setting wins', () => {
   // Without a policy the host's own `retryAssistantCall()` wrapper never retries, so a transient
   // stream drop on a minutes-long summary request fails the whole compaction on the first attempt.
-  assert.deepEqual(hostRetryPolicy({}), {
-    enabled: true, maxRetries: 3, baseDelayMs: 2_000, maxAgentDelayMs: 60_000,
+  // `hostRetryPolicy` repeats `SettingsManager.getRetrySettings()`'s four defaults because an
+  // extension is handed merged rather than resolved settings — so the defaults are checked against
+  // the host's, read from its own source, rather than against constants this test invented. A host
+  // that changed them would otherwise leave this package sending a wrong policy that still passed.
+  // Resolved the way `pi-host.mjs` resolves it: the host this package's own workspace resolves, not a
+  // fixed `./node_modules` path that a different Pi version could occupy after hoisting.
+  const hostDir = dirname(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))));
+  const hostSource = readFileSync(join(hostDir, 'dist/core/settings-defaults.js'), 'utf8');
+  const hostDefaults = hostSource.slice(hostSource.indexOf('retry: {'));
+  const numberAfter = (key) => Number(/(\d[\d_]*)/.exec(hostDefaults.slice(hostDefaults.indexOf(key)))[1].replace(/_/g, ''));
+
+  const ours = hostRetryPolicy({});
+  assert.equal(ours.enabled, /retry:\s*\{[\s\S]*?enabled:\s*true/.test(hostSource), 'enabled');
+  assert.equal(ours.maxRetries, numberAfter('maxRetries:'), 'maxRetries');
+  assert.equal(ours.baseDelayMs, numberAfter('baseDelayMs:'), 'baseDelayMs');
+  assert.match(hostDefaults, /maxAgentDelayMs:\s*DEFAULT_MAX_AGENT_RETRY_DELAY_MS/, 'the host names its max delay');
+
+  // And a user setting still wins over every default.
+  assert.deepEqual(hostRetryPolicy({ retry: { enabled: false, maxRetries: 9, baseDelayMs: 5 } }), {
+    enabled: false, maxRetries: 9, baseDelayMs: 5, maxAgentDelayMs: ours.maxAgentDelayMs,
   });
-  assert.deepEqual(hostRetryPolicy({ retry: { enabled: false, maxRetries: 9 } }), {
-    enabled: false, maxRetries: 9, baseDelayMs: 2_000, maxAgentDelayMs: 60_000,
-  });
-  assert.equal(hostRetryPolicy({ retry: { enabled: true } }).maxRetries, 3, 'one field does not zero the rest');
+  assert.equal(hostRetryPolicy({ retry: { enabled: true } }).maxRetries, ours.maxRetries, 'one field does not zero the rest');
+});
+
+test('a response that was retried away does not fail the attempt', async () => {
+  // The host's retry policy calls the stream function again with the *same* context after a transient
+  // failure, and only the response it finally returns is the one `compact()` acted on. Reading the
+  // discarded failure as this attempt's outcome would hand compaction back to stock Pi after a
+  // summary that succeeded.
+  const responses = [
+    { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'server error' },
+    { role: 'assistant', content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' },
+  ];
+  let call = 0;
+  const registry = { streamSimple: () => ({ result: async () => responses[Math.min(call++, 1)] }) };
+  const groups = new Map();
+  const stream = observingStream(registry, (group, outcome) => { groups.set(group, outcome); });
+
+  const context = { messages: [] };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await stream(model('anthropic-messages'), context, {}).result();
+  }
+  assert.equal(groups.size, 1, 'one context is one group, however many times it was retried');
+  assert.equal([...groups.values()][0].stopReason, 'stop', 'the retried-away error is not the outcome');
+});
+
+test('a split turn keeps one response per range, and both are checked', async () => {
+  // The host summarises a split turn's two ranges through two contexts and concatenates both into one
+  // summary, so a clean second response says nothing about a partial first one.
+  const responses = [
+    { role: 'assistant', content: [{ type: 'text', text: 'history' }], stopReason: 'aborted' },
+    { role: 'assistant', content: [{ type: 'text', text: 'prefix' }], stopReason: 'stop' },
+  ];
+  let call = 0;
+  const registry = { streamSimple: () => ({ result: async () => responses[call++] }) };
+  const groups = new Map();
+  const stream = observingStream(registry, (group, outcome) => { groups.set(group, outcome); });
+
+  for (const context of [{ messages: ['history'] }, { messages: ['prefix'] }]) {
+    await stream(model('anthropic-messages'), context, {}).result();
+  }
+  assert.equal(groups.size, 2, 'two ranges are two groups');
+  const seen = [...groups.values()].map((outcome) => outcome.stopReason);
+  assert.deepEqual(seen, ['aborted', 'stop'], 'the partial first response survives as its own group');
 });
 
 test('the host seam check accepts this package\'s host and reports what it saw', async () => {
@@ -75,6 +136,27 @@ test('the host seam check accepts this package\'s host and reports what it saw',
   // The third seam: the host must await result() on what our stream function returns, or no
   // response is ever observed and a partial summary cannot be told from a complete one.
   assert.match(result.detail, /its result\(\) was awaited/);
+  // The tenth argument: arity proves the count of parameters and nothing about their order. Every
+  // argument after the stream function used to be `undefined`, so a reorder was harmless; the retry
+  // policy is the first one where a wrong slot would silently misroute a value the package depends on.
+  assert.match(result.detail, /the retry policy we passed drove a retry \(2 attempts\)/);
+});
+
+test('the host seam check rejects a host that ignores the retry policy slot', async () => {
+  // Right arity, the stream function is called, and its result() is awaited — the first three checks
+  // all pass. But the host never applies the policy in the tenth argument, which is exactly what a
+  // reordered parameter list would look like from here.
+  const ignoresRetry = async (
+    _preparation, _model, _apiKey, _headers, _instructions, _signal, _thinking, streamFn,
+  ) => {
+    const stream = await streamFn(undefined, undefined, {});
+    await stream.result();
+    return { summary: 'x', firstKeptEntryId: 'x', tokensBefore: 0 };
+  };
+  Object.defineProperty(ignoresRetry, 'length', { value: 12 });
+  const result = await checkHostSeam(ignoresRetry);
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /did not apply the retry policy passed in its tenth argument/);
 });
 
 test('the host seam check steps aside on a compaction function with another shape', async () => {

@@ -83,7 +83,7 @@ export interface AttemptOutcome {
  */
 export function observingStream(
   registry: ModelRegistry,
-  observe?: (outcome: AttemptOutcome) => void,
+  observe?: (group: object, outcome: AttemptOutcome) => void,
 ): SummarizerStream {
   return ((model: SummarizerModel, context: unknown, options?: StreamOptions) => {
     const stream = registry.streamSimple(model, context as never, options) as { result: () => Promise<unknown> };
@@ -91,7 +91,13 @@ export function observingStream(
     const result = stream.result.bind(stream);
     stream.result = async () => {
       const message = await result();
-      observe(outcomeOf(message));
+      // The group is the context this response came from, and it is what separates a retry from a
+      // split turn. The host's retry policy calls the stream function again with the *same* context
+      // after a transient failure, and only the response it finally returns is the one `compact()`
+      // acts on — so a later response replaces an earlier one in that group, and a discarded failure
+      // must not be read as the attempt's outcome. A split turn summarises two ranges through two
+      // different contexts, and each of those has to be clean on its own.
+      observe(context as object, outcomeOf(message));
       return message;
     };
     return stream;
@@ -160,22 +166,33 @@ async function probeSeam(compactFn: typeof compact): Promise<SeamResult> {
   }
   const seen: unknown[] = [];
   let awaited = 0;
+  let produced = 0;
   const stream: SummarizerStream = ((_model: unknown, _context: unknown, options?: StreamOptions) => {
     seen.push(options);
     return {
       result: async () => {
         awaited += 1;
-        return probeResponse();
+        produced += 1;
+        // The first attempt fails retryably, so a retry policy that reached the host's own wrapper
+        // shows up as a second call. Arity alone cannot prove the tenth argument is still the retry
+        // policy: every argument this package passes after the stream function used to be `undefined`,
+        // so a host that reordered them was harmless, and this is the first one where a wrong position
+        // would silently misroute a value the package depends on.
+        return produced === 1 ? probeErrorResponse() : probeResponse();
       },
     } as never;
   }) as unknown as SummarizerStream;
+  const retry: RetryPolicy = { enabled: true, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 1 };
   try {
-    await compactFn(probePreparation(), probeModel(), undefined, undefined, undefined, undefined, 'off', stream);
+    await compactFn(
+      probePreparation(), probeModel(), undefined, undefined, undefined, undefined, 'off', stream,
+      undefined, retry, undefined, 'pi-compaction-seam-probe',
+    );
   } catch (error) {
     return { ok: false, detail: `compact() rejected a supplied stream function: ${String(error)}` };
   }
   const options = seen[0];
-  if (seen.length !== 1 || !options || typeof options !== 'object') {
+  if (seen.length === 0 || !options || typeof options !== 'object') {
     return { ok: false, detail: `the supplied stream function was called ${seen.length} times with ${typeof options} options` };
   }
   // The third seam. Without it no outcome is ever observed, so a partial summary cannot be told from
@@ -186,10 +203,37 @@ async function probeSeam(compactFn: typeof compact): Promise<SeamResult> {
       detail: "compact() never awaited result() on the object our stream function returned, so a response's stopReason cannot be read",
     };
   }
+  if (produced < 2) {
+    return {
+      ok: false,
+      detail: 'compact() did not apply the retry policy passed in its tenth argument, so a host that '
+        + 'reordered its parameters would go undetected and the policy would be misrouted',
+    };
+  }
   return {
     ok: true,
-    detail: `compact() arity 12; our stream function received {${Object.keys(options).sort().join(', ')}} `
-      + 'and its result() was awaited',
+    detail: `compact() arity 12; our stream function received {${Object.keys(options).sort().join(', ')}}, `
+      + `its result() was awaited, and the retry policy we passed drove a retry (${produced} attempts)`,
+  };
+}
+
+/**
+ * A retryable failure. The message has to match the host's retryable-error pattern, or the probe's
+ * second call never happens and the retry-policy check would pass for the wrong reason.
+ */
+function probeErrorResponse() {
+  return {
+    role: 'assistant',
+    content: [],
+    stopReason: 'error',
+    errorMessage: 'server error',
+    provider: 'pi-compaction-seam-probe',
+    model: 'pi-compaction-seam-probe',
+    timestamp: Date.now(),
+    usage: {
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
   };
 }
 

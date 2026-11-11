@@ -12,19 +12,23 @@ const PARTIAL = 'PARTIAL-SUMMARY-MUST-NEVER-BE-PERSISTED';
 const HEADLINE = 'degraded — compaction handed back to stock Pi';
 
 const markers = (text) => new Set(text?.match(/MARK-[uar]\d+/g) ?? []);
-
-/**
- * The summarization requests this package made. Stock Pi sends no output ceiling — and neither do we
- * any more — so the model is what distinguishes our request from the host's.
- */
-const ours = (records) => summarizationRecords(records).filter((record) => record.options.maxTokens === undefined);
+/** What the compaction left verbatim: every projected entry that is not the compaction itself. */
+const keptTokens = (report) =>
+  report.projection.entries.filter((entry) => entry.type !== 'compaction').reduce((sum, entry) => sum + entry.tokens, 0);
 
 /** Every handback announces to the same standard: which summarizer, why, and what happens now. */
 function assertAnnounced(run, { summarizer, why }) {
   assert.match(run.plain, new RegExp(`pi-compaction: ${HEADLINE}`), 'the headline reaches stderr');
   assert.match(run.plain, new RegExp(`Summarizer: ${summarizer}`), 'which summarizer');
   assert.match(run.plain, new RegExp(`Why: ${why}`), 'why it degraded');
-  assert.match(run.plain, /Now: stock Pi compacts with the conversation model and the session's own thinking level/);
+  // A handback gives up all three of the things this package controls, and the cut point is the third:
+  // returning `undefined` from the hook means the host prepares its own compaction with the host's
+  // recent-token setting, so the configured kept-window target never applies.
+  assert.match(
+    run.plain,
+    /Now: stock Pi compacts with the conversation model, the session's own thinking level, and the host's recent-token setting rather than this package's kept-window target/,
+  );
+  assert.match(run.plain, /The summary length is unaffected/);
 }
 
 /**
@@ -202,6 +206,27 @@ test('a response that did not stop cleanly is refused, and its partial text is n
   assertRecorded(run, { reason });
 });
 
+test('a response with no stop reason is refused, and the reason says so', { timeout: 180_000 }, () => {
+  // An unproven summary is not a complete one. The host returns a response it does not recognise
+  // unchanged, so a missing stop reason has to be refused rather than assumed clean — and the
+  // announcement has to describe that, rather than quoting the string "undefined" at the user.
+  const run = runCompaction({
+    name: 'no-stop-reason-',
+    config: { enabled: true },
+    fixture: { MODE: 'no-stop-reason', FAIL_FIRST: 1 },
+    turns: 30,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  const persisted = persistedCompactions(run.session.file);
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].fromHook ?? false, false, 'the compaction that reached the session is the host\'s');
+  assertNoPartialPersisted(run);
+
+  assert.match(run.plain, /Why: the summarizer's response carried no stop reason/);
+  assert.doesNotMatch(run.plain, /stopped with "undefined"/, 'and never reports a missing value as a value');
+});
+
 test('a split turn refuses a partial first response even when its second one is clean', { timeout: 180_000 }, () => {
   // A split turn makes two summarization requests through the same stream function and the host
   // concatenates both into one summary, so the last response alone says nothing about the first.
@@ -214,14 +239,22 @@ test('a split turn refuses a partial first response even when its second one is 
   });
   assert.equal(run.report.error, undefined, run.report.error);
 
-  const attempts = summarizationRecords(run.records).filter((record) => record.stopReason !== undefined || record.summarization);
-  const oursOnly = attempts.filter((record) => record.mode === 'aborted' || record.stopReason === 'aborted');
-  assert.ok(oursOnly.length >= 1, 'the first response carries the partial text');
+  // A split turn makes two summarization requests through our stream function and only the first
+  // carries the partial text. Order is what identifies them: our two come first, then stock Pi's own
+  // request after the handback. A weaker assertion here would not distinguish a refusal from a
+  // summary that was never partial to begin with.
+  const records = summarizationRecords(run.records);
+  assert.equal(records.length, 3, 'our split turn made two requests, then stock Pi made one');
+  assert.equal(records[0].stopReason, 'aborted', 'the first response carries the partial text');
+  assert.equal(records[1].stopReason, undefined, 'the second is clean — all a last-response-only check would see');
+  assert.equal(records[2].stopReason, undefined, "and stock Pi's own request is the one that compacted");
 
   const persisted = persistedCompactions(run.session.file);
   assert.equal(persisted.length, 1);
   assert.equal(persisted[0].fromHook ?? false, false, 'the compaction that reached the session is the host\'s');
   assertNoPartialPersisted(run);
+  // The refusal is the guarantee: without it the concatenated summary would have been ours.
+  assert.match(run.plain, /Why: the summarizer's response stopped with "aborted"/);
 });
 
 test('a model error hands compaction back to stock Pi', { timeout: 180_000 }, () => {
@@ -433,8 +466,19 @@ test('acceptance: the kept window follows our own target and nothing is lost', {
   const persisted = persistedCompactions(run.session.file)[0];
   assert.equal(persisted.fromHook, true);
 
+  // The cut point is one of the three things this package still controls and the only one with a
+  // number attached, so it is asserted rather than described. `findCutPoint` walks back until the
+  // target is reached and then snaps to a valid boundary, so one oversized entry can carry the window
+  // past the target — that overshoot is the allowance.
+  const kept = keptTokens(run.report);
+  const largestEntry = Math.max(...run.report.projection.entries.map((entry) => entry.tokens));
+  assert.ok(kept <= DEFAULT_KEPT_WINDOW_TOKENS + largestEntry, `kept window was ${kept} tokens, target ${DEFAULT_KEPT_WINDOW_TOKENS}`);
+  // And it is our target rather than the host's: the host's default is 20,000, so a window at our
+  // 16,000 target has to come out below it.
+  assert.ok(kept < 20_000, `kept window was ${kept} tokens, not below the host's 20,000 default`);
+
   // The summary is the host's, whole, at whatever length the model produced — this package does not
-  // bound it and does not check it. What it does control is the cut point.
+  // bound it and does not check it.
   assert.ok(persisted.summary.length > 0);
   assertNothingLost(run);
   console.log(
