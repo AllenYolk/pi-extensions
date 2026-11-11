@@ -71,9 +71,33 @@ silently lowers your summary quality. Choosing a cheaper or faster summarizer is
 The chosen model must be one this host offers with configured credentials; if it is not, the package
 says so and hands compaction back to Pi rather than failing the compaction.
 
-**Check `Thinking:` in `/compaction` before assuming `off` took effect.** A model whose
-`thinkingLevelMap` marks `off` unsupported is clamped to its lowest level instead, and it then
-reasons anyway — the status view reports the level that was actually used, not the one you asked for.
+### When `off` does not take effect
+
+`thinking: "off"` is a request, not a guarantee. A model's `thinkingLevelMap` decides which levels it
+accepts, and a level mapped to `null` is unsupported — so a model that marks `off` unsupported is
+clamped to its lowest level instead and reasons anyway. This package sends no output ceiling, so that
+reasoning has nothing bounding it.
+
+`/compaction` reports the level that will actually run, not the one you asked for:
+
+```text
+Thinking: low (clamped from off; this model has no off, so its reasoning phase still runs)
+```
+
+**This is a per-model property, not a property of the provider.** Two models behind one gateway can
+differ: on the gateway this package was developed against, one model declares `"off": "none"` and
+genuinely stops while its sibling declares `"off": null` and cannot. Check the model you actually
+configured, not the provider.
+
+To see what a model declares, read its `thinkingLevelMap` in `~/.pi/agent/models.json`. A model whose
+`off` is `null` cannot be told not to reason; setting it to `"none"` makes the request send
+`reasoning.effort: "none"` instead.
+
+Changing it is a request to the **provider**, not to this package. If the upstream model does not
+accept that effort, the summarization request fails and compaction hands back to stock Pi — annoying,
+but reversible: put `null` back. Verify with one real compaction, then re-read `Thinking:` in
+`/compaction`.
+
 
 ## The one thing that is refused
 
