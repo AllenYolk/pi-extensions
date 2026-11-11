@@ -81,14 +81,21 @@ A **partial summary** is never persisted.
 
 The host rejects a summarization response that stopped with `error` or `length`, and one that tried to
 call a tool. For any **other** stop reason it returns the partially written summary unchanged —
-`aborted` being the case the specification names. The package reads the stop reason from the response
-itself, through the stream function it owns, and refuses:
+`aborted` being the case the specification names.
 
-- any response whose stop reason is not a clean stop;
-- **every** response the request produced, not only the last one. A split turn makes two summarization
-  requests through the same stream function and the host concatenates both into one summary, so a
-  clean second response says nothing about a partial first one;
-- an attempt whose responses were never observed at all, which proves nothing.
+This matters more than it looks. A summary the model did not finish is a silent change to the
+session's history: the next compaction is told to preserve everything in the previous summary, so an
+incomplete one propagates, and nothing in the transcript says the checkpoint is short. **Reading the
+stop reason requires owning the stream function**, which is why this package wraps it rather than
+handing `compact()` a model and walking away — a wrapper that only swaps the model never sees a
+response at all.
+
+The package reads every response the request produced, not only the last one:
+
+- A split turn makes **two** summarization requests through the same stream function and the host
+  concatenates both into one summary, so a clean second response says nothing about a partial first
+  one. Both are checked.
+- An attempt whose responses were never observed at all is refused — it proves nothing.
 
 A length stop is refused too. Since this package sends no ceiling, a length stop means the summarizer
 hit the model's own output limit — a genuinely incomplete summary, not a budget working as intended.
