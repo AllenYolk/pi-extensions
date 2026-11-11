@@ -158,7 +158,7 @@ export default function fakeProvider(pi: ExtensionAPI) {
       timestamp: Date.now() - (summarization ? 0 : messageAgeMs),
       usage: {
         // A response with no tokens at all is one the host's own rule treats as having measured
-        // nothing, which is what "usage is unavailable" means to the prune gate.
+        // nothing, which is what "usage is unavailable" looks like to the host.
         input: noUsage && !summarization ? 0 : 10,
         output: noUsage && !summarization ? 0 : 20,
         ...reported,
@@ -251,8 +251,8 @@ function summaryText(tokens: number): string {
 
 /**
  * The text the request carries, which for a summarization request is the serialized conversation.
- * Tool calls are included, because whether a pruned result's originating call and arguments
- * survive into the next request is exactly what a prune has to be judged on.
+ * Tool calls are included, so a caller can prove that a cut point put a turn's originating call and
+ * its arguments on the summarised side rather than the kept side.
  */
 function promptOf(context: { messages?: Array<{ role: string; content?: unknown }> }): string {
   return (context.messages ?? [])

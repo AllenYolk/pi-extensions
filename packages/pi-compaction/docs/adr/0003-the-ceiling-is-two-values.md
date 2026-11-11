@@ -1,5 +1,8 @@
 # The output ceiling is two absolute values, not one
 
+> **Superseded by [ADR 0005](0005-bound-by-not-bounding.md).** The output ceiling, the prune
+> path and the acceptance of a length stop were all removed; see that ADR for why.
+
 A preset carries a text budget and a reasoning budget as two independent absolute token values, and
 the ceiling a preset permits is their sum.
 

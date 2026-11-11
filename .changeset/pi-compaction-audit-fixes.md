@@ -2,65 +2,69 @@
 "@allenyolk/pi-compaction": minor
 ---
 
-Fix what four independent algorithm audits found in the first release, and remove the parts of the
-design that assumed the summarizer follows instructions.
+Reduce the package to what it should have been: choose the summarizer model, choose its thinking
+level, and never persist a summary that is not whole.
 
-## Fixes
+## Removed
 
-**An attempt now accepts what its own request bounds.** A single-pool request asks for the text budget
-plus the reasoning budget as one envelope, while the acceptance test accepted only the text budget.
-That left a dead band — 8,000 tokens on `balanced`, 24,000 on `deep` — in which a summary the provider
-was allowed to write was refused anyway, costing a second full summary request every time a model
-landed in it. `deep` was strictly worse than `balanced` for it: the same acceptance bound with three
-times the room to overshoot into. The bound is now the pool on both API classes.
+**The output ceiling.** The two absolute budgets, the `maxTokens` injection, the acceptance test and
+the per-API classification that mapped budgets onto adapters are all gone. This package now sends no
+`max_output_tokens` on the summarization request — the same as stock Pi — so the summary is as long as
+the host's prompt and the model make it.
 
-**A split turn is no longer read through its last response only.** The host makes two summarization
-requests through the same stream function and concatenates both into one summary, so a clean second
-response said nothing about a partial first one — and a partial history response could be persisted.
-Every response the request produces is now checked. A split turn whose history range is empty is
-declined before any request, because the host would carry the previous summary forward verbatim and no
-budget here could bound the result.
+**The prune path.** `turn_end` no longer writes `context_edit` entries and the `prune`,
+`pruneWindowTokens` and `neverPrune` settings are gone, along with `src/prune.ts`.
 
-**The host's file-list block no longer counts against the model's budget**, so a summary that used
-exactly its budget is accepted rather than refused for text the model never wrote.
+**The retry ladder.** Already removed in the previous entry; restated because the reason is now part
+of a larger one.
 
-**The host's retry policy is passed through.** It was `undefined`, and the host's own
-`retryAssistantCall()` wrapper never retries without one — so a transient stream drop on a
-minutes-long summary request failed the whole compaction on the first attempt.
+**The presets.** `fast` / `balanced` / `deep` encoded a combination of two budgets, and
+`textBudget` / `reasoningBudget` no longer exist. Configuration is four fields: `enabled`,
+`summarizerModel`, `thinking`, `keptWindowTokens`.
 
-**A model that switches its own output ceiling off is detected.** `openai-responses` writes
-`max_output_tokens` only while `compat.supportsMaxOutputTokens` is not false; a model that switches it
-off dropped the ceiling silently while the status view still reported one. Such a model is now treated
-as sending no ceiling, and the announcement names the flag.
+**Why:** every mechanism that could shorten a summary produces one that ends before the model
+finished, and the host's prompt puts `## Next Steps` and `## Critical Context` — the two sections a
+continuing model most needs — at the very end, so a cut removes them first. A shorter summary is not
+worth a wrong one. [ADR 0005](https://github.com/AllenYolk/pi-extensions/blob/main/packages/pi-compaction/docs/adr/0005-bound-by-not-bounding.md)
+records the decision and marks ADR 0002, 0003 and 0004 superseded.
 
-**A cut point that leaves nothing to summarise is announced.** It handed compaction back silently,
-contradicting the package's own statement that degradation is never silent.
+## Changed
 
-**A zero reasoning budget no longer claims the summarizer will not reason.** On a model whose
-`thinkingLevelMap` marks `off` unsupported — the owner's own conversation model marks both `off` and
-`minimal` unsupported — the request is clamped to the lowest level it has and the model reasons anyway,
-drawing from the same envelope as the text. The status view printed "the summarizer does not reason"
-for that case. There is now an `uncapped` reasoning-budget effect, and on an answer-budget API the
-view says the reported ceiling is a lower bound, because the adapter adds a thinking budget of its own
-when none is supplied.
+**A length stop is now refused.** It was accepted in the previous entry, on the reasoning that the
+ceiling we asked for was the budget working. With no ceiling sent, a length stop means the summarizer
+hit the model's own output limit — a genuinely incomplete summary — so it degrades like any other
+failure.
 
-## Removals
+**A handback costs the model and the thinking level, and nothing else.** The announcement used to
+describe an unbounded summary; it now says what actually changes, which is that stock Pi compacts with
+the conversation model and the session's own thinking level.
 
-**The retry ladder is gone, and a length stop is now accepted.** Both rungs depended on the model
-following instructions: the single-pool rung appended a written "keep the summary within N tokens"
-instruction, and the answer-budget rung halved both budgets, which makes a length stop more likely
-rather than less. Both cost a second full request for an outcome the ceiling had already decided.
+**`/compaction` is much shorter.** It reports the summarizer, the thinking level that will actually
+run, the kept-window target, and states plainly that the summary length is not bounded by this
+package.
 
-A compaction now makes one request. A length stop — the provider cutting the response at the ceiling
-this package asked for — is accepted and the truncated summary is persisted, because that is what a
-ceiling means. This deliberately overrides a host decision, and
-[ADR 0004](https://github.com/AllenYolk/pi-extensions/blob/main/packages/pi-compaction/docs/adr/0004-accept-a-length-stop-as-the-budget-working.md)
-records why. A model error, a timeout or an unobserved response still hands back to stock Pi.
+## Breaking
 
-## Corrections
+Existing configuration files are rejected. `preset`, `textBudget`, `reasoningBudget`, `prune`,
+`pruneWindowTokens` and `neverPrune` are unknown fields now, and `loadConfig` rejects a file whole
+rather than half-applying it — so a stale file leaves compaction on stock Pi with a diagnostic naming
+the field. The replacement is:
 
-The README's per-cycle figures are corrected. The `36,938 / 22,938 / 6,938` previously credited to
-"the bounded summary and the prune path" splits into a summary term, a kept-window term, and nothing
-from pruning — base context is measured before a prune can run. Read like for like at the same kept
-window, the per-cycle gain is 1.14× / 1.04× / 0.93× rather than 1.25× / 1.16× / 1.05×, and `deep`
-costs capacity on the measured profile rather than saving it.
+```json
+{
+  "enabled": true,
+  "summarizerModel": "provider/model",
+  "thinking": "off",
+  "keptWindowTokens": 16000
+}
+```
+
+`summarizerModel: null` — the default — is the conversation model, so installing the package never
+silently lowers summary quality. Choosing a cheaper summarizer is explicit.
+
+## Unchanged
+
+The three host-seam checks, and the refusal to persist a partial summary: any response whose stop
+reason is not a clean stop, every response a split turn produced rather than only the last, and an
+attempt whose responses were never observed. That refusal is now the package's entire quality
+guarantee, and it is why the stream function survives even though it no longer injects anything.

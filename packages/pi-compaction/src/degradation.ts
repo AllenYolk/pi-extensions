@@ -1,12 +1,11 @@
-import type { Selection } from './config.ts';
 import type { AttemptOutcome } from './summarizer.ts';
 
 /**
  * The announcement that ends a compaction, and the words it uses.
  *
  * A compaction this package could not complete hands back to stock Pi. That is the owner's explicit
- * choice — availability over size, with a loud warning — so the announcement names the preset, the
- * reason and what the session's behaviour now is, rather than printing a line and hoping.
+ * choice — availability over control, with a loud warning — so the announcement names the summarizer,
+ * the reason and what the session's behaviour now is, rather than printing a line and hoping.
  */
 
 /** The custom session entry a degradation is recorded as. Custom entries carry no LLM context. */
@@ -34,36 +33,36 @@ export const UNOBSERVED_RESPONSE =
   "the summarizer's responses were never observed, so the package cannot prove the summary is complete";
 
 export interface Degradation {
-  preset: Selection;
-  /** What the preset asked to summarise with, or what there was instead. */
+  /** What the compaction was to summarise with, or what there was instead. */
   summarizer: string;
   /** Why the attempt failed. */
   reason: string;
 }
 
 /**
- * What stock Pi costs once this package steps aside. Measured on the profile this package was built
- * against — one real session, sixteen compactions — because there is nothing to derive it from: the
- * host sends no output ceiling at all, so the number is whatever the summarizer model felt like
- * writing.
+ * What a handback costs. It is no longer a change in summary length: this package sends no output
+ * ceiling and neither does stock Pi, so both produce a summary as long as the host's prompt and the
+ * model make it. What changes is which model produces it and how hard it thinks — the two things
+ * this package exists to control.
  */
-const STOCK_PI_COST =
-  'stock Pi sends no output ceiling at all, so the summary is bounded only by the summarizer '
-  + "model's own output limit. Measured on the profile this package was built against, summaries "
-  + 'grew 3,437 to 26,019 tokens across 16 compactions, each taking 289 to 490 seconds, and base '
-  + 'context grew with them.';
+const HANDBACK_COST =
+  'stock Pi compacts with the conversation model and the session\'s own thinking level, not the '
+  + 'summarizer configured here. The summary length is unaffected — neither path sends an output '
+  + 'ceiling — but the model and the thinking level are the whole of what this package controls, so '
+  + 'a handback gives both of them up.';
 
 /**
  * The announcement, as the lines the user reads. Line one is the headline; the rest name the
- * preset, the reason, what the session's behaviour now is and what that costs.
+ * summarizer, the reason, what the session's behaviour now is and what to do about it.
  */
 export function announcement(degradation: Degradation): string[] {
   return [
     'degraded — compaction handed back to stock Pi',
-    `Preset: ${degradation.preset} — summarizer ${degradation.summarizer}`,
+    `Summarizer: ${degradation.summarizer}`,
     `Why: ${degradation.reason}`,
-    `Now: ${STOCK_PI_COST}`,
-    'Next: /compaction preset fast for a hard 6,000-token ceiling, /compaction model provider/model '
-      + 'for a summarizer on an answer-budget API, or /compaction disable to make this the default.',
+    `Now: ${HANDBACK_COST}`,
+    'Next: /compaction model provider/model to summarise with a different model, /compaction '
+      + 'thinking off|minimal|low|medium|high to change how hard it thinks, or /compaction disable '
+      + 'to make stock Pi the default.',
   ];
 }

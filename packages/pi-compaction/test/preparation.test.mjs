@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { join } from 'node:path';
 import { estimateTokens, DEFAULT_COMPACTION_SETTINGS, SessionManager, buildSessionProjection, findCutPoint } from '@earendil-works/pi-coding-agent';
 import { longSession, workspace } from '../../../test/pi-collection.mjs';
-import { fileListChars, MAX_FILE_LIST_ENTRIES, prepareCompaction } from '../src/preparation.ts';
+import { MAX_FILE_LIST_ENTRIES, prepareCompaction } from '../src/preparation.ts';
 
 const hostPreparation = (fileOps = { read: new Set(), written: new Set(), edited: new Set() }, previousSummary) => ({
   firstKeptEntryId: 'host',
@@ -192,24 +192,4 @@ test('a split turn with no history above it yields no preparation', () => {
   assert.equal(cut.turnStartIndex, previous + 1, 'and that turn starts at the previous compaction');
 
   assert.equal(prepareCompaction(branch, hostPreparation(), 1_000), undefined);
-});
-
-test('the file-list block the host appends is measured exactly', () => {
-  // The budget is the model's and the host appends this block itself, so the acceptance test has to
-  // measure the text alone. The expected strings are the host's own shape: read-only paths and
-  // modified paths (edited ∪ written), each sorted, as two tagged blocks.
-  const block = (tag, paths) => (paths.length === 0 ? '' : `\n\n<${tag}>\n${paths.join('\n')}\n</${tag}>`);
-  const ops = (read, edited, written) => ({ read: new Set(read), edited: new Set(edited), written: new Set(written) });
-  const cases = [
-    [ops([], [], []), ''],
-    [ops(['/b.ts', '/a.ts'], [], []), block('read-files', ['/a.ts', '/b.ts'])],
-    [ops([], ['/e.ts'], ['/w.ts']), block('modified-files', ['/e.ts', '/w.ts'])],
-    [ops(['/r.ts'], ['/e.ts'], ['/w.ts']), block('read-files', ['/r.ts']) + block('modified-files', ['/e.ts', '/w.ts'])],
-    // A path that was both read and edited appears once, under modified.
-    [ops(['/both.ts'], ['/both.ts'], []), block('modified-files', ['/both.ts'])],
-  ];
-  for (const [fileOps, expected] of cases) {
-    const paths = [...fileOps.read, ...fileOps.edited, ...fileOps.written];
-    assert.equal(fileListChars(fileOps), expected.length, JSON.stringify(paths));
-  }
 });

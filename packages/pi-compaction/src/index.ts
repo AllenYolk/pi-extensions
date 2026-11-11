@@ -1,23 +1,19 @@
 import { compact, getAgentDir } from '@earendil-works/pi-coding-agent';
 import type {
   ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionBeforeCompactEvent, SessionBeforeCompactResult,
-  TurnEndEvent, TurnEndEventResult,
 } from '@earendil-works/pi-coding-agent';
 import {
   configPath,
   CONVERSATION_MODEL,
-  DEFAULT_NEVER_PRUNE,
   defaults,
   effective,
   loadConfig,
   saveConfig,
   validateConfig,
   type Config,
-  type Effective,
-  type Selection,
   type ThinkingLevel,
 } from './config.ts';
-import { fileListChars, prepareCompaction } from './preparation.ts';
+import { prepareCompaction } from './preparation.ts';
 import {
   announcement,
   DEGRADATION_ENTRY,
@@ -27,23 +23,9 @@ import {
   type Degradation,
 } from './degradation.ts';
 import {
-  editedTargets,
-  evaluatePruneGate,
-  hostCompactionTrigger,
-  isCompactionImminent,
-  lastRequest,
-  planPrune,
-} from './prune.ts';
-import {
-  acceptedTokens,
-  boundedStream,
-  BUDGET_STOP,
   checkHostSeam,
-  describeOutboundRequest,
-  estimateModelTokens,
   hostRetryPolicy,
-  HOST_PROMPT_AND_TOOLS_TOKENS,
-  outputBudgets,
+  observingStream,
   resolveSummarizerModel,
   summarizerThinkingLevel,
   type AttemptOutcome,
@@ -70,8 +52,6 @@ export default function piCompaction(pi: ExtensionAPI): void {
     // host repaints over it, and a warning that can be missed is not a warning.
     console.error(line);
   };
-  /** The host's own compaction trigger for the current model, which is what "imminent" means. */
-  const trigger = (ctx: ExtensionContext) => hostCompactionTrigger(pi.getSettings(), ctx.model);
 
   /**
    * The durable half of a degradation, written once the compaction has settled.
@@ -117,8 +97,8 @@ export default function piCompaction(pi: ExtensionAPI): void {
   pi.on('session_before_compact', async (event: SessionBeforeCompactEvent, ctx: ExtensionContext): Promise<SessionBeforeCompactResult | void> => {
     const settings = effective(config);
     const tuple = settings.tuple;
-    // Inert until enabled, and `off` is the absence of a preset: stock Pi compacts.
-    if (!settings.enabled || !tuple) return;
+    // Inert until enabled: installing the package changes nothing.
+    if (!settings.enabled) return;
 
     /**
      * Every handback goes through here, so a degradation is announced the same way whatever caused
@@ -127,7 +107,7 @@ export default function piCompaction(pi: ExtensionAPI): void {
      */
     const handBack = (summarizer: string, reason: string): SessionBeforeCompactResult | void => {
       if (event.signal.aborted) return { cancel: true };
-      pending = { preset: settings.preset, summarizer, reason };
+      pending = { summarizer, reason };
       report(ctx, announcement(pending).join('\n'), 'error');
       return undefined;
     };
@@ -143,33 +123,17 @@ export default function piCompaction(pi: ExtensionAPI): void {
     const named = `${model.provider}/${model.id} (${model.api})`;
     if (!ctx.modelRegistry.hasConfiguredAuth(model)) return handBack(named, 'the host has no configured credentials for it');
 
-    const thinking = summarizerThinkingLevel(model, tuple);
-    const outbound = describeOutboundRequest(model, tuple, thinking, settings.keptWindowTokens);
-    if (outbound.apiClass === 'no-ceiling') {
-      // Proceeding would mean claiming a bound we do not have, which is worse than being inert.
-      const dropped = outbound.ceilingFlag
-        ? `${outbound.api} on this model switches its output-ceiling field off (compat.${outbound.ceilingFlag} is false)`
-        : `${outbound.api} sends no output-ceiling field`;
-      return handBack(
-        named,
-        `${dropped}, so the ${tuple.textBudget}-token text budget and the ${tuple.reasoningBudget}-token `
-        + 'reasoning budget would both be dropped',
-      );
-    }
     const prepared = prepareCompaction(event.branchEntries, event.preparation, settings.keptWindowTokens);
     if (!prepared) {
       return handBack(
         named,
         'the cut point leaves no history to summarise, so the host would carry the previous summary '
-        + 'forward and this package could not bound the result',
+        + 'forward and this package could not choose what produced it',
       );
     }
 
-    // One request. Every way it can end has a bounded outcome, so there is nothing a second request
-    // would improve — see ADR 0004 for why a length stop is one of those outcomes rather than a failure.
-    const retry = hostRetryPolicy(pi.getSettings());
-    const accepted = acceptedTokens(tuple);
-    const fileList = fileListChars(prepared.fileOps);
+    // One request. The model and its thinking level are the whole of what this package changes; the
+    // summary is otherwise the host's, at whatever length the host's prompt and the model produce.
     const outcomes: AttemptOutcome[] = [];
     let result;
     try {
@@ -180,10 +144,10 @@ export default function piCompaction(pi: ExtensionAPI): void {
         undefined,
         event.customInstructions,
         event.signal,
-        thinking as never,
-        boundedStream(ctx.modelRegistry, outputBudgets(model, tuple, thinking), (seen) => { outcomes.push(seen); }),
+        summarizerThinkingLevel(model, tuple) as never,
+        observingStream(ctx.modelRegistry, (seen) => { outcomes.push(seen); }),
         undefined,
-        retry,
+        hostRetryPolicy(pi.getSettings()),
         undefined,
         ctx.sessionManager.getSessionId(),
       );
@@ -194,62 +158,25 @@ export default function piCompaction(pi: ExtensionAPI): void {
     if (event.signal.aborted) return { cancel: true };
 
     /**
-     * Every response the attempt produced has to have finished cleanly, except a length stop: that one
-     * is the ceiling we asked for doing its job, and ADR 0004 is why it is accepted. A split turn makes
-     * two summarization requests through the same stream function and the host concatenates both into
-     * one summary, so the last response alone says nothing about the first — and an attempt whose
-     * responses were never observed proves nothing at all.
+     * The whole of this package's quality guarantee: a summary it cannot vouch for is never
+     * persisted. The host throws on an error and on a tool call, so those never reach here; it
+     * returns a partially written summary **unchanged** for any other stop reason, which is what
+     * this check exists to refuse.
+     *
+     * Every response the request produced is checked, not only the last one: a split turn makes two
+     * summarization requests through the same stream function and the host concatenates both into
+     * one summary, so a clean second response says nothing about a partial first one. And an attempt
+     * whose responses were never observed proves nothing at all.
      */
-    const unclean = outcomes.find((seen) => seen.stopReason !== 'stop' && seen.stopReason !== BUDGET_STOP);
+    const unclean = outcomes.find((seen) => seen.stopReason !== 'stop');
     if (outcomes.length === 0 || unclean) {
       return handBack(named, unclean ? describeFailure(unclean, undefined) : UNOBSERVED_RESPONSE);
     }
-    // The budget is the model's. The host appends the file-list block itself, so it is not counted
-    // against a budget the model was never given.
-    const tokens = estimateModelTokens(result.summary, fileList);
-    if (tokens <= accepted) return { compaction: result };
-    return handBack(named, `the summarizer produced a ${tokens}-token summary, over the ${accepted} tokens this attempt permits`);
-  });
-
-  /**
-   * Prune at a turn boundary: the assistant and its tool results are persisted, and the next
-   * request has not been made yet. All of a turn's edits are returned together, so the turn costs
-   * one cache invalidation rather than one per pruned result.
-   */
-  pi.on('turn_end', (event: TurnEndEvent, ctx: ExtensionContext): TurnEndEventResult | void => {
-    const settings = effective(config);
-    // Inert until enabled; pruning is on once it is, and independent of the summarizer strategy.
-    if (!settings.enabled || !settings.prune) return;
-
-    const projection = ctx.sessionManager.buildSessionProjection();
-    const gate = evaluatePruneGate(
-      lastRequest(projection.entries),
-      isCompactionImminent(ctx.getContextUsage(), trigger(ctx)),
-      Date.now(),
-    );
-    if (!gate.armed) return;
-
-    const plan = planPrune({
-      entries: projection.entries,
-      editedTargetIds: editedTargets(ctx.sessionManager.getBranch()),
-      neverPrune: settings.neverPrune,
-      pruneWindowTokens: settings.pruneWindowTokens,
-    });
-    if (plan.edits.length === 0) return;
-
-    const many = plan.edits.length === 1 ? '' : 's';
-    report(
-      ctx,
-      `pruned ${plan.edits.length} tool result${many} (${plan.toolNames.join(', ')}), ` +
-      `omitting ${plan.omittedChars} characters; gate: ${gate.reason} — ${gate.detail}`,
-      'info',
-    );
-    // Returning `entries` replaces that field, so any draft an earlier handler added is preserved.
-    return { entries: [...event.entries, ...plan.edits] };
+    return { compaction: result };
   });
 
   pi.registerCommand('compaction', {
-    description: 'Show or change bounded compaction and pruning: preset, summarizer model, thinking, budgets, kept window, prune',
+    description: 'Show or change which model compacts this session, and how hard it thinks',
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const [verb, value] = args.trim().split(/\s+/, 2);
       if (!verb || verb === 'status') {
@@ -257,21 +184,9 @@ export default function piCompaction(pi: ExtensionAPI): void {
         return;
       }
       const next: Config = { ...config };
-      // A preset is the whole tuple; per-field overrides belong to the preset they were set on.
-      const clearTuple = () => {
-        next.summarizerModel = null;
-        delete next.thinking;
-        delete next.textBudget;
-        delete next.reasoningBudget;
-      };
       switch (verb) {
         case 'enable': next.enabled = true; break;
         case 'disable': next.enabled = false; break;
-        case 'preset':
-          if (!value) return void ctx.ui.notify('usage: /compaction preset fast|balanced|deep|off', 'error');
-          next.preset = value as Selection;
-          clearTuple();
-          break;
         case 'model':
           if (!value) return void ctx.ui.notify(`usage: /compaction model provider/model | ${CONVERSATION_MODEL}`, 'error');
           next.summarizerModel = value === CONVERSATION_MODEL ? null : value;
@@ -280,44 +195,12 @@ export default function piCompaction(pi: ExtensionAPI): void {
           if (!value) return void ctx.ui.notify('usage: /compaction thinking off|minimal|low|medium|high|xhigh|max', 'error');
           next.thinking = value as ThinkingLevel;
           break;
-        case 'text': case 'reasoning': case 'window': {
-          const field = verb === 'text' ? 'textBudget' : verb === 'reasoning' ? 'reasoningBudget' : 'keptWindowTokens';
-          if (!value || !/^\d+$/.test(value)) return void ctx.ui.notify(`usage: /compaction ${verb} <tokens>`, 'error');
-          next[field] = Number(value);
+        case 'window':
+          if (!value || !/^\d+$/.test(value)) return void ctx.ui.notify('usage: /compaction window <tokens>', 'error');
+          next.keptWindowTokens = Number(value);
           break;
-        }
-        case 'prune':
-          if (value !== 'on' && value !== 'off') return void ctx.ui.notify('usage: /compaction prune on|off', 'error');
-          next.prune = value === 'on';
-          break;
-        case 'prune-window':
-          if (!value || !/^\d+$/.test(value)) return void ctx.ui.notify('usage: /compaction prune-window <tokens>', 'error');
-          next.pruneWindowTokens = Number(value);
-          break;
-        case 'never-prune': {
-          if (!value) {
-            return void ctx.ui.notify('usage: /compaction never-prune <tool>[,<tool>…] | default | none', 'error');
-          }
-          if (value === 'default') {
-            next.neverPrune = [...DEFAULT_NEVER_PRUNE];
-            break;
-          }
-          if (value === 'none') {
-            next.neverPrune = [];
-            break;
-          }
-          const tools = value.split(',').map((tool) => tool.trim()).filter(Boolean);
-          if (tools.length === 0) {
-            return void ctx.ui.notify('usage: /compaction never-prune <tool>[,<tool>…] | default | none', 'error');
-          }
-          next.neverPrune = tools;
-          break;
-        }
         default:
-          ctx.ui.notify(
-            `unknown setting ${verb}; try preset, model, thinking, text, reasoning, window, prune, prune-window, never-prune, enable, disable`,
-            'error',
-          );
+          ctx.ui.notify('unknown setting; try model, thinking, window, enable, disable', 'error');
           return;
       }
       const invalid = validateConfig(next);
@@ -335,75 +218,30 @@ export default function piCompaction(pi: ExtensionAPI): void {
     const settings = effective(config);
     const lines = [diagnostic ? `Config rejected: ${diagnostic}` : `Config: ${configPath(getAgentDir())}`];
     lines.push(`Enabled: ${settings.enabled ? 'yes' : 'no'}`);
-    lines.push(`Preset: ${settings.preset}`);
-    if (settings.tuple) {
-      const tuple = settings.tuple;
-      const model = resolveSummarizerModel(tuple, ctx);
-      const wanted = tuple.model === null ? `${CONVERSATION_MODEL} model` : tuple.model;
-      const described = model ? `${model.provider}/${model.id} (${model.api})` : `${wanted} — not available on this host`;
-      const thinking = model ? summarizerThinkingLevel(model, tuple) : tuple.thinking;
-      /**
-       * Why the effective level differs from the configured one. A zero reasoning budget asks for
-       * `off`; a model whose `thinkingLevelMap` marks `off` unsupported gets its lowest level
-       * instead, and at that point the reasoning phase is real — so calling it "no reasoning budget"
-       * would be the wrong thing to say.
-       */
+    const tuple = settings.tuple;
+    const model = resolveSummarizerModel(tuple, ctx);
+    const wanted = tuple.model === null ? `${CONVERSATION_MODEL} model` : tuple.model;
+    const described = model ? `${model.provider}/${model.id} (${model.api})` : `${wanted} — not available on this host`;
+    lines.push(`Summarizer model: ${described}`);
+    if (model) {
+      const thinking = summarizerThinkingLevel(model, tuple);
+      // A model whose `thinkingLevelMap` marks the requested level unsupported gets the host's own
+      // clamp, and it then thinks anyway — so the level that was used is what gets reported.
       const why = thinking === tuple.thinking ? ''
-        : thinking === 'off' ? ' (no reasoning budget)'
-          : tuple.reasoningBudget === 0
-            ? ` (clamped from off; this model has no off, so its reasoning phase still draws from the pool)`
-            : ` (clamped from ${tuple.thinking})`;
-      lines.push(`Summarizer model: ${described}`);
+        : tuple.thinking === 'off'
+          ? ` (clamped from off; this model has no off, so its reasoning phase still runs)`
+          : ` (clamped from ${tuple.thinking})`;
       lines.push(`Thinking: ${thinking}${why}`);
-      lines.push(`Text budget: ${tuple.textBudget}`);
-      lines.push(`Reasoning budget: ${tuple.reasoningBudget}`);
-      if (model) {
-        const outbound = describeOutboundRequest(model, tuple, thinking, settings.keptWindowTokens);
-        if (outbound.apiClass === 'no-ceiling') {
-          lines.push(`Outbound: no-ceiling API ${outbound.api} — it sends no output-ceiling field, so neither budget can be enforced`);
-          lines.push('Reasoning budget on this API: not applied');
-          lines.push('Worst case: the summary is not bounded by this package');
-        } else {
-          const capped = outbound.outputFieldCeiling! < tuple.textBudget + outbound.reasoningTokens && !outbound.providerDependent
-            ? ` (capped by the model's own ${outbound.modelLimit})`
-            : '';
-          const dependent = outbound.providerDependent
-            ? '; whether the provider counts thinking against its output field is untested — verify before relying on a number'
-            : '';
-          lines.push(`Outbound: ${outbound.apiClass} API ${outbound.api} — the provider sees an output ceiling of ${outbound.outputFieldCeiling}${capped}${dependent}`);
-          const effect = outbound.reasoningBudget === 'enforced'
-            ? outbound.textRoomGuaranteed
-              ? `enforced as a thinking budget of ${outbound.reasoningTokens}; at least ${tuple.textBudget} of room remains available for text`
-              : `enforced as a thinking budget of ${outbound.reasoningTokens}; the room left for text depends on the provider`
-            : outbound.reasoningBudget === 'advisory'
-              ? `advisory — ${outbound.api} sends a reasoning effort level, not a token cap, so the reasoning phase draws uncapped from the same pool and the text has no independent ceiling`
-              : outbound.reasoningBudget === 'uncapped'
-                ? `none, and none is available — this model's lowest thinking level is ${thinking}, not off, `
-                  + 'so it reasons anyway with no budget of its own'
-                  + (outbound.apiClass === 'answer-budget'
-                    // The adapter adds a thinking budget of its own when none is supplied, and what
-                    // it picks is not readable from the model, so the ceiling above is a lower bound.
-                    ? '; the adapter may add a default thinking budget of its own, which makes the ceiling above a lower bound, and the text has no guaranteed room'
-                    : '; the reasoning phase draws uncapped from the same pool and the text has no guaranteed room')
-                : 'not sent — the summarizer does not reason';
-          lines.push(`Reasoning budget on this API: ${effect}`);
-          lines.push(
-            `Worst case: summary ${outbound.worstCaseSummaryTokens} tokens; base context ` +
-            `${HOST_PROMPT_AND_TOOLS_TOKENS} + ${outbound.worstCaseSummaryTokens} + ${settings.keptWindowTokens} = ` +
-            `${outbound.worstCaseBaseContextTokens} tokens`,
-          );
-        }
-      }
     } else {
-      lines.push('Compaction: stock Pi');
+      lines.push(`Thinking: ${tuple.thinking}`);
     }
     lines.push(`Kept window: ${settings.keptWindowTokens} tokens`);
-    lines.push(...pruneStatus(ctx, settings));
+    lines.push('Summary length: not bounded by this package — the host sends no output ceiling and neither do we');
     const checked = await seamResult();
     lines.push(`Host seam: ${checked.ok ? 'ok' : 'MISMATCH'} — ${checked.detail}`);
     const degraded = lastDegradation(ctx);
     lines.push(degraded
-      ? `Last degradation: preset ${degraded.preset} — ${degraded.reason}`
+      ? `Last degradation: summarizer ${degraded.summarizer} — ${degraded.reason}`
       : 'Last degradation: none in this session');
     return lines.join('\n');
   }
@@ -416,25 +254,5 @@ export default function piCompaction(pi: ExtensionAPI): void {
       if (entry.type === 'custom' && entry.customType === DEGRADATION_ENTRY) return entry.data as Degradation;
     }
     return undefined;
-  }
-
-  /** Whether pruning is armed right now, and which gate decided it. */
-  function pruneStatus(ctx: ExtensionCommandContext, settings: Effective): string[] {
-    const lines = [`Prune: ${settings.prune ? 'on' : 'off'}`];
-    lines.push(`Prune window: ${settings.pruneWindowTokens} tokens of recent tool results`);
-    lines.push(settings.neverPrune.length === 0
-      ? 'Never prune: (none) — every tool result is prunable, including results the agent cannot recover by re-running'
-      : `Never prune: ${settings.neverPrune.join(', ')}`);
-    if (!settings.enabled || !settings.prune) {
-      lines.push(`Prune gate: not evaluated — pruning is ${settings.enabled ? 'off' : 'inert until the package is enabled'}`);
-      return lines;
-    }
-    const gate = evaluatePruneGate(
-      lastRequest(ctx.sessionManager.buildSessionProjection().entries),
-      isCompactionImminent(ctx.getContextUsage(), trigger(ctx)),
-      Date.now(),
-    );
-    lines.push(`Prune gate: ${gate.armed ? 'armed' : 'blocked'} (${gate.reason}) — ${gate.detail}`);
-    return lines;
   }
 }

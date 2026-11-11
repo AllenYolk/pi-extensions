@@ -17,13 +17,18 @@ test('an unobserved attempt has its own sentence', () => {
   assert.doesNotMatch(UNOBSERVED_RESPONSE, /undefined/, 'no error to quote means no "undefined" in the message');
 });
 
-test('the announcement names the preset, the reason, the new behaviour and its cost', () => {
-  const lines = announcement({ preset: 'balanced', summarizer: 'p/m (anthropic-messages)', reason: 'because' });
+test('the announcement names the summarizer, the reason and what a handback costs', () => {
+  const lines = announcement({ summarizer: 'p/m (anthropic-messages)', reason: 'because' });
   assert.equal(lines.length, 5);
   assert.match(lines[0], /degraded — compaction handed back to stock Pi/);
-  assert.equal(lines[1], 'Preset: balanced — summarizer p/m (anthropic-messages)');
+  assert.equal(lines[1], 'Summarizer: p/m (anthropic-messages)');
   assert.equal(lines[2], 'Why: because');
-  assert.match(lines[3], /Now: stock Pi sends no output ceiling at all/);
-  assert.match(lines[3], /3,437 to 26,019 tokens across 16 compactions/);
-  assert.match(lines[4], /Next: \/compaction preset fast/);
+  // A handback no longer changes the summary length — this package sends no output ceiling and
+  // neither does stock Pi. What it gives up is the model and the thinking level, which is the whole
+  // of what this package controls.
+  assert.match(lines[3], /Now: stock Pi compacts with the conversation model and the session's own thinking level/);
+  assert.match(lines[3], /The summary length is unaffected/);
+  assert.match(lines[3], /neither path sends an output ceiling/);
+  assert.match(lines[4], /Next: \/compaction model provider\/model/);
+  assert.match(lines[4], /\/compaction thinking off\|minimal\|low\|medium\|high/);
 });

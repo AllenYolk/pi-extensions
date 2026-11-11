@@ -1,5 +1,8 @@
 # Accept a length stop as the budget doing its job
 
+> **Superseded by [ADR 0005](0005-bound-by-not-bounding.md).** The output ceiling, the prune
+> path and the acceptance of a length stop were all removed; see that ADR for why.
+
 A compaction summary is bounded by the output ceiling this package injects, and the provider enforces
 that ceiling by cutting the response. The host treats the resulting `length` stop as a summarization
 failure: `getSummarizationFailure()` throws, `compact()` never returns, and the package is left with

@@ -28,10 +28,11 @@ export function prepareCompaction(
   const projected = buildSessionProjection(branchEntries).entries;
   const previousIndex = projected.findIndex((entry) => entry.sourceEntry.type === 'compaction' && entry.messages.length > 0);
   const boundaryStart = previousIndex >= 0 ? previousIndex + 1 : 0;
-  // shortcut: findCutPoint() measures the raw entries, so a pruned result counts at its full size
-  // and the kept window lands smaller than its target — the safe direction for base context.
-  // Correcting it means reimplementing the host's cut-point search over projected sizes, which is
-  // more duplication than the overshoot costs; do it if a measured kept window proves too thin.
+  // shortcut: findCutPoint() measures the raw entries rather than the projected ones the host's own
+  // preparation uses, so an entry carrying a context edit counts at its full size and the kept window
+  // lands smaller than its target — the safe direction for base context. Correcting it means
+  // reimplementing the host's cut-point search over projected sizes, which is more duplication than
+  // the overshoot costs; do it if a measured kept window proves too thin.
   const sources = projected.map((entry) => entry.sourceEntry);
   const cut = findCutPoint(sources, boundaryStart, sources.length, keptWindowTokens);
   const firstKept = projected[cut.firstKeptEntryIndex]?.sourceEntry;
@@ -86,28 +87,6 @@ function curateFileOps(hostOps: FileOperations, previous: SessionEntry | undefin
     written: cap(hostOps.written, inherited?.modifiedFiles),
     edited: cap(hostOps.edited, inherited?.modifiedFiles),
   };
-}
-
-/**
- * How many characters of the file-list block the host will append after the model's text.
- *
- * The budget is the model's, and the host appends this block itself, so the acceptance test has to
- * measure the text alone — otherwise a summary that used exactly its budget is refused for text the
- * model never wrote, which costs a second full request or a handback.
- *
- * shortcut: this repeats the host's `computeFileLists()` and `formatFileOperations()` pair — a set
- * union, a difference, two sorts and two tagged blocks — because `compact()` returns the summary as
- * one string with the block already appended. Measure the blocks from the compaction result when
- * the host returns them separately.
- */
-export function fileListChars(fileOps: FileOperations): number {
-  const modified = new Set([...fileOps.edited, ...fileOps.written]);
-  const readOnly = [...fileOps.read].filter((path) => !modified.has(path)).sort();
-  const modifiedFiles = [...modified].sort();
-  const block = (tag: string, paths: string[]): number => (paths.length === 0
-    ? 0
-    : `\n\n<${tag}>\n`.length + paths.join('\n').length + `\n</${tag}>`.length);
-  return block('read-files', readOnly) + block('modified-files', modifiedFiles);
 }
 
 function readDetails(details: unknown): { readFiles?: string[]; modifiedFiles?: string[] } | undefined {
