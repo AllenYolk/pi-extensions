@@ -10,7 +10,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
  * return a normal summary, a deliberately oversized one, an error or a length stop.
  *
  * `PI_COMPACTION_FIXTURE_RECORD`   file the recorded requests are appended to, as JSON lines
- * `PI_COMPACTION_FIXTURE_MODE`     normal (default) | oversized | error | length
+ * `PI_COMPACTION_FIXTURE_MODE`     normal (default) | oversized | error | length | no-stop-reason
  * `PI_COMPACTION_FIXTURE_STOP_REASON`  stop reason a failing summarization response carries instead
  *                                      of MODE's; the host returns anything but `error` and `length`
  *                                      as a normal result carrying partial text, which is the only
@@ -32,7 +32,9 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
  *                                     Escape mid-compaction does
  */
 
-/** The text a length stop carries. It must never reach a persisted summary from any path. */
+/** The text a length stop carries. The budget cut it, so it is persisted — see ADR 0004. */
+const TRUNCATED_TEXT = 'TRUNCATED-AT-THE-CEILING';
+/** The text an aborted response carries. It must never reach a persisted summary from any path. */
 const PARTIAL_TEXT = 'PARTIAL-SUMMARY-MUST-NEVER-BE-PERSISTED';
 
 const ANSWER_BUDGET_API = 'anthropic-messages';
@@ -156,7 +158,7 @@ export default function fakeProvider(pi: ExtensionAPI) {
       timestamp: Date.now() - (summarization ? 0 : messageAgeMs),
       usage: {
         // A response with no tokens at all is one the host's own rule treats as having measured
-        // nothing, which is what "usage is unavailable" means to the prune gate.
+        // nothing, which is what "usage is unavailable" looks like to the host.
         input: noUsage && !summarization ? 0 : 10,
         output: noUsage && !summarization ? 0 : 20,
         ...reported,
@@ -172,8 +174,14 @@ export default function fakeProvider(pi: ExtensionAPI) {
     if (failing && mode === 'error') {
       return { ...base, content: [], stopReason: 'error', errorMessage: 'fixture summarizer is unavailable' };
     }
+    if (failing && mode === 'no-stop-reason') {
+      // A response that carries no stop reason at all. The host's own failure check looks for `error`
+      // and `length` and returns anything else unchanged, so this reaches the package as a normal
+      // result — which is exactly the shape it cannot prove is complete.
+      return { ...base, content: [{ type: 'text', text: PARTIAL_TEXT }] };
+    }
     if (failing && mode === 'length') {
-      return { ...base, content: [{ type: 'text', text: PARTIAL_TEXT }], stopReason: 'length' };
+      return { ...base, content: [{ type: 'text', text: TRUNCATED_TEXT }], stopReason: 'length' };
     }
     if (!summarization && writePath && turn === 1) {
       return {
@@ -199,6 +207,11 @@ export default function fakeProvider(pi: ExtensionAPI) {
       model('minimax-M3.1-Flash', ANSWER_BUDGET_API),
       // `medium` is unsupported here, so a preset asking for it has to be clamped.
       model('minimax-M3.1-Flash-no-medium', ANSWER_BUDGET_API, { thinkingLevelMap: { medium: null } }),
+      // Neither `off` nor `minimal` is supported, which is the shape a reasoning model that cannot
+      // be told not to reason has — `mafia-o/gpt-6.1-sol` among them.
+      model('pi-compaction-no-off', ANSWER_BUDGET_API, {
+        thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: 'medium', high: 'high' },
+      }),
       model('pi-compaction-conversation', ANSWER_BUDGET_API),
     ] as never,
   });
@@ -244,8 +257,8 @@ function summaryText(tokens: number): string {
 
 /**
  * The text the request carries, which for a summarization request is the serialized conversation.
- * Tool calls are included, because whether a pruned result's originating call and arguments
- * survive into the next request is exactly what a prune has to be judged on.
+ * Tool calls are included, so a caller can prove that a cut point put a turn's originating call and
+ * its arguments on the summarised side rather than the kept side.
  */
 function promptOf(context: { messages?: Array<{ role: string; content?: unknown }> }): string {
   return (context.messages ?? [])

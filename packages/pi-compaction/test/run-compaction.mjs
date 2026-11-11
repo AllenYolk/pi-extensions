@@ -20,7 +20,7 @@ export const DONE = 'PI_COMPACTION_PROBE_DONE';
 /**
  * A script that runs the probe, then renders the status view against the run that just happened, so
  * a caller can read what the extension itself reports about it. Ctrl-D leaves the CLI on a settled
- * frame, the way the prune checks do.
+ * frame, on a settled screen.
  */
 export const statusScript = [
   { expect: READY, send: '/compaction-probe\r' },

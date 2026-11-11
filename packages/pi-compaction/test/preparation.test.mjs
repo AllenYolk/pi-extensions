@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { join } from 'node:path';
-import { estimateTokens, DEFAULT_COMPACTION_SETTINGS, SessionManager } from '@earendil-works/pi-coding-agent';
+import { estimateTokens, DEFAULT_COMPACTION_SETTINGS, SessionManager, buildSessionProjection, findCutPoint } from '@earendil-works/pi-coding-agent';
 import { longSession, workspace } from '../../../test/pi-collection.mjs';
 import { MAX_FILE_LIST_ENTRIES, prepareCompaction } from '../src/preparation.ts';
 
@@ -159,4 +159,37 @@ test('a native compaction\'s file lists are not carried into ours', () => {
 test('a session with nothing above the cut point yields no preparation', () => {
   const { branch } = built(2, 200);
   assert.equal(prepareCompaction(branch, hostPreparation(), 100_000), undefined);
+});
+
+test('a split turn with no history above it yields no preparation', () => {
+  // The host carries the previous summary forward verbatim and appends a fresh turn prefix to it,
+  // so the result can only grow and no budget this package sets can bound it.
+  const dirs = box('prep-split-empty-');
+  const session = SessionManager.create(dirs.cwd, dirs.sessionDir);
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  session.appendMessage({ role: 'user', content: `MARK-u0 ${'x'.repeat(400)}`, timestamp: Date.now() });
+  const kept = session.appendMessage({ role: 'user', content: 'MARK-utail', timestamp: Date.now() });
+  // The previous compaction keeps from the tail turn's own first message, so the boundary above it
+  // is empty: that turn starts exactly where the previous compaction starts keeping.
+  session.appendCompaction('PREVIOUS SUMMARY', kept, 1_000, { readFiles: [], modifiedFiles: [] }, false);
+  session.appendMessage({
+    role: 'assistant',
+    content: [{ type: 'toolCall', id: 'big', name: 'read', arguments: { path: '/fixture/big.ts' } }],
+    timestamp: Date.now(), provider: 'minimax-cn', model: 'pi-compaction-conversation', usage, stopReason: 'toolUse',
+  });
+  session.appendMessage({
+    role: 'toolResult', toolCallId: 'big', toolName: 'read',
+    content: [{ type: 'text', text: `MARK-rtail ${'x'.repeat(80_000)}` }], isError: false, timestamp: Date.now(),
+  });
+
+  // Prove the shape before asserting on it: the cut lands inside the tail turn, and that turn
+  // starts exactly at the previous compaction's boundary, so the history range is empty.
+  const branch = session.getBranch();
+  const sources = buildSessionProjection(branch).entries.map((entry) => entry.sourceEntry);
+  const previous = sources.findIndex((entry) => entry.type === 'compaction');
+  const cut = findCutPoint(sources, previous + 1, sources.length, 1_000);
+  assert.equal(cut.isSplitTurn, true, 'the cut lands inside the tail turn');
+  assert.equal(cut.turnStartIndex, previous + 1, 'and that turn starts at the previous compaction');
+
+  assert.equal(prepareCompaction(branch, hostPreparation(), 1_000), undefined);
 });

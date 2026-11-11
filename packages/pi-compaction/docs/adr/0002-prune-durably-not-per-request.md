@@ -1,5 +1,8 @@
 # Prune durably, and never omit a tool result
 
+> **Superseded by [ADR 0005](0005-bound-by-not-bounding.md).** The output ceiling, the prune
+> path and the acceptance of a length stop were all removed; see that ADR for why.
+
 Pruning is recorded as persisted context-edit session entries carrying a replacement, not as a
 rewrite of the outgoing message list. The transient request hook was rejected because the host
 computes one of its two compaction triggers from the session projection, which such a rewrite never

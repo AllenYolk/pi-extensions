@@ -28,10 +28,11 @@ export function prepareCompaction(
   const projected = buildSessionProjection(branchEntries).entries;
   const previousIndex = projected.findIndex((entry) => entry.sourceEntry.type === 'compaction' && entry.messages.length > 0);
   const boundaryStart = previousIndex >= 0 ? previousIndex + 1 : 0;
-  // shortcut: findCutPoint() measures the raw entries, so a pruned result counts at its full size
-  // and the kept window lands smaller than its target — the safe direction for base context.
-  // Correcting it means reimplementing the host's cut-point search over projected sizes, which is
-  // more duplication than the overshoot costs; do it if a measured kept window proves too thin.
+  // shortcut: findCutPoint() measures the raw entries rather than the projected ones the host's own
+  // preparation uses, so an entry carrying a context edit counts at its full size and the kept window
+  // lands smaller than its target — the safe direction for base context. Correcting it means
+  // reimplementing the host's cut-point search over projected sizes, which is more duplication than
+  // the overshoot costs; do it if a measured kept window proves too thin.
   const sources = projected.map((entry) => entry.sourceEntry);
   const cut = findCutPoint(sources, boundaryStart, sources.length, keptWindowTokens);
   const firstKept = projected[cut.firstKeptEntryIndex]?.sourceEntry;
@@ -46,7 +47,10 @@ export function prepareCompaction(
   const historyEnd = cut.isSplitTurn ? cut.turnStartIndex : cut.firstKeptEntryIndex;
   const messagesToSummarize = collect(boundaryStart, historyEnd);
   const turnPrefixMessages = cut.isSplitTurn ? collect(cut.turnStartIndex, cut.firstKeptEntryIndex) : [];
-  if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return undefined;
+  // Nothing to summarise. On a split turn with an empty history range the host carries the previous
+  // summary forward verbatim and appends a fresh turn prefix to it, so the result can only grow and
+  // no budget this package sets can bound it. Declining is the only honest answer.
+  if (messagesToSummarize.length === 0) return undefined;
 
   const previous = previousIndex >= 0 ? projected[previousIndex].sourceEntry : undefined;
   return {

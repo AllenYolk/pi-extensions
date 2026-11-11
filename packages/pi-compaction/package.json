@@ -1,10 +1,10 @@
 {
   "name": "@allenyolk/pi-compaction",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publishConfig": {
     "access": "public"
   },
-  "description": "Bounded Pi context compaction: a summarizer with its own model, thinking level and two output budgets.",
+  "description": "Choose the model and thinking level Pi compacts with, and never persist a summary that is not whole.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AllenYolk/pi-extensions.git",
@@ -28,6 +28,7 @@
     "pi",
     "pi-coding-agent",
     "compaction",
+    "summarizer",
     "context"
   ],
   "engines": {

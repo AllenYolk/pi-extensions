@@ -1,20 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { compact } from '@earendil-works/pi-coding-agent';
 import {
-  apiClassOf,
   checkHostSeam,
   clampThinkingLevel,
-  describeOutboundRequest,
-  estimateSummaryTokens,
-  HOST_PROMPT_AND_TOOLS_TOKENS,
-  outputBudgets,
+  hostRetryPolicy,
+  observingStream,
   summarizerThinkingLevel,
 } from '../src/summarizer.ts';
-import { PRESETS } from '../src/config.ts';
-
-/** The kept window the owner's measurements were taken at; the status view uses the configured one. */
-const MEASURED_KEPT_WINDOW = 15_340;
 
 const model = (api, extra = {}) => ({
   id: 'm', provider: 'p', name: 'm', api, reasoning: true, input: ['text'],
@@ -22,55 +18,7 @@ const model = (api, extra = {}) => ({
   contextWindow: 200_000, maxTokens: 64_000, ...extra,
 });
 
-const balanced = PRESETS.balanced;
-const thinkingOf = (tuple) => (tuple.reasoningBudget === 0 ? 'off' : tuple.thinking);
-
-test('the three API classes are recognised', () => {
-  for (const api of ['anthropic-messages', 'bedrock-converse-stream', 'google-generative-ai', 'google-vertex']) {
-    assert.equal(apiClassOf(model(api)), 'answer-budget', api);
-  }
-  for (const api of ['openai-responses', 'azure-openai-responses', 'openai-completions', 'mistral-conversations', 'pi-messages', 'some-future-api']) {
-    assert.equal(apiClassOf(model(api)), 'single-pool', api);
-  }
-  assert.equal(apiClassOf(model('openai-codex-responses')), 'no-ceiling');
-});
-
-test('an answer-budget API gets the text budget as its output option and the reasoning budget on top', () => {
-  for (const api of ['anthropic-messages', 'bedrock-converse-stream', 'google-generative-ai', 'google-vertex']) {
-    const budgets = outputBudgets(model(api), balanced, 'medium');
-    assert.equal(budgets.maxTokens, balanced.textBudget, api);
-    assert.deepEqual(budgets.thinkingBudgets, { minimal: 8_000, low: 8_000, medium: 8_000, high: 8_000 }, api);
-    assert.equal(budgets.maxTokens + budgets.thinkingBudgets.medium, 20_000, api);
-  }
-});
-
-test('a single-pool API gets both budgets as one output option', () => {
-  for (const api of ['openai-responses', 'openai-completions', 'mistral-conversations', 'some-future-api']) {
-    const budgets = outputBudgets(model(api), balanced, 'medium');
-    assert.equal(budgets.maxTokens, 20_000, api);
-  }
-});
-
-test('the reasoning budget is absolute, so a clamped level still gets it', () => {
-  const budgets = outputBudgets(model('anthropic-messages'), balanced, 'high');
-  assert.equal(budgets.thinkingBudgets.high, 8_000);
-  assert.equal(budgets.thinkingBudgets.medium, 8_000, 'every level carries the same absolute budget');
-});
-
-test('thinking off sends no thinking budget and leaves the text budget as the whole pool', () => {
-  for (const api of ['anthropic-messages', 'openai-responses']) {
-    const budgets = outputBudgets(model(api), PRESETS.fast, 'off');
-    assert.equal(budgets.maxTokens, 6_000, api);
-    assert.equal(budgets.thinkingBudgets, undefined, api);
-  }
-});
-
-test('a zero reasoning budget turns the summarizer\'s thinking off', () => {
-  const tuple = { model: null, thinking: 'high', textBudget: 6_000, reasoningBudget: 0 };
-  assert.equal(summarizerThinkingLevel(model('anthropic-messages'), tuple), 'off');
-  assert.equal(summarizerThinkingLevel(model('anthropic-messages'), PRESETS.fast), 'off');
-  assert.equal(summarizerThinkingLevel(model('anthropic-messages'), balanced), 'medium');
-});
+const tuple = (thinking) => ({ model: null, thinking });
 
 test('an unsupported thinking level is clamped the way the host clamps it', () => {
   const noMedium = model('anthropic-messages', { thinkingLevelMap: { medium: null } });
@@ -83,99 +31,101 @@ test('an unsupported thinking level is clamped the way the host clamps it', () =
   assert.equal(clampThinkingLevel(noExtended, 'medium'), 'medium');
 });
 
-test('an answer-budget adapter adds the thinking budget to the output field and caps it at the model limit', () => {
-  const outbound = describeOutboundRequest(model('anthropic-messages'), balanced, 'medium', 16_000);
-  assert.equal(outbound.apiClass, 'answer-budget');
-  assert.equal(outbound.outputFieldCeiling, 20_000, 'max_tokens carries text budget + reasoning budget');
-  assert.equal(outbound.modelLimit, 64_000);
-  assert.equal(outbound.reasoningBudget, 'enforced');
-  assert.equal(outbound.textRoomGuaranteed, true, 'thinking capped at the reasoning budget leaves the text budget available');
-  assert.equal(outbound.providerDependent, false);
-  assert.equal(outbound.worstCaseSummaryTokens, 20_000);
-
-  const capped = describeOutboundRequest(model('anthropic-messages', { maxTokens: 15_000 }), balanced, 'medium', 16_000);
-  assert.equal(capped.outputFieldCeiling, 15_000, 'the model\'s own output limit caps the envelope');
-  assert.equal(capped.worstCaseSummaryTokens, 15_000);
-});
-
-test('a single-pool adapter ignores the reasoning budget and leaves the text without its own ceiling', () => {
-  for (const api of ['openai-responses', 'azure-openai-responses']) {
-    const outbound = describeOutboundRequest(model(api), balanced, 'medium', 16_000);
-    assert.equal(outbound.apiClass, 'single-pool', api);
-    assert.equal(outbound.outputFieldCeiling, 20_000, api);
-    assert.equal(outbound.reasoningBudget, 'advisory', `${api} sends an effort level, not a token cap`);
-    assert.equal(outbound.textRoomGuaranteed, false, api);
-    assert.equal(outbound.worstCaseSummaryTokens, 20_000, api);
+test('the configured level reaches the summarizer when the model supports it', () => {
+  for (const level of ['off', 'minimal', 'low', 'medium', 'high']) {
+    assert.equal(summarizerThinkingLevel(model('anthropic-messages'), tuple(level)), level, level);
   }
 });
 
-test('openai-completions enforces the reasoning budget only when its compat declares a field for it', () => {
-  const declared = describeOutboundRequest(
-    model('openai-completions', { compat: { supportsThinkingTokenBudget: true } }), balanced, 'medium', 16_000,
-  );
-  assert.equal(declared.apiClass, 'single-pool');
-  assert.equal(declared.outputFieldCeiling, 20_000);
-  assert.equal(declared.reasoningBudget, 'enforced');
-  assert.equal(declared.textRoomGuaranteed, true);
+test('a model with no off cannot be told not to reason', () => {
+  // The shape of a reasoning model that has no way to turn thinking off — the owner's own
+  // conversation model among them. The level that was asked for is not the level that runs, and the
+  // status view reports the one that runs.
+  const noOff = model('openai-responses', {
+    thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: 'medium', high: 'high' },
+  });
+  assert.equal(summarizerThinkingLevel(noOff, tuple('off')), 'low');
+  assert.equal(summarizerThinkingLevel(noOff, tuple('minimal')), 'low');
+  assert.equal(summarizerThinkingLevel(noOff, tuple('medium')), 'medium', 'a supported level is untouched');
 
-  const named = describeOutboundRequest(
-    model('openai-completions', { compat: { thinkingTokenBudgetField: 'thinking_token_budget' } }), balanced, 'medium', 16_000,
-  );
-  assert.equal(named.reasoningBudget, 'enforced');
+  // A model that does have an off really does stop.
+  const withOff = model('openai-responses', { thinkingLevelMap: { off: 'none', low: 'low' } });
+  assert.equal(summarizerThinkingLevel(withOff, tuple('off')), 'off');
 
-  const undeclared = describeOutboundRequest(model('openai-completions'), balanced, 'medium', 16_000);
-  assert.equal(undeclared.reasoningBudget, 'advisory');
-  assert.equal(undeclared.textRoomGuaranteed, false);
+  // And a model with nothing at all still gets the lowest level it has rather than a rejected one.
+  const high = model('openai-responses', {
+    thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: 'high' },
+  });
+  assert.equal(summarizerThinkingLevel(high, tuple('off')), 'high');
 });
 
-test('an adapter that sends no output-ceiling field is reported as unenforceable', () => {
-  const outbound = describeOutboundRequest(model('openai-codex-responses'), balanced, 'medium', 16_000);
-  assert.equal(outbound.apiClass, 'no-ceiling');
-  assert.equal(outbound.outputFieldCeiling, null);
-  assert.equal(outbound.reasoningBudget, 'not applied');
-  assert.equal(outbound.textRoomGuaranteed, false);
-  assert.equal(outbound.worstCaseSummaryTokens, null);
-  assert.equal(outbound.worstCaseBaseContextTokens, null);
+test('the retry policy defaults match the host\'s own, and a user setting wins', () => {
+  // Without a policy the host's own `retryAssistantCall()` wrapper never retries, so a transient
+  // stream drop on a minutes-long summary request fails the whole compaction on the first attempt.
+  // `hostRetryPolicy` repeats `SettingsManager.getRetrySettings()`'s four defaults because an
+  // extension is handed merged rather than resolved settings — so the defaults are checked against
+  // the host's, read from its own source, rather than against constants this test invented. A host
+  // that changed them would otherwise leave this package sending a wrong policy that still passed.
+  // Resolved the way `pi-host.mjs` resolves it: the host this package's own workspace resolves, not a
+  // fixed `./node_modules` path that a different Pi version could occupy after hoisting.
+  const hostDir = dirname(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))));
+  const hostSource = readFileSync(join(hostDir, 'dist/core/settings-defaults.js'), 'utf8');
+  const hostDefaults = hostSource.slice(hostSource.indexOf('retry: {'));
+  const numberAfter = (key) => Number(/(\d[\d_]*)/.exec(hostDefaults.slice(hostDefaults.indexOf(key)))[1].replace(/_/g, ''));
+
+  const ours = hostRetryPolicy({});
+  assert.equal(ours.enabled, /retry:\s*\{[\s\S]*?enabled:\s*true/.test(hostSource), 'enabled');
+  assert.equal(ours.maxRetries, numberAfter('maxRetries:'), 'maxRetries');
+  assert.equal(ours.baseDelayMs, numberAfter('baseDelayMs:'), 'baseDelayMs');
+  assert.match(hostDefaults, /maxAgentDelayMs:\s*DEFAULT_MAX_AGENT_RETRY_DELAY_MS/, 'the host names its max delay');
+
+  // And a user setting still wins over every default.
+  assert.deepEqual(hostRetryPolicy({ retry: { enabled: false, maxRetries: 9, baseDelayMs: 5 } }), {
+    enabled: false, maxRetries: 9, baseDelayMs: 5, maxAgentDelayMs: ours.maxAgentDelayMs,
+  });
+  assert.equal(hostRetryPolicy({ retry: { enabled: true } }).maxRetries, ours.maxRetries, 'one field does not zero the rest');
 });
 
-test('the Google adapters are reported as provider-dependent', () => {
-  for (const api of ['google-generative-ai', 'google-vertex']) {
-    const outbound = describeOutboundRequest(model(api), balanced, 'medium', 16_000);
-    assert.equal(outbound.apiClass, 'answer-budget', api);
-    assert.equal(outbound.outputFieldCeiling, 12_000, `${api} emits the text budget as maxOutputTokens`);
-    assert.equal(outbound.reasoningBudget, 'enforced', api);
-    assert.equal(outbound.providerDependent, true, api);
-    assert.equal(outbound.textRoomGuaranteed, false, 'whether thinking counts against maxOutputTokens is untested');
-    assert.equal(outbound.worstCaseSummaryTokens, 20_000, 'the upper bound if it does not');
+test('a response that was retried away does not fail the attempt', async () => {
+  // The host's retry policy calls the stream function again with the *same* context after a transient
+  // failure, and only the response it finally returns is the one `compact()` acted on. Reading the
+  // discarded failure as this attempt's outcome would hand compaction back to stock Pi after a
+  // summary that succeeded.
+  const responses = [
+    { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'server error' },
+    { role: 'assistant', content: [{ type: 'text', text: 'ok' }], stopReason: 'stop' },
+  ];
+  let call = 0;
+  const registry = { streamSimple: () => ({ result: async () => responses[Math.min(call++, 1)] }) };
+  const groups = new Map();
+  const stream = observingStream(registry, (group, outcome) => { groups.set(group, outcome); });
+
+  const context = { messages: [] };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await stream(model('anthropic-messages'), context, {}).result();
   }
+  assert.equal(groups.size, 1, 'one context is one group, however many times it was retried');
+  assert.equal([...groups.values()][0].stopReason, 'stop', 'the retried-away error is not the outcome');
 });
 
-test('the published per-preset numbers hold on both enforceable classes', () => {
-  // pool / worst-case text / base context / whether the text budget is a hard ceiling
-  const expected = {
-    fast: { pool: 6_000, base: 56_214, hard: true },
-    balanced: { pool: 20_000, base: 70_214, hard: false },
-    deep: { pool: 36_000, base: 86_214, hard: false },
-  };
-  for (const [name, tuple] of Object.entries(PRESETS)) {
-    const { pool, base, hard } = expected[name];
-    for (const api of ['anthropic-messages', 'openai-responses']) {
-      const outbound = describeOutboundRequest(model(api), tuple, thinkingOf(tuple), MEASURED_KEPT_WINDOW);
-      assert.equal(outbound.outputFieldCeiling, pool, `${name} on ${api}`);
-      assert.equal(outbound.worstCaseSummaryTokens, pool, `${name} on ${api}`);
-      assert.equal(outbound.worstCaseBaseContextTokens, base, `${name} on ${api}`);
-      assert.equal(outbound.worstCaseSummaryTokens === tuple.textBudget, hard, `${name} on ${api}: hard text ceiling`);
-    }
-    // Only `fast` keeps the text budget as a true ceiling, because its reasoning budget is zero.
-    assert.equal(tuple.reasoningBudget === 0, hard, name);
+test('a split turn keeps one response per range, and both are checked', async () => {
+  // The host summarises a split turn's two ranges through two contexts and concatenates both into one
+  // summary, so a clean second response says nothing about a partial first one.
+  const responses = [
+    { role: 'assistant', content: [{ type: 'text', text: 'history' }], stopReason: 'aborted' },
+    { role: 'assistant', content: [{ type: 'text', text: 'prefix' }], stopReason: 'stop' },
+  ];
+  let call = 0;
+  const registry = { streamSimple: () => ({ result: async () => responses[call++] }) };
+  const groups = new Map();
+  const stream = observingStream(registry, (group, outcome) => { groups.set(group, outcome); });
+
+  for (const context of [{ messages: ['history'] }, { messages: ['prefix'] }]) {
+    await stream(model('anthropic-messages'), context, {}).result();
   }
-  assert.equal(HOST_PROMPT_AND_TOOLS_TOKENS + 6_000 + MEASURED_KEPT_WINDOW, 56_214);
-});
-
-test('a summary is measured with the host\'s own four-characters-per-token estimate', () => {
-  assert.equal(estimateSummaryTokens(''), 0);
-  assert.equal(estimateSummaryTokens('abcd'), 1);
-  assert.equal(estimateSummaryTokens('a'.repeat(48_000)), 12_000);
+  assert.equal(groups.size, 2, 'two ranges are two groups');
+  const seen = [...groups.values()].map((outcome) => outcome.stopReason);
+  assert.deepEqual(seen, ['aborted', 'stop'], 'the partial first response survives as its own group');
 });
 
 test('the host seam check accepts this package\'s host and reports what it saw', async () => {
@@ -184,8 +134,29 @@ test('the host seam check accepts this package\'s host and reports what it saw',
   assert.match(result.detail, /arity 12/);
   assert.match(result.detail, /cacheRetention/);
   // The third seam: the host must await result() on what our stream function returns, or no
-  // response is ever observed and a partial summary cannot be told from a clean one.
+  // response is ever observed and a partial summary cannot be told from a complete one.
   assert.match(result.detail, /its result\(\) was awaited/);
+  // The tenth argument: arity proves the count of parameters and nothing about their order. Every
+  // argument after the stream function used to be `undefined`, so a reorder was harmless; the retry
+  // policy is the first one where a wrong slot would silently misroute a value the package depends on.
+  assert.match(result.detail, /the retry policy we passed drove a retry \(2 attempts\)/);
+});
+
+test('the host seam check rejects a host that ignores the retry policy slot', async () => {
+  // Right arity, the stream function is called, and its result() is awaited — the first three checks
+  // all pass. But the host never applies the policy in the tenth argument, which is exactly what a
+  // reordered parameter list would look like from here.
+  const ignoresRetry = async (
+    _preparation, _model, _apiKey, _headers, _instructions, _signal, _thinking, streamFn,
+  ) => {
+    const stream = await streamFn(undefined, undefined, {});
+    await stream.result();
+    return { summary: 'x', firstKeptEntryId: 'x', tokensBefore: 0 };
+  };
+  Object.defineProperty(ignoresRetry, 'length', { value: 12 });
+  const result = await checkHostSeam(ignoresRetry);
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /did not apply the retry policy passed in its tenth argument/);
 });
 
 test('the host seam check steps aside on a compaction function with another shape', async () => {
