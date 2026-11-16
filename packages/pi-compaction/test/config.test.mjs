@@ -51,6 +51,7 @@ test('a summarizer model and a thinking level round-trip through the file', () =
     fallbackModel: null,
     thinking: 'off',
     keptWindowTokens: 4_000,
+    redistill: null,
   });
 });
 
@@ -83,6 +84,50 @@ test('a fallback model round-trips, and every spelling of none means no fallback
   const roundTrip = agentDir();
   saveConfig(roundTrip, { ...defaults(), fallbackModel: null });
   assert.equal(loadConfig(roundTrip).config.fallbackModel, null);
+});
+
+test('redistill thresholds round-trip through the file', () => {
+  const dir = agentDir();
+  saveConfig(dir, { ...defaults(), redistill: { aboveTokens: 4_000, targetTokens: 6_000 } });
+  const { config, diagnostic } = loadConfig(dir);
+  assert.equal(diagnostic, undefined);
+  assert.deepEqual(config.redistill, { aboveTokens: 4_000, targetTokens: 6_000 });
+  assert.deepEqual(effective(config).redistill, { aboveTokens: 4_000, targetTokens: 6_000 });
+});
+
+test('redistill is off unless both thresholds are given', () => {
+  // Absent, null and half-configured all mean off: the package then behaves exactly as 0.2.x does.
+  for (const body of [{}, { redistill: null }, { redistill: { aboveTokens: 4_000 } }, { redistill: { targetTokens: 6_000 } }]) {
+    const dir = agentDir();
+    write(dir, body);
+    const { config, diagnostic } = loadConfig(dir);
+    assert.equal(diagnostic, undefined, JSON.stringify(body));
+    assert.equal(config.redistill, null, JSON.stringify(body));
+    assert.equal(effective(config).redistill, null, JSON.stringify(body));
+  }
+  assert.equal(defaults().redistill, null);
+});
+
+test('an unknown or malformed redistill rejects the configuration whole', () => {
+  const cases = [
+    [{ redistill: { aboveTokens: 4_000, targetTokens: 6_000, prompt: 'be brief' } }, /unknown field redistill\.prompt/],
+    [{ redistill: { aboveTokens: 4_000, targetTokens: 6_000, enabled: true } }, /unknown field redistill\.enabled/],
+    [{ redistill: 4_000 }, /redistill must be an object/],
+    [{ redistill: [4_000, 6_000] }, /redistill must be an object/],
+    [{ redistill: { aboveTokens: 'lots', targetTokens: 6_000 } }, /redistill\.aboveTokens must be an integer/],
+    [{ redistill: { aboveTokens: 4_000, targetTokens: 1.5 } }, /redistill\.targetTokens must be an integer/],
+    [{ redistill: { aboveTokens: 0, targetTokens: 6_000 } }, /redistill\.aboveTokens must be an integer/],
+    [{ redistill: { aboveTokens: 4_000, targetTokens: -1 } }, /redistill\.targetTokens must be an integer/],
+    [{ redistill: { aboveTokens: 2_000_000, targetTokens: 6_000 } }, /redistill\.aboveTokens must be an integer/],
+  ];
+  for (const [body, pattern] of cases) {
+    const dir = agentDir();
+    write(dir, body);
+    const { config, diagnostic } = loadConfig(dir);
+    assert.equal(config, undefined, JSON.stringify(body));
+    assert.match(diagnostic, pattern, JSON.stringify(body));
+    assert.match(diagnostic, /compaction stays stock Pi/, 'and the caller is told what happens next');
+  }
 });
 
 test('null and the conversation word both mean the conversation model', () => {

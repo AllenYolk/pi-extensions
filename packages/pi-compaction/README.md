@@ -56,6 +56,7 @@ project-level overrides, and `/reload` picks up a change without restarting.
 | `fallbackModel` | `provider/model`, or `null` — the default — for no fallback at all. `"conversation"` and `"none"` are both accepted as spellings of `null`, in the file and from the command. Must differ from `summarizerModel`: the same model cannot be its own fallback, and a file that pairs them is rejected whole. |
 | `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Defaults to `medium`, and is clamped to what the chosen model supports. |
 | `keptWindowTokens` | Token target for the kept window. Defaults to `16000`. |
+| `redistill` | `null` — the default — or two thresholds that ask the summarizer to re-distil the previous summary. See [Asking for a fixed point](#asking-for-a-fixed-point). |
 
 An invalid value is rejected whole: the package reports the file and the field, and compaction stays
 stock Pi rather than half-applying a configuration. That includes `fallbackModel` — a half-applied
@@ -115,7 +116,56 @@ configured rather than the conversation model.
 - It steers, it does not replace: the host's section format still applies, and on a split turn both
   summarization requests get the line.
 - It survives a handback. After a degradation the host compacts with the conversation model and
-  applies the same line to its own request.
+  applies the same line to its own request. A [redistilling](#asking-for-a-fixed-point) instruction
+  this package appended does not survive one: it is this package's, and the host applies only your
+  text. The degradation announcement says so when redistilling was configured.
+
+## Asking for a fixed point
+
+**Off by default, and unvalidated.** The host's update prompt makes every compaction a union of the
+previous summary, so the summary is the one thing in a session that only ever grows. `redistill` asks
+for a change of merge semantics — from union to fixed point — through the one lever that does not
+touch the response:
+
+```json
+{ "redistill": { "aboveTokens": 4000, "targetTokens": 6000 } }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `aboveTokens` | Only ask when the previous summary is at least this many tokens. Below it there is nothing to win. |
+| `targetTokens` | The number the instruction names as the merged summary's target. |
+
+Absent, `null`, or either field on its own means **off**, and the package then behaves exactly as
+`0.2.x` does. An unknown or malformed `redistill` rejects the configuration whole, like every other
+field.
+
+When it applies, one fixed instruction is appended to the host's `Additional focus:` line:
+
+```text
+The previous summary is 5367 tokens and the merged summary should stay under 6000. Keep every goal,
+constraint, decision with its rationale, blocker, open question and next step that is still true.
+Drop an entry when a later entry supersedes it, and drop detail about work that is finished and no
+longer referenced. Do not append a changelog and do not add a history section.
+```
+
+- It **asks**. Nothing here makes a summary shorter: no output ceiling is sent, nothing is truncated
+  or rewritten, and a model that ignores the instruction produces exactly the summary it produces
+  today. [ADR 0006](docs/adr/0006-ask-for-a-fixed-point.md) records why that is not the ceiling
+  [ADR 0005](docs/adr/0005-bound-by-not-bounding.md) removed — it changes the request, not the
+  response — and the stop-reason refusal below is untouched.
+- It applies **only when there is a previous summary** of at least `aboveTokens` tokens. A session's
+  first compaction has nothing to re-distil.
+- A `/compact <text>` of your own is **appended to, never replaced**, and reaches both summarization
+  requests of a split turn.
+- The wording is a **fixed template in the source**, with those two numbers as its only variable
+  parts. There is no free-text prompt field: a template is testable, and a prompt knob would be a
+  second prompt to maintain.
+
+`/compaction` reports whether it is on and at what thresholds. **No arm of its experiment has been
+run**, so nothing here claims it works: [the method and the place for the numbers are in
+validation](docs/validation.md#the-redistilling-experiment), including the negative result if that is
+what the measurement says.
 
 ## The one thing that is refused
 
@@ -267,8 +317,8 @@ enters the summary or the model's context.
 ## `/compaction`
 
 `/compaction` on its own shows the effective configuration, what the summarizer will actually run at,
-the kept-window target, whether the package is enabled, and the result of the host-seam check. It does
-not shadow the host's `/compact`.
+the kept-window target, whether redistilling is on and at what thresholds, whether the package is
+enabled, and the result of the host-seam check. It does not shadow the host's `/compact`.
 
 ```text
 Config: /home/you/.pi/agent/extensions/pi-compaction/config.json
@@ -277,6 +327,7 @@ Summarizer model: minimax-cn/MiniMax-M3.1-Flash (anthropic-messages)
 Thinking: off
 Fallback model: mafia-g/gemini-3.8-flash (google-generative-ai)
 Kept window: 16000 tokens
+Redistilling: off
 Summary length: not bounded by this package — the host sends no output ceiling and neither do we
 Host seam: ok — compact() arity 12; our stream function received {apiKey, cacheRetention, env, headers, sessionId, signal} and its result() was awaited
 Last degradation: none in this session
@@ -285,7 +336,7 @@ Last degradation: none in this session
 The fallback line says what this host can actually run: `none`, the model and its API, or the reason
 it could not — `not available on this host`, or `no configured credentials on this host`.
 
-Every knob is settable from it, and each change is written back to the configuration file:
+Every knob but one is settable from it, and each change is written back to the configuration file:
 
 ```text
 /compaction enable | disable
@@ -299,6 +350,9 @@ Every knob is settable from it, and each change is written back to the configura
 `null` — the two entry points spell it the same way on purpose. There is deliberately no way to name
 the conversation model as a fallback: the host handback already is that, and saying it twice would
 hide which one happened.
+
+`redistill` is the exception, and deliberately so: it is file-only. It ships inert and unvalidated, so
+there is nothing to turn on from a command — see [Asking for a fixed point](#asking-for-a-fixed-point).
 
 ## Host-seam check
 

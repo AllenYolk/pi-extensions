@@ -76,6 +76,11 @@ returns unchanged for a stop reason it does not itself reject. A partial summary
 and a whole one is never shortened: the extension sends no output ceiling, so the summary is as long as
 the host's prompt and the model make it.
 
+**Re-distillation**: asking the summarizer to merge the previous summary towards a fixed point rather
+than only adding to it. It is a request, carried in the host's own custom-instruction slot, and it
+bounds nothing: a model that ignores it produces the summary it produces today. Off unless configured,
+and unvalidated.
+
 **Degradation**: handing compaction back to stock Pi after the extension's own attempt fails. Always
 announced, never silent. It gives up the summarizer model and its thinking level — the whole of what
 the extension controls — and changes nothing about the summary's length.
@@ -106,6 +111,7 @@ Paths below are relative to `packages/` unless stated otherwise.
 | Compaction activation, configuration and the compaction hook | `pi-compaction/src/index.ts` | Registers `/compaction`, owns the inert-until-enabled switch, the slash-command surface and the `session_before_compact` hook that supplies a compaction or hands it back. |
 | The cut point and the summarised range | `pi-compaction/src/preparation.ts` | Chooses the kept-window boundary and builds the range to summarise from the branch entries, so nothing between the two is lost. |
 | The summarizer model, its thinking level and the host seam | `pi-compaction/src/summarizer.ts` | Resolves a summarizer model, clamps its thinking level to what the model supports, owns the observing stream function the stop-reason read goes through, and owns the activation-time host-seam check. |
+| The re-distillation request | `pi-compaction/src/redistill.ts` | Owns the fixed instruction template and decides when it applies, from the previous summary's size and the configured thresholds. Returns the custom-instruction value; it never touches the response. |
 | The attempt sequence and its record | `pi-compaction/src/degradation.ts` | Owns the failure wording, the announcement, the durable record of a handback and of a successful fallback, and the entry type each is written as. |
 | Collection/package boundaries | Repository-root manifest, `test/` and `.github/workflows/` | Aggregate installation, independent-package checks, coexistence and shared development/release tooling. |
 

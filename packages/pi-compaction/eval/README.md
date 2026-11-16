@@ -22,7 +22,7 @@ node eval/harness.ts \
 
 | Flag | Meaning |
 | --- | --- |
-| `--arm <provider/model>@<thinking>` | One arm. Repeatable, and a comparison needs at least two. |
+| `--arm <provider/model>@<thinking>[+<aboveTokens>:<targetTokens>]` | One arm. Repeatable, and a comparison needs at least two. The optional `+` suffix asks the summarizer to re-distil a previous summary of at least `aboveTokens` tokens towards `targetTokens` — the same instruction, from the same module, that the hook sends when `redistill` is configured. |
 | `--score <summary.md \| run.json>` | Score a summary, or every arm of a run a live run wrote. Repeatable. |
 | `--fixture <manifest.json>` | Defaults to `eval/fixtures/long-session.json`. |
 | `--session <path>` | Live only: read the session from this path instead of the fixture's own. |
@@ -43,6 +43,26 @@ that reported output tokens. Put the arm you are trying to beat first. An arm th
 model this host does not offer, missing credentials, a thrown request — reports no output tokens, so
 the baseline falls back to the first arm that does; when that happens a line on stderr names the arm
 `Δ out` was measured against, because the table cannot show it.
+
+## Redistilling arms
+
+An arm may carry the two thresholds `redistill` takes, as `+<aboveTokens>:<targetTokens>`:
+
+```sh
+node eval/harness.ts \
+  --arm 'minimax-cn/MiniMax-M3.1-Flash@low' \
+  --arm 'minimax-cn/MiniMax-M3.1-Flash@low+200:400' \
+  --out work/redistill-1
+```
+
+The instruction comes from `src/redistill.ts` — the module the hook itself uses — so an arm measures
+what the package would actually ask for, and `run.json` records the text each arm sent.
+
+An arm whose `aboveTokens` is above the previous summary's size asks for **nothing**, which makes it
+the control arm under another name. The harness prints that on stderr, with the previous summary's
+size. The committed fixture's previous summary is 261 tokens, so #31's own 4,000-token threshold does
+exactly that; see [The redistilling experiment](../docs/validation.md#the-redistilling-experiment) for
+the two ways to run it honestly.
 
 ## Stop reasons, and why every group counts
 

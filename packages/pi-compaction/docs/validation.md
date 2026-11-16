@@ -16,8 +16,9 @@ thinking level, and refuses to persist a summary it cannot vouch for.
 
 ## Tested platforms and versions
 
-Everything below was run on this machine. The gates were last run on the branch that removed the
-output ceiling and the prune path.
+Everything below was run on this machine. The gates were last run on the branch that added the
+inert `redistill` field ([#31](https://github.com/AllenYolk/pi-extensions/issues/31)); the platform
+and host versions are unchanged from the earlier gate run.
 
 | | |
 | --- | --- |
@@ -30,13 +31,17 @@ output ceiling and the prune path.
 
 | Check | Result |
 | --- | --- |
-| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **71/71 tests pass** (45 behaviour, 26 evaluation harness) |
-| `npm run check` | **157/157 tests pass** (71 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
+| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **90/90 tests pass** (62 behaviour, 28 evaluation harness), on the branch that added the inert `redistill` field |
+| `npm run check` | **176/176 tests pass** (90 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
 | `npm run benchmark` | **deliberately skipped** — the presentation benchmark is for `@allenyolk/pi-minimal-display`; this package registers no TUI component and patches nothing. CI runs it on every push regardless. |
 
-The 26 harness tests are the scorers and the `--score` mode of [the evaluation harness](../eval/README.md).
+The 28 harness tests are the scorers and the `--score` mode of [the evaluation harness](../eval/README.md).
 They make no request: they read the committed fixture, score summaries that already exist, and spawn
 the harness with `--score`. The live mode is unreachable without `--arm` and is not run by any check.
+The 62 behaviour tests include seven real packaged-CLI runs that drive redistilling through the host's
+own compaction path — off, at the threshold, below it, a split turn, a user's `/compact <text>`, a
+partial response to a redistilled request, and the status view — six unit tests over the decision
+itself, and one over what a handback says it gives up when redistilling was configured.
 
 Which host proves what matters here. The package's own checks resolve Pi 1.5.1 from
 `packages/pi-compaction/node_modules`, so every compaction assertion — including the real
@@ -197,8 +202,8 @@ it stands; the maintainer corrects it after the merge.
 
 ## The packed artifact
 
-`npm pack --json --ignore-scripts` in `packages/pi-compaction` produces exactly eight entries: the
-five TypeScript sources under `src/`, `README.md`, `LICENSE` and `package.json`. No tests, no
+`npm pack --json --ignore-scripts` in `packages/pi-compaction` produces exactly nine entries: the
+six TypeScript sources under `src/`, `README.md`, `LICENSE` and `package.json`. No tests, no
 `docs/`, no `tsconfig.json`, no `work/`, no `node_modules`.
 
 The evaluation harness is deliberately outside it: `eval/` is not in `files`, so the fixture, the
@@ -332,6 +337,96 @@ a fake in-process provider; the scorers and the whole of `--score` are unit-test
 request. Every figure in this document is either what the store audit re-derived or what the owner
 recorded.
 
+## The redistilling experiment
+
+The inert `redistill` field ([ADR 0006](adr/0006-ask-for-a-fixed-point.md),
+[#31](https://github.com/AllenYolk/pi-extensions/issues/31)) asks the summarizer to merge the previous
+summary towards a fixed point instead of only adding to it. Whether a model does anything with that
+request is the whole question, and **no arm has been run**. This section is the method; the numbers
+are not here yet.
+
+### The bar
+
+An arm ships enabled-by-default, or gets documented as effective, only if it
+
+- reduces output tokens by **≥ 25%** against the control arm, **and**
+- loses **zero** declared probes, **and**
+- keeps **9/9** sections, **and**
+- adds **no** fabricated paths, **and**
+- costs **no** wall time. A second request, or a longer prompt that makes the model think longer, is a
+  fail.
+
+If no arm clears it, the field stays inert and undocumented as effective and the negative result is
+recorded here. A prompt that models ignore is a fact about the models.
+
+### The trap in the fixture
+
+The committed fixture's previous summary is **261 tokens**. An arm at #31's own
+`aboveTokens: 4000` therefore asks for **nothing** — it is the control arm under another name. The
+harness prints a line on stderr for any arm that asked for nothing, naming the previous summary's
+size, and a run whose redistilling arms all did that measures nothing.
+
+There are two honest ways to run it, and they answer the same question at different scales.
+
+**At fixture scale**, with thresholds that actually trigger on a 261-token previous summary. One
+three-arm run per summarizer, cheap enough to repeat:
+
+```sh
+cd packages/pi-compaction
+
+# The cheap summarizer this package is built around.
+node eval/harness.ts \
+  --arm 'minimax-cn/MiniMax-M3.1-Flash@low' \
+  --arm 'minimax-cn/MiniMax-M3.1-Flash@low+200:400' \
+  --arm 'minimax-cn/MiniMax-M3.1-Flash@low+200:260' \
+  --out work/redistill-flash-low
+
+# The conversation model at its session level — the other half of #31's question, since the
+# specification's 16/16 non-compliance was measured on gpt-6.1-sol.
+node eval/harness.ts \
+  --arm 'mafia-o/gpt-6.1-sol@high' \
+  --arm 'mafia-o/gpt-6.1-sol@high+200:400' \
+  --arm 'mafia-o/gpt-6.1-sol@high+200:260' \
+  --out work/redistill-sol-high
+```
+
+The first arm on each command line is the control every `Δ out` is measured against. `+200:400` is
+the soft arm (a target above the previous summary's size) and `+200:260` the hard one (a target at
+it), which is #31's 6,000/4,000 pair scaled to this fixture.
+
+**At #31's literal thresholds**, which need a previous summary of at least 4,000 tokens. `--session`
+does not provide one — the previous summary comes from the manifest, not from the session — so this
+needs a manifest of your own:
+
+```sh
+# A copy of eval/fixtures/long-session.json whose "previousSummary" names a file of at least
+# 4,000 tokens, with probes that occur in the range that manifest declares. Never commit it.
+node eval/harness.ts \
+  --fixture /path/to/your-manifest.json \
+  --arm 'mafia-o/gpt-6.1-sol@high' \
+  --arm 'mafia-o/gpt-6.1-sol@high+4000:6000' \
+  --arm 'mafia-o/gpt-6.1-sol@high+4000:4000' \
+  --out work/redistill-sol-high-4000
+```
+
+Either run writes `run.json` and one file per summary under `--out`, and records the instruction each
+arm actually sent. Re-scoring needs no credentials and no request:
+
+```sh
+node eval/harness.ts --score work/redistill-flash-low/run.json
+```
+
+Exit status is 0 when every arm's every response group stopped with `stop`, 1 when one did not, and 2
+for bad input. A redistilling arm that came back partial is a fail of the guarantee, not a data point.
+
+### Results
+
+**Not run.** Nothing in this document, the README or the changeset claims this field works. When an
+arm is run, record here: the date, the host and model versions, the exact command, the fixture or
+manifest used, and the full table the harness printed — `stop`, wall, output tokens, reasoning tokens,
+cost, `sections`, `fabricated`, `probes` and `Δ out` for each arm — followed by whether each arm
+cleared the bar above, **whatever the numbers say**.
+
 ## Known limits
 
 These are properties of the design, documented in the package README, not defects to fix here:
@@ -340,8 +435,14 @@ These are properties of the design, documented in the package README, not defect
   On the profile this package was built against that meant 26,019 tokens by the sixteenth compaction
   and a base context of 93,152 — unchanged by this package. Growth per cycle, and therefore how much
   work a session absorbs between compactions, is not something it improves.
-- **A handback gives up the model and the thinking level, and nothing else.** It does not change the
-  summary's length, because neither path sends a ceiling.
+- **Redistilling asks, and is unvalidated.** With `redistill` configured, this package appends one
+  fixed instruction to the host's `customInstructions` slot. It sends no ceiling, truncates nothing
+  and rewrites nothing, so a model that ignores it produces exactly today's summary — and a model
+  that half-follows it may over-drop. No arm of [the experiment](#the-redistilling-experiment) has
+  been run, so the field ships inert and nothing claims it works.
+- **A handback gives up the model and the thinking level, and nothing else about the summary's
+  length.** It does not change the length, because neither path sends a ceiling. A configured
+  redistilling instruction is given up as well — see above — and the announcement says so.
 - **A model that cannot be told not to reason cannot be told not to reason.** A zero-cost `thinking:
   "off"` is clamped to the model's lowest supported level on a model whose `thinkingLevelMap` marks
   `off` unsupported, and the model reasons anyway. The status view reports the level that ran, not the
@@ -541,6 +642,10 @@ is now partly measured, the entry says what that establishes and what it does no
   does not support. No side-by-side comparison of a summary produced by the conversation model
   against one produced by a cheaper model **on the same input** has been run, so how much detail a
   cheaper summarizer drops is still unknown.
+- **Redistilling has never been measured against a live model.** The instruction, the thresholds, the
+  append to a user's `/compact <text>`, the split-turn case and the refusal of a partial redistilled
+  response are all covered by tests against the real host; whether any model acts on the instruction
+  is not. See [The redistilling experiment](#the-redistilling-experiment) for the method and the bar.
 - **No real-session replay.** The owner's 2,475-entry session is named in the spec as a one-time
   source of measured evidence. Real sessions have since been read, read-only, for the aggregate
   figures above; replaying one — re-running a compaction over a stored session — has not been done,

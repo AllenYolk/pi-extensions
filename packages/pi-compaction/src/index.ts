@@ -14,6 +14,7 @@ import {
   type ThinkingLevel,
 } from './config.ts';
 import { prepareCompaction } from './preparation.ts';
+import { redistillInstructions } from './redistill.ts';
 import {
   announcement,
   DEGRADATION_ENTRY,
@@ -173,6 +174,10 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
       // One request. The model and its thinking level are two of the three things this package changes;
       // the summary is otherwise the host's, at whatever length the host's prompt and the model produce.
       //
+      // The custom-instruction slot is a fourth, and the only lever that does not touch the response:
+      // redistilling asks for a fixed point instead of a union, and appends to whatever
+      // `/compact <text>` supplied rather than replacing it.
+      //
       // The level is clamped against **this** model, so it is computed per attempt: a fallback that
       // cannot honour the configured level runs at a different one, and the announcement names the
       // level that ran rather than the one that was asked for.
@@ -191,7 +196,7 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
           model,
           undefined,
           undefined,
-          event.customInstructions,
+          redistillInstructions(prepared.previousSummary, settings.redistill, event.customInstructions),
           event.signal,
           level as never,
           observingStream(ctx.modelRegistry, (group, seen) => { outcomes.set(group, seen); }),
@@ -316,6 +321,10 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
         : `Fallback model: ${fallback.provider}/${fallback.id} (${fallback.api})`
           + (ctx.modelRegistry.hasConfiguredAuth(fallback) ? '' : ' — no configured credentials on this host'));
     lines.push(`Kept window: ${settings.keptWindowTokens} tokens`);
+    const redistill = settings.redistill;
+    lines.push(redistill
+      ? `Redistilling: on — asks for a fixed point once the previous summary reaches ${redistill.aboveTokens} tokens, naming ${redistill.targetTokens} as the target (a request, not a ceiling)`
+      : 'Redistilling: off');
     lines.push('Summary length: not bounded by this package — the host sends no output ceiling and neither do we');
     const checked = await seamResult();
     lines.push(`Host seam: ${checked.ok ? 'ok' : 'MISMATCH'} — ${checked.detail}`);

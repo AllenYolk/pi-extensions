@@ -19,6 +19,17 @@ export const DEFAULT_THINKING: ThinkingLevel = 'medium';
 
 export const DEFAULT_KEPT_WINDOW_TOKENS = 16_000;
 
+/**
+ * When to ask the summarizer to re-distil the previous summary instead of only merging into it, and
+ * the size to name in that request. Both are required: half-configured means off.
+ */
+export interface Redistill {
+  /** Only ask when the previous summary is at least this many tokens. */
+  aboveTokens: number;
+  /** The size the instruction names as the merged summary's ceiling. */
+  targetTokens: number;
+}
+
 /** The file as written. */
 export interface Config {
   enabled: boolean;
@@ -28,6 +39,8 @@ export interface Config {
   fallbackModel: string | null;
   thinking: ThinkingLevel;
   keptWindowTokens: number;
+  /** `null` — the default — asks for nothing and behaves exactly as 0.2.x does. */
+  redistill: Redistill | null;
 }
 
 /** What a compaction actually runs with. */
@@ -36,6 +49,7 @@ export interface Effective {
   tuple: Tuple;
   fallbackModel: string | null;
   keptWindowTokens: number;
+  redistill: Redistill | null;
 }
 
 /**
@@ -47,7 +61,8 @@ export interface Effective {
  */
 export const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-const FIELDS = ['enabled', 'summarizerModel', 'fallbackModel', 'thinking', 'keptWindowTokens'];
+const FIELDS = ['enabled', 'summarizerModel', 'fallbackModel', 'thinking', 'keptWindowTokens', 'redistill'];
+const REDISTILL_FIELDS = ['aboveTokens', 'targetTokens'];
 const MAX_TOKENS = 1_000_000;
 
 export const defaults = (): Config => ({
@@ -56,6 +71,7 @@ export const defaults = (): Config => ({
   fallbackModel: null,
   thinking: DEFAULT_THINKING,
   keptWindowTokens: DEFAULT_KEPT_WINDOW_TOKENS,
+  redistill: null,
 });
 
 export function configPath(agentDir: string): string {
@@ -115,7 +131,23 @@ function parse(raw: unknown): Config {
   if (config.fallbackModel !== null && config.fallbackModel === config.summarizerModel) {
     throw new Error('fallbackModel must be a different model from summarizerModel; the same model cannot be its own fallback');
   }
+  config.redistill = redistill(record.redistill);
   return config;
+}
+
+/** Absent, null or half-configured is off; anything else that is not two thresholds rejects the file. */
+function redistill(raw: unknown): Redistill | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('redistill must be an object or null');
+  const record = raw as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!REDISTILL_FIELDS.includes(key)) throw new Error(`unknown field redistill.${key}`);
+  }
+  if (!REDISTILL_FIELDS.every((key) => key in record)) return null;
+  return {
+    aboveTokens: integer(record.aboveTokens, 'redistill.aboveTokens', 1),
+    targetTokens: integer(record.targetTokens, 'redistill.targetTokens', 1),
+  };
 }
 
 /**
@@ -146,6 +178,7 @@ function toRaw(config: Config): Record<string, unknown> {
     fallbackModel: config.fallbackModel ?? null,
     thinking: config.thinking,
     keptWindowTokens: config.keptWindowTokens,
+    redistill: config.redistill,
   };
 }
 
@@ -169,6 +202,7 @@ export function effective(config: Config): Effective {
   return {
     enabled: config.enabled,
     keptWindowTokens: config.keptWindowTokens,
+    redistill: config.redistill,
     tuple: { model: config.summarizerModel, thinking: config.thinking },
     fallbackModel: config.fallbackModel,
   };

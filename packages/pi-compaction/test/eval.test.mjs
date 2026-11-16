@@ -7,7 +7,15 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { countSections, fabricatedPaths, pathsIn, probeMatches, scoreProbes, SECTIONS } from '../eval/score.ts';
 import { DEFAULT_FIXTURE, loadFixture } from '../eval/input.ts';
-import { exitCodeFor, parseArgs, renderTable, scoreArms, usageOf } from '../eval/harness.ts';
+import {
+  armInstructions,
+  exitCodeFor,
+  parseArgs,
+  parseArm,
+  renderTable,
+  scoreArms,
+  usageOf,
+} from '../eval/harness.ts';
 import { THINKING_LEVELS } from '../src/config.ts';
 
 const harness = fileURLToPath(new URL('../eval/harness.ts', import.meta.url));
@@ -387,6 +395,34 @@ test('a recorded --session run is scored over the session it summarised', () => 
   // The probe for the old path is absent from that session, so it is reported and left out of the
   // score rather than counted as a probe the summarizer lost.
   assert.match(result.stderr, /not scored, absent from the session: file-reopen/);
+});
+
+test('an arm may carry redistill thresholds, and a malformed pair is refused', () => {
+  assert.deepEqual(parseArm('minimax-cn/MiniMax-M3.1-Flash@low'), {
+    name: 'minimax-cn/MiniMax-M3.1-Flash',
+    thinking: 'low',
+    redistill: null,
+  });
+  assert.deepEqual(parseArm('mafia-o/gpt-6.1-sol@high+4000:6000').redistill, {
+    aboveTokens: 4_000,
+    targetTokens: 6_000,
+  });
+  for (const spec of ['a/b@low+4000', 'a/b@low+4000:', 'a/b@low+x:6000', 'a/b@low+0:6000', 'a/b@low+4000:6000:1']) {
+    assert.throws(() => parseArm(spec), /must be <provider\/model>@<thinking>/, spec);
+  }
+  const malformed = run(['--arm', 'a/b@low+4000', '--arm', 'c/d@low']);
+  assert.equal(malformed.status, 2);
+  assert.match(malformed.stderr, /must be <provider\/model>@<thinking>/);
+});
+
+test('an arm sends the instruction its thresholds ask for, or nothing', () => {
+  const fixture = loadFixture(DEFAULT_FIXTURE);
+  // The committed fixture's previous summary is 261 tokens, so #31's own 4,000-token threshold asks
+  // for nothing here: an arm at that threshold is the control arm with a misleading name.
+  assert.equal(armInstructions(fixture, 'a/b@low+4000:6000'), undefined);
+  const asked = armInstructions(fixture, 'a/b@low+200:6000');
+  assert.match(asked, /^The previous summary is 261 tokens and the merged summary should stay under 6000\./);
+  assert.equal(armInstructions(fixture, 'a/b@low'), undefined, 'an arm without thresholds is the control');
 });
 
 test('the exit code is the arms\' own, and a clean arm list is zero', () => {

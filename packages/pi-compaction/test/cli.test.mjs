@@ -102,6 +102,175 @@ function assertStock(run) {
   assert.equal(persisted[0].fromHook ?? false, false, 'the compaction must not be hook-originated');
 }
 
+/**
+ * Redistilling: the previous summary is only ever merged into, so the one lever this package has that
+ * does not damage the current response is the host's own `customInstructions` slot. The tests below
+ * read what reached the summarization request, which is where the instruction lands as the host's
+ * `Additional focus:` line.
+ */
+const REDISTILL = { aboveTokens: 4_000, targetTokens: 6_000 };
+/** The host's chars/4 estimate for a summary, which is what the instruction names. */
+const summaryTokens = (summary) => Math.ceil(summary.length / 4);
+const focusOf = (record) => record.prompt.match(/Additional focus: ([\s\S]*)$/)?.[1];
+/** The fixed template, written out here rather than imported, so the test is not its own oracle. */
+const instructionFor = (previousTokens, targetTokens) =>
+  `The previous summary is ${previousTokens} tokens and the merged summary should stay under ${targetTokens}. `
+  + 'Keep every goal, constraint, decision with its rationale, blocker, open question and next step '
+  + 'that is still true. Drop an entry when a later entry supersedes it, and drop detail about work '
+  + 'that is finished and no longer referenced. Do not append a changelog and do not add a history section.';
+
+test('redistill off, null or half-configured leaves the fifth argument exactly as it was', { timeout: 300_000 }, () => {
+  for (const redistill of [undefined, null, { aboveTokens: 4_000 }, { targetTokens: 6_000 }]) {
+    const run = runCompaction({
+      name: 'redistill-off-',
+      config: { enabled: true, ...(redistill === undefined ? {} : { redistill }) },
+      // Two rounds, so the second one has a previous summary to re-distil and still must not.
+      probe: { ROUNDS: 2, FOLLOWUP: 24_000 },
+      fixture: { SUMMARY: 5_000 },
+      turns: 40,
+    });
+    assert.equal(run.report.error, undefined, run.report.error);
+    const records = summarizationRecords(run.records);
+    assert.equal(records.length, 2, JSON.stringify(redistill));
+    for (const record of records) {
+      assert.equal(focusOf(record), undefined, `${JSON.stringify(redistill)}: nothing was appended`);
+    }
+    assert.deepEqual(persistedCompactions(run.session.file).map((entry) => entry.fromHook), [true, true]);
+  }
+});
+
+test('a previous summary at or above the threshold is asked to re-distil, and the first compaction is not', { timeout: 180_000 }, () => {
+  const run = runCompaction({
+    name: 'redistill-',
+    config: { enabled: true, redistill: REDISTILL },
+    fixture: { SUMMARY: 5_000 },
+    probe: { ROUNDS: 2, FOLLOWUP: 24_000 },
+    turns: 40,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+  const records = summarizationRecords(run.records);
+  assert.equal(records.length, 2);
+
+  // The first compaction has nothing to re-distil.
+  assert.equal(focusOf(records[0]), undefined, 'the first compaction must inject nothing');
+
+  const persisted = persistedCompactions(run.session.file);
+  assert.equal(persisted.length, 2);
+  // The number in the instruction is the host's own estimate of the summary the request carries.
+  const previous = summaryTokens(persisted[0].summary);
+  assert.ok(previous >= REDISTILL.aboveTokens, `the previous summary was ${previous} tokens`);
+  assert.equal(focusOf(records[1]), instructionFor(previous, REDISTILL.targetTokens));
+  // Asking is all it does: the summary is still the host's, whole, and this package sent no ceiling.
+  assert.equal(records[1].options.maxTokens, undefined);
+  assert.deepEqual(persisted.map((entry) => entry.fromHook), [true, true]);
+});
+
+test('a previous summary below the threshold injects nothing', { timeout: 180_000 }, () => {
+  const run = runCompaction({
+    name: 'redistill-small-',
+    config: { enabled: true, redistill: REDISTILL },
+    // The default fixture summary is 200 tokens, far below the 4,000-token threshold.
+    probe: { ROUNDS: 2, FOLLOWUP: 24_000 },
+    turns: 40,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+  const persisted = persistedCompactions(run.session.file);
+  assert.ok(summaryTokens(persisted[0].summary) < REDISTILL.aboveTokens);
+  for (const record of summarizationRecords(run.records)) {
+    assert.equal(focusOf(record), undefined);
+  }
+});
+
+test('a split turn injects into both of its summarization requests', { timeout: 180_000 }, () => {
+  const run = runCompaction({
+    name: 'redistill-split-',
+    // A kept window larger than the follow-up turn puts the second round's cut point inside one of
+    // the entries the first round kept, which is what makes that round a split turn.
+    config: { enabled: true, keptWindowTokens: 34_000, redistill: REDISTILL },
+    fixture: { SUMMARY: 5_000 },
+    probe: { ROUNDS: 2, FOLLOWUP: 24_000 },
+    turns: 40,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+  const records = summarizationRecords(run.records);
+  // The first round is one request; the second is a split turn, which is two.
+  assert.equal(records.length, 3);
+  assert.equal(records[0].prompt.includes('<previous-summary>'), false, 'the first round has no previous summary');
+  assert.equal(records[1].prompt.includes('<previous-summary>'), true, 'the second round\'s history request updates one');
+  assert.equal(records[2].prompt.includes('# Instructions'), true, 'and its third request is the turn prefix');
+
+  assert.equal(focusOf(records[0]), undefined, 'the first round injects nothing');
+  const previous = summaryTokens(persistedCompactions(run.session.file)[0].summary);
+  const instruction = instructionFor(previous, REDISTILL.targetTokens);
+  assert.equal(focusOf(records[1]), instruction, 'the history request carries it');
+  assert.equal(focusOf(records[2]), instruction, 'and so does the turn prefix');
+});
+
+test("a user's own /compact text is kept verbatim and ours is appended to it", { timeout: 180_000 }, () => {
+  const user = 'focus on the failing test; keep the port number';
+  const run = runCompaction({
+    name: 'redistill-user-text-',
+    config: { enabled: true, redistill: REDISTILL },
+    fixture: { SUMMARY: 5_000 },
+    probe: { ROUNDS: 2, FOLLOWUP: 24_000, INSTRUCTIONS: user },
+    turns: 40,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+  const records = summarizationRecords(run.records);
+  assert.equal(records.length, 2);
+
+  // The first compaction has nothing to re-distil, so the user's text is the whole of the slot.
+  assert.equal(focusOf(records[0]), user, "the user's text reaches the request unmodified");
+
+  const previous = summaryTokens(persistedCompactions(run.session.file)[0].summary);
+  const focus = focusOf(records[1]);
+  assert.ok(focus.startsWith(user), `the user's text must come first and unmodified:\n${focus}`);
+  assert.equal(focus, `${user}\n\n${instructionFor(previous, REDISTILL.targetTokens)}`);
+});
+
+test('a redistilled request that comes back partial is still never persisted', { timeout: 180_000 }, () => {
+  const run = runCompaction({
+    name: 'redistill-partial-',
+    config: { enabled: true, redistill: REDISTILL },
+    // Only the second summarization request fails, which is the redistilled one: the first round has
+    // to succeed for there to be a previous summary to re-distil.
+    fixture: { SUMMARY: 5_000, STOP_REASON: 'aborted', FAIL_ONLY: 2 },
+    probe: { ROUNDS: 2, FOLLOWUP: 24_000 },
+    turns: 40,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  const records = summarizationRecords(run.records);
+  assert.equal(records.length, 3, 'our two rounds, then stock Pi\'s own request after the handback');
+  assert.equal(records[1].stopReason, 'aborted', 'the redistilled request is the partial one');
+  assert.ok(focusOf(records[1])?.startsWith('The previous summary is '), 'and it is a redistilled request');
+  assert.equal(records[2].stopReason, undefined, "stock Pi's own request is the one that compacted");
+
+  const persisted = persistedCompactions(run.session.file);
+  assert.equal(persisted.length, 2);
+  assert.equal(persisted[0].fromHook, true, 'the first round is ours');
+  assert.equal(persisted[1].fromHook ?? false, false, 'the refused round is the host\'s');
+  assertNoPartialPersisted(run);
+  assert.match(run.plain, /Why: the summarizer's response stopped with "aborted"/);
+  // The handback says what it gives up, and redistilling is part of that when it was configured.
+  assert.match(run.plain, /A redistilling instruction was configured, and stock Pi does not ask for it/);
+});
+
+test('/compaction reports whether redistilling is on, and at what thresholds', { timeout: 180_000 }, () => {
+  const run = runCompaction({
+    name: 'redistill-status-',
+    config: { enabled: true, redistill: { aboveTokens: 4_000, targetTokens: 6_000 } },
+    turns: 30,
+    hold: true,
+    script: statusScript,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+  assert.match(
+    run.plain,
+    /Redistilling: on — asks for a fixed point once the previous summary reaches 4000 tokens, naming 6000 as the target \(a request, not a ceiling\)/,
+  );
+});
+
 test('the package is inert until it is enabled', { timeout: 180_000 }, () => {
   assertStock(runCompaction({ name: 'inert-', turns: 30 }));
 });
@@ -794,6 +963,7 @@ test('the command shows status and sets every knob without shadowing /compact', 
   assert.match(run.plain, /Summarizer model: minimax-cn\/pi-compaction-conversation \(anthropic-messages\)/);
   assert.match(run.plain, /Thinking: medium/);
   assert.match(run.plain, /Kept window: 16000 tokens/);
+  assert.match(run.plain, /Redistilling: off/);
   assert.match(run.plain, /Summary length: not bounded by this package/);
   assert.match(run.plain, /Enabled: yes/);
   assert.match(run.plain, /Host seam: ok .*compact\(\) arity 12/);
@@ -806,6 +976,7 @@ test('the command shows status and sets every knob without shadowing /compact', 
     fallbackModel: null,
     thinking: 'high',
     keptWindowTokens: 12_000,
+    redistill: null,
   });
 
   // `/compaction` must not shadow the host's own `/compact`, which still compacts on its own.
