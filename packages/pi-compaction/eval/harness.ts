@@ -18,7 +18,19 @@ import {
   SECTIONS,
 } from './score.ts';
 import { DEFAULT_FIXTURE, loadFixture, type Fixture } from './input.ts';
-import { THINKING_LEVELS, type ThinkingLevel } from '../src/config.ts';
+import {
+  redistillThreshold,
+  THINKING_LEVELS,
+  type Redistill,
+  type ThinkingLevel,
+} from '../src/config.ts';
+import {
+  checkTokenSeam,
+  previousSummaryTokens,
+  redistillFor,
+  redistillInstructions,
+} from '../src/redistill.ts';
+import type { SeamResult } from '../src/summarizer.ts';
 
 /** What one arm produced. A summary scored offline has only a name and its text. */
 export interface ArmRecord {
@@ -27,6 +39,8 @@ export interface ArmRecord {
   /** The level that ran, after the host's clamp. */
   thinking?: string;
   requestedThinking?: string;
+  /** The instruction this arm's request carried, if it asked for one. */
+  customInstructions?: string;
   /**
    * Every response group the attempt produced, in order; `null` for a group whose response carried
    * no stop reason at all.
@@ -81,17 +95,69 @@ interface Options {
 
 const USAGE = `usage:
   node eval/harness.ts --score <summary.md|run.json> [--score ...] [--fixture <manifest.json>] [--json]
-  node eval/harness.ts --arm <provider/model>@<thinking> --arm <provider/model>@<thinking>
+  node eval/harness.ts --arm <provider/model>@<thinking>[+<aboveTokens>:<targetTokens>] --arm ...
                        [--fixture <manifest.json>] [--session <path>] [--out <dir>] [--json]
 
   --score   score a summary that already exists. No credentials, no request.
-  --arm     summarise the fixture with this model and thinking level. Live; costs money.
+  --arm     summarise the fixture with this model and thinking level, optionally asking the
+            summarizer to re-distil a previous summary of at least <aboveTokens> tokens towards
+            <targetTokens>. Live; costs money.
   --fixture the fixture manifest. Defaults to ${DEFAULT_FIXTURE}
   --session read the session from this path instead of the fixture's own. Never committed.
   --out     where a live run writes run.json and one file per summary. Defaults to ./work/.
   --json    emit the run record instead of the table.
 
 Exit status: 0 all arms stopped cleanly, 1 an arm did not stop with "stop", 2 bad usage.`;
+
+export interface Arm {
+  name: string;
+  thinking: string;
+  redistill: Redistill | null;
+}
+
+const ARM = /^([^@\s]+\/[^@\s]+)@([a-z]+)(?:\+(\d+):(\d+))?$/;
+
+/** One arm's specification. Anything unrecognised is refused rather than silently dropped. */
+export function parseArm(spec: string): Arm {
+  const refused = () => new UsageError(`--arm ${spec} must be <provider/model>@<thinking>[+<aboveTokens>:<targetTokens>]`);
+  const match = ARM.exec(spec);
+  if (!match) throw refused();
+  const [, name, thinking, above, target] = match;
+  if (above === undefined) return { name: name!, thinking: thinking!, redistill: null };
+  // The configuration's own bounds, not a second set: an arm must not measure an instruction naming a
+  // number the package would refuse to send, and a digit string long enough to become 1e39 or
+  // Infinity is neither an integer within the bound nor a number the operator typed.
+  let redistill: Redistill;
+  try {
+    redistill = {
+      aboveTokens: redistillThreshold(Number(above), 'aboveTokens'),
+      targetTokens: redistillThreshold(Number(target), 'targetTokens'),
+    };
+  } catch {
+    throw refused();
+  }
+  return { name: name!, thinking: thinking!, redistill };
+}
+
+/**
+ * The `customInstructions` this arm's request carries: the same instruction, the same module and the
+ * same token-seam gate the hook uses, so an arm measures what the package would actually ask for on
+ * this host — and records nothing when it would ask for nothing.
+ */
+export function armInstructions(
+  fixture: Fixture,
+  spec: string,
+  seam: SeamResult = checkTokenSeam(),
+): string | undefined {
+  return redistillInstructions(
+    fixture.prepared.previousSummary,
+    // The same gate the hook applies: an arm must not measure an instruction the package would refuse
+    // to send on this host.
+    redistillFor(parseArm(spec).redistill, seam),
+    undefined,
+    fixture.prepared.isSplitTurn,
+  );
+}
 
 /** Parse the command line. Anything unrecognised is refused rather than ignored. */
 export function parseArgs(argv: string[]): Options {
@@ -123,18 +189,15 @@ export function parseArgs(argv: string[]): Options {
   if (options.arms.length === 1) {
     throw new UsageError('a comparison needs at least two arms');
   }
-  for (const arm of options.arms) {
-    if (!/^[^@\s]+\/[^@\s]+@[a-z]+$/.test(arm)) {
-      throw new UsageError(`--arm ${arm} must be <provider/model>@<thinking>`);
-    }
-    const level = arm.slice(arm.lastIndexOf('@') + 1);
+  for (const spec of options.arms) {
+    const level = parseArm(spec).thinking;
     // Refused rather than passed to `summarizerThinkingLevel`, which clamps whatever it does not
     // recognise to the model's first available level — typically `off`. A clamp would measure the arm
     // at a level the operator never asked for and say nothing about it, and the package's own
     // configuration rejects an unknown level outright.
     if (!THINKING_LEVELS.includes(level as ThinkingLevel)) {
       throw new UsageError(
-        `--arm ${arm} names a thinking level that does not exist: ${level}\n`
+        `--arm ${spec} names a thinking level that does not exist: ${level}\n`
         + `thinking must be one of ${THINKING_LEVELS.join(', ')}`,
       );
     }
@@ -270,12 +333,26 @@ async function runLive(fixture: Fixture, arms: string[]): Promise<ArmRecord[]> {
   const records: ArmRecord[] = [];
   // One arm at a time: two summarizers sharing a machine would measure each other's contention.
   for (const spec of arms) {
-    const at = spec.lastIndexOf('@');
-    const name = spec.slice(0, at);
-    const requestedThinking = spec.slice(at + 1);
+    const { name, thinking: requestedThinking, redistill } = parseArm(spec);
+    const customInstructions = armInstructions(fixture, spec);
+    if (redistill && !customInstructions) {
+      // An arm that asked for nothing is the control arm under another name, and reading it as a
+      // redistilling arm would turn "the instruction did nothing" into "the model ignored it".
+      const why = fixture.prepared.isSplitTurn
+        ? 'the cut is a split turn, which this package leaves alone'
+        : `the previous summary is ${previousSummaryTokens(fixture.prepared.previousSummary ?? '')} tokens, `
+          + "below this arm's aboveTokens";
+      console.error(`${spec}: asked for nothing — ${why}`);
+    }
     const separator = name.indexOf('/');
     const model = registry.find(name.slice(0, separator), name.slice(separator + 1));
-    const base: ArmRecord = { arm: spec, model: name, requestedThinking, summary: '' };
+    const base: ArmRecord = {
+      arm: spec,
+      model: name,
+      requestedThinking,
+      summary: '',
+      ...(customInstructions ? { customInstructions } : {}),
+    };
     if (!model) {
       records.push({ ...base, stopReasons: ['unavailable'], error: `this host does not offer ${name}` });
       continue;
@@ -293,7 +370,7 @@ async function runLive(fixture: Fixture, arms: string[]): Promise<ArmRecord[]> {
     const stopReasons = () => [...outcomes.values()].map((seen) => seen.stopReason ?? null);
     try {
       const result = await compact(
-        fixture.prepared, model, undefined, undefined, undefined, undefined, thinking as never,
+        fixture.prepared, model, undefined, undefined, customInstructions, undefined, thinking as never,
         observingStream(registry, (group, seen) => { outcomes.set(group, seen); }),
         undefined, hostRetryPolicy({}), undefined, 'pi-compaction-eval',
       );

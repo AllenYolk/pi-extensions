@@ -40,6 +40,21 @@ such a summary unchanged; this package will not persist one. That check is the w
 guarantee, and it is why the stream function survives even though it no longer injects anything: it is
 how the package reads the stop reason.
 
+## The one thing that asks, and why it is not a ceiling
+
+[ADR 0006](0006-ask-for-a-fixed-point.md) adds an inert `redistill` field. When it is configured it
+appends one fixed instruction to the host's own `customInstructions` slot, asking the summarizer to
+merge the previous summary towards a fixed point instead of only adding to it.
+
+That does not reopen this decision, because it changes the **request** and not the response. No
+`max_output_tokens` is sent, nothing is truncated, no response is rewritten, and the stop-reason
+refusal below is untouched — a partial response to a redistilled request is still never persisted. A
+model that ignores the instruction produces exactly the summary this ADR describes, and a model that
+half-follows it produces a complete summary organised differently. It is left off on a split turn, so
+it cannot prune the newest range either. It is recorded here because a reader who finds the field
+should know it was deliberate, and because it is **unvalidated**: no arm of its experiment has been
+run.
+
 ## Superseded
 
 - [ADR 0002](0002-prune-durably-not-per-request.md) — pruning replaced old tool results with bounded

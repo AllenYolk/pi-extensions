@@ -128,10 +128,24 @@ export function toRecord(data: unknown): CompactionRecord | undefined {
 }
 
 /**
- * What a handback costs. It is not a change in summary length: this package sends no output ceiling
- * and neither does stock Pi, so both produce a summary as long as the host's prompt and the model
- * make it. What a handback gives up is the three things this package controls — the model, the
- * thinking level, and the cut point.
+ * What a handback costs, as one sentence about the model, the thinking level and the cut point — named
+ * rather than counted, because redistilling is a fourth thing a handback can give up and a total of
+ * three here would contradict the line below.
+ *
+ * Without redistilling this is not a change in summary length: this package sends no output ceiling and
+ * neither does stock Pi, so both produce a summary as long as the host's prompt and the model make it.
+ * With redistilling that claim is no longer true, and saying it anyway would make the announcement lie
+ * in exactly the case the extra clause describes: the request that named a target size is gone, so the
+ * merged summary is a union again and nothing asks for a size. The ceiling claim survives either way —
+ * neither path sends one.
+ */
+/**
+ * What a handback costs, unchanged from the released wording when redistilling is off.
+ *
+ * Without redistilling this is not a change in summary length: this package sends no output ceiling and
+ * neither does stock Pi, so both produce a summary as long as the host's prompt and the model make it.
+ * The sentence is reproduced byte for byte because it is user-visible on every handback, and only the
+ * redistilling case is allowed to differ.
  */
 const HANDBACK_COST =
   'stock Pi compacts with the conversation model, the session\'s own thinking level, and the host\'s '
@@ -139,6 +153,21 @@ const HANDBACK_COST =
   + 'unaffected — neither path sends an output ceiling — but those three are the whole of what this '
   + 'package controls, so a handback gives all of them up.';
 
+/**
+ * What a handback costs when redistilling was in force, which is not the sentence above.
+ *
+ * Two claims in it stop being true the moment a fixed-point request is being made. The summary's length
+ * *is* affected: the request that named a target size is gone, so the merged summary is a union again
+ * and nothing asks for a size. And those three are not the whole of what this package controls —
+ * redistilling is a fourth, and the host applies only the caller's own `/compact <text>` on its own
+ * path, so a handback stops asking for it. The ceiling claim survives: neither path sends one.
+ */
+const REDISTILL_HANDBACK_COST =
+  'stock Pi compacts with the conversation model, the session\'s own thinking level, and the host\'s '
+  + 'recent-token setting rather than this package\'s kept-window target. Neither path sends an output '
+  + 'ceiling, but a redistilling instruction was configured and stock Pi does not ask for it, so the '
+  + 'summary is a union again and nothing requests a size. A handback gives up the model, the thinking '
+  + 'level, the cut point and that instruction.';
 /**
  * What a fallback costs. The cut point and the whole-summary guarantee are unchanged, but the
  * thinking level is clamped per model — so a fallback that cannot honour the configured level runs
@@ -179,6 +208,10 @@ const NO_ATTEMPTS = [
   NEXT,
 ];
 
+/** The `Now:` line for a handback: the released sentence, or the redistilling one. */
+const handBackCost = (redistilling: boolean): string =>
+  (redistilling ? REDISTILL_HANDBACK_COST : HANDBACK_COST);
+
 /**
  * The announcement, as the lines the user reads. Line one is the headline; the rest name the
  * summarizer, the reason, what the session's behaviour now is and what to do about it.
@@ -186,7 +219,7 @@ const NO_ATTEMPTS = [
  * A single attempt announces exactly what it announced before a fallback existed: the extra lines
  * only appear once there is a second model to report.
  */
-export function announcement(record: CompactionRecord): string[] {
+export function announcement(record: CompactionRecord, redistilling = false): string[] {
   const last = record.attempts[record.attempts.length - 1];
   if (last === undefined) return [...NO_ATTEMPTS];
   const earlier = record.attempts.slice(0, -1);
@@ -204,7 +237,7 @@ export function announcement(record: CompactionRecord): string[] {
   // A handback names every attempt that failed before the last one; a recovery already names them in
   // `Why:`, which is the only place a fallback's own reason can be reported.
   if (handback) for (const failed of earlier) lines.push(`Earlier: ${failed.summarizer} — ${failed.reason}`);
-  lines.push(`Now: ${handback ? HANDBACK_COST : fallbackCost(last.thinking)}`, NEXT);
+  lines.push(`Now: ${handback ? handBackCost(redistilling) : fallbackCost(last.thinking)}`, NEXT);
   return lines;
 }
 

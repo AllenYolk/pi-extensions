@@ -10,6 +10,7 @@ import { estimateTokens, type ExtensionAPI, type ExtensionCommandContext } from 
  * `PI_COMPACTION_PROBE_THINKING` session thinking level, to prove it does not leak into the summarizer
  * `PI_COMPACTION_PROBE_ROUNDS`   compactions to run; a round after the first appends a turn first
  * `PI_COMPACTION_PROBE_RELOADS`  `/reload` cycles before the first compaction
+ * `PI_COMPACTION_PROBE_INSTRUCTIONS` custom instructions, which is what `/compact <text>` carries
  * `PI_COMPACTION_PROBE_HOLD`     when set, leave the CLI running after the report so a following
  *                                `/compaction` can render against the run that just happened
  */
@@ -116,7 +117,12 @@ function compactOnce(ctx: ExtensionCommandContext): Promise<unknown> {
       clearTimeout(timer);
       resolve(value);
     };
+    // `ctx.compact()` is the host's own manual path, so custom instructions here are exactly what
+    // `/compact <text>` puts on the `session_before_compact` event.
     ctx.compact({
+      ...(process.env.PI_COMPACTION_PROBE_INSTRUCTIONS
+        ? { customInstructions: process.env.PI_COMPACTION_PROBE_INSTRUCTIONS }
+        : {}),
       onComplete: (result) => settle({
         ok: true,
         summary: result.summary,

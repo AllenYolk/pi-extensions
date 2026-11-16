@@ -75,6 +75,8 @@ test('the announcement names the summarizer, the reason and everything a handbac
   assert.match(lines[3], /The summary length is unaffected/);
   assert.match(lines[3], /neither path sends an output ceiling/);
   assert.match(lines[3], /those three are the whole of what this package controls/);
+  // Redistilling is off by default, so nothing is said about it unless it was configured.
+  assert.doesNotMatch(lines[3], /redistill/i);
 
   // The guidance has to name every level the command accepts, and every knob. There are four knobs
   // now, and `fallback` leads because it is the one a reader most needs after a handback: it is the
@@ -239,4 +241,44 @@ test('a record written by 0.2.1 is normalised, not skipped', () => {
   assert.equal(toRecord({ summarizer: 'p/m' }), undefined, 'half a legacy record is not a record');
   assert.equal(toRecord({ reason: 'x' }), undefined);
   assert.equal(toRecord('pi-compaction-degradation'), undefined);
+});
+
+test('the handback sentence is byte-identical to the released one when redistilling is off', () => {
+  // The `Now:` line is user-visible on every handback, so redistilling must not change it for anyone
+  // who never configured the field. This is the released string, character for character.
+  const RELEASED = 'Now: stock Pi compacts with the conversation model, the session\'s own thinking level, '
+    + 'and the host\'s recent-token setting rather than this package\'s kept-window target. The summary '
+    + 'length is unaffected — neither path sends an output ceiling — but those three are the whole of '
+    + 'what this package controls, so a handback gives all of them up.';
+  const record = { attempts: [attempt('p/m (api)', 'the summarizer reported an error (503)')] };
+  const now = (redistilling) => announcement(record, redistilling).find((line) => line.startsWith('Now: '));
+  assert.equal(now(false), RELEASED);
+  assert.equal(now(undefined), RELEASED, 'and the default is the released one');
+  assert.notEqual(now(true), RELEASED, 'only the redistilling case differs');
+});
+
+test('a handback says what it gives up when redistilling was configured, and drops the length claim', () => {
+  // Two claims in the released sentence stop being true once a fixed-point request is being made: the
+  // summary's length *is* affected — the request that named a target size is gone — and those three
+  // are not the whole of what this package controls. Saying either would make the announcement lie in
+  // exactly the case it is describing.
+  const record = { attempts: [attempt('p/m (api)', 'the summarizer reported an error (503)')] };
+  const lines = announcement(record, true);
+  assert.equal(lines.length, 5, 'one attempt is still five lines, with the fourth thing folded into the third');
+  const now = lines.find((line) => line.startsWith('Now: '));
+  assert.match(now, /a redistilling instruction was configured and stock Pi does not ask for it/);
+  assert.match(now, /the summary is a union again and nothing requests a size/);
+  assert.match(now, /Neither path sends an output ceiling/, 'the ceiling claim survives');
+  assert.doesNotMatch(now, /The summary length is unaffected/, 'but not the claim it makes neutral');
+  assert.match(now, /gives up the model, the thinking level, the cut point and that instruction/);
+  assert.doesNotMatch(now, /the whole of what this package controls/);
+  // The rest of the announcement is untouched by redistilling.
+  assert.equal(lines[0], 'degraded — compaction handed back to stock Pi');
+  assert.equal(lines[1], 'Summarizer: p/m (api)');
+  assert.equal(lines[2], 'Why: the summarizer reported an error (503)');
+  assert.match(lines[4], /^Next: /);
+  // And a recovery — a fallback that produced the summary — says nothing about redistilling either,
+  // because there was no handback to give it up.
+  const recovered = announcement({ attempts: [attempt('a', 'x'), attempt('b')] }, true);
+  assert.doesNotMatch(recovered.find((line) => line.startsWith('Now: ')), /redistill/i);
 });

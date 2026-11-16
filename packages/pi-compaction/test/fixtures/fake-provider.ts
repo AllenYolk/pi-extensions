@@ -17,6 +17,8 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
  *                                      way the package's own refusal is reached
  * `PI_COMPACTION_FIXTURE_FAIL_FIRST`  how many leading summarization requests take `MODE`; unset is
  *                                      every one of them, so a mode is only left behind on request
+ * `PI_COMPACTION_FIXTURE_FAIL_ONLY`   take `MODE` on exactly this summarization request instead, for a
+ *                                      case that needs the earlier ones to succeed
  * `PI_COMPACTION_FIXTURE_SUMMARY`  summary size in host-estimated tokens (default 200)
  * `PI_COMPACTION_FIXTURE_WRITE`    path the conversation model asks `write` to create, once
  * `PI_COMPACTION_FIXTURE_CACHE_READ`   cacheRead the conversation response reports (default 0)
@@ -75,6 +77,10 @@ export default function fakeProvider(pi: ExtensionAPI) {
   const mode = process.env.PI_COMPACTION_FIXTURE_MODE ?? 'normal';
   const stopReason = process.env.PI_COMPACTION_FIXTURE_STOP_REASON;
   const failFirst = Number(process.env.PI_COMPACTION_FIXTURE_FAIL_FIRST ?? Number.MAX_SAFE_INTEGER);
+  const failOnly = Number(process.env.PI_COMPACTION_FIXTURE_FAIL_ONLY ?? 0);
+  /** Which summarization requests take the failing mode: exactly one, or the leading `failFirst`. */
+  const isFailing = (summarization: boolean, turn: number) =>
+    summarization && (failOnly > 0 ? turn === failOnly : turn <= failFirst);
   const abortAfter = Number(process.env.PI_COMPACTION_FIXTURE_ABORT_AFTER_SUMMARIZE ?? 0);
   const summaryTokens = Number(process.env.PI_COMPACTION_FIXTURE_SUMMARY ?? 200);
   const writePath = process.env.PI_COMPACTION_FIXTURE_WRITE;
@@ -97,7 +103,7 @@ export default function fakeProvider(pi: ExtensionAPI) {
     const systemPrompt = typeof system?.content === 'string' ? system.content : '';
     const summarization = systemPrompt.startsWith(SUMMARIZATION_PROMPT_PREFIX);
     const turn = summarization ? ++summarizationTurns : ++conversationTurns;
-    const failing = summarization && turn <= failFirst;
+    const failing = isFailing(summarization, turn);
     const entry = {
       model: `${candidate.provider}/${candidate.id}`,
       api: candidate.api,
@@ -149,7 +155,7 @@ export default function fakeProvider(pi: ExtensionAPI) {
   };
 
   function respond(candidate: AnyModel, { summarization, turn }: { summarization: boolean; turn: number }) {
-    const failing = summarization && turn <= failFirst;
+    const failing = isFailing(summarization, turn);
     const reported = summarization || noUsage ? { cacheRead: 0, cacheWrite: 0 } : { cacheRead, cacheWrite };
     const base = {
       role: 'assistant',

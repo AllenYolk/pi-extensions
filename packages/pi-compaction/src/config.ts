@@ -19,6 +19,17 @@ export const DEFAULT_THINKING: ThinkingLevel = 'medium';
 
 export const DEFAULT_KEPT_WINDOW_TOKENS = 16_000;
 
+/**
+ * When to ask the summarizer to re-distil the previous summary instead of only merging into it, and
+ * the size to name in that request. Both are required: half-configured means off.
+ */
+export interface Redistill {
+  /** Only ask when the previous summary is at least this many tokens. */
+  aboveTokens: number;
+  /** The size the instruction names as the merged summary's ceiling. */
+  targetTokens: number;
+}
+
 /** The file as written. */
 export interface Config {
   enabled: boolean;
@@ -28,6 +39,8 @@ export interface Config {
   fallbackModel: string | null;
   thinking: ThinkingLevel;
   keptWindowTokens: number;
+  /** `null` — the default — asks for nothing and behaves exactly as 0.2.x does. */
+  redistill: Redistill | null;
 }
 
 /** What a compaction actually runs with. */
@@ -36,6 +49,7 @@ export interface Effective {
   tuple: Tuple;
   fallbackModel: string | null;
   keptWindowTokens: number;
+  redistill: Redistill | null;
 }
 
 /**
@@ -47,7 +61,8 @@ export interface Effective {
  */
 export const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-const FIELDS = ['enabled', 'summarizerModel', 'fallbackModel', 'thinking', 'keptWindowTokens'];
+const FIELDS = ['enabled', 'summarizerModel', 'fallbackModel', 'thinking', 'keptWindowTokens', 'redistill'];
+const REDISTILL_FIELDS = ['aboveTokens', 'targetTokens'];
 const MAX_TOKENS = 1_000_000;
 
 export const defaults = (): Config => ({
@@ -56,6 +71,7 @@ export const defaults = (): Config => ({
   fallbackModel: null,
   thinking: DEFAULT_THINKING,
   keptWindowTokens: DEFAULT_KEPT_WINDOW_TOKENS,
+  redistill: null,
 });
 
 export function configPath(agentDir: string): string {
@@ -82,6 +98,14 @@ function integer(value: unknown, label: string, min: number): number {
     throw new Error(`${label} must be an integer from ${min} to ${MAX_TOKENS}`);
   }
   return value;
+}
+
+/**
+ * A redistill threshold, with the bounds every token number in this package shares. Exported so the
+ * evaluation harness refuses the same values a configuration file would.
+ */
+export function redistillThreshold(value: unknown, label: string): number {
+  return integer(value, `redistill.${label}`, 1);
 }
 
 function parse(raw: unknown): Config {
@@ -115,7 +139,25 @@ function parse(raw: unknown): Config {
   if (config.fallbackModel !== null && config.fallbackModel === config.summarizerModel) {
     throw new Error('fallbackModel must be a different model from summarizerModel; the same model cannot be its own fallback');
   }
+  config.redistill = redistill(record.redistill);
   return config;
+}
+
+/**
+ * Absent or null is off. Anything present is validated field by field, so a half-configured pair is
+ * off because its counterpart is missing and not because nobody looked at the field that is there —
+ * a typo may not hide behind a missing key. A missing counterpart then decides that it is off.
+ */
+function redistill(raw: unknown): Redistill | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('redistill must be an object or null');
+  const record = raw as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!REDISTILL_FIELDS.includes(key)) throw new Error(`unknown field redistill.${key}`);
+  }
+  const above = 'aboveTokens' in record ? redistillThreshold(record.aboveTokens, 'aboveTokens') : undefined;
+  const target = 'targetTokens' in record ? redistillThreshold(record.targetTokens, 'targetTokens') : undefined;
+  return above === undefined || target === undefined ? null : { aboveTokens: above, targetTokens: target };
 }
 
 /**
@@ -138,7 +180,13 @@ export function loadConfig(agentDir: string): { config?: Config; diagnostic?: st
   }
 }
 
-/** The persisted shape: no absent keys, so a reload reads back exactly what was written. */
+/**
+ * The persisted shape: no absent keys, so a reload reads back exactly what was written.
+ *
+ * `redistill` is the one key that is omitted rather than written as `null`, because 0.2.x rejects any
+ * key it does not know — and rejects the whole file, taking the summarizer model and the thinking
+ * level with it. An absent key already reads back as off, so omitting it costs nothing here.
+ */
 function toRaw(config: Config): Record<string, unknown> {
   return {
     enabled: config.enabled,
@@ -146,6 +194,7 @@ function toRaw(config: Config): Record<string, unknown> {
     fallbackModel: config.fallbackModel ?? null,
     thinking: config.thinking,
     keptWindowTokens: config.keptWindowTokens,
+    ...(config.redistill ? { redistill: config.redistill } : {}),
   };
 }
 
@@ -159,16 +208,82 @@ export function validateConfig(config: Config): string | undefined {
   }
 }
 
-export function saveConfig(agentDir: string, config: Config): void {
+/**
+ * Write the configuration, or refuse, and return what was written.
+ *
+ * A file this session could not load is *not* a reason to refuse: `/compaction <verb>` is how a broken
+ * file gets repaired, and the command writes a fresh one from what it knows. What a save must never do
+ * is lose a `redistill`, because that field is file-only — the command surface cannot set it, and the
+ * in-memory copy only refreshes on `session_start`. Two rules follow:
+ *
+ * - A pair the file carries is **kept**, so a threshold edited mid-session is not reverted by an
+ *   unrelated change, and repairing a rejected file preserves the pair it carried. The caller gets the
+ *   configuration that was actually written, so the status view cannot report a stale pair.
+ * - A pair that is incomplete or malformed is **refused**, naming what is actually wrong with it. The
+ *   loader treats such a pair as off, because a missing counterpart means off; the saver refuses to
+ *   erase it, because nothing else can restore it. Those two answers disagree on purpose, and the
+ *   message says which one the user is looking at.
+ */
+export function saveConfig(agentDir: string, config: Config): Config {
   const path = configPath(agentDir);
+  const existing = readConfigFile(path);
+  let redistill = config.redistill;
+  const carried = existing?.raw === undefined ? { pair: null } : adoptable((existing.raw as { redistill?: unknown }).redistill);
+  if ('why' in carried) {
+    throw refuse(path, `it carries a redistill (${JSON.stringify((existing?.raw as { redistill?: unknown }).redistill)}) `
+      + `this configuration cannot adopt: ${carried.why}. redistill is off until the pair is complete, and it `
+      + 'cannot be set from /compaction, so complete it with both aboveTokens and targetTokens, or remove '
+      + 'it, and try again.');
+  }
+  if (carried.pair) redistill = carried.pair;
+  const written: Config = { ...config, redistill };
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(toRaw(config), null, 2)}\n`);
+  writeFileSync(path, `${JSON.stringify(toRaw(written), null, 2)}\n`);
+  return written;
+}
+
+const refuse = (path: string, reason: string) => new Error(`refusing to rewrite ${path}: ${reason}`);
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * The file as it is on disk, or undefined when there is none or it cannot be read as JSON.
+ *
+ * A file that is not JSON, or not an object, is simply not consulted: the command repairs a broken
+ * file by writing a fresh one, and reading a field off `null` would throw a TypeError instead.
+ */
+function readConfigFile(path: string): { raw?: unknown } | undefined {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
+  try {
+    const raw: unknown = JSON.parse(text);
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? { raw } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The pair a `redistill` the file carries describes, or why this configuration cannot adopt it. */
+function adoptable(raw: unknown): { pair: Redistill | null } | { why: string } {
+  if (raw === undefined || raw === null) return { pair: null };
+  try {
+    const pair = redistill(raw);
+    if (pair) return { pair };
+    const missing = REDISTILL_FIELDS.filter((key) => !(key in (raw as Record<string, unknown>)));
+    return { why: `it is missing ${missing.join(' and ')}` };
+  } catch (error) {
+    return { why: message(error) };
+  }
 }
 
 export function effective(config: Config): Effective {
   return {
     enabled: config.enabled,
     keptWindowTokens: config.keptWindowTokens,
+    redistill: config.redistill,
     tuple: { model: config.summarizerModel, thinking: config.thinking },
     fallbackModel: config.fallbackModel,
   };
