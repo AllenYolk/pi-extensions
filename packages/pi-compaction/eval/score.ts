@@ -43,14 +43,24 @@ export function pathsIn(text: string): string[] {
  * in a part of a tool result the host truncated away counts as invented, which is the honest
  * reading: the summarizer could not have seen it.
  *
- * Containment is whole path tokens on both sides, not `String.includes`: a substring test makes a
- * path count as present whenever it is a prefix of a *different* path in the range, so a range
- * naming `src/cache/spill.rs2` would clear a summary that invented `src/cache/spill.rs` — which is
- * the failure this metric exists to catch.
+ * Containment is a segment-boundary suffix test over the paths the range names, not
+ * `String.includes` and not whole-token equality.
+ *
+ * A substring test makes a path count as present whenever it is a prefix of a *different* path in
+ * the range, so a range naming `src/cache/spill.rs2` would clear a summary that invented
+ * `src/cache/spill.rs` — the failure this metric exists to catch. Whole-token equality goes the
+ * other way: a `--session` run's range is raw session text carrying absolute tool paths, so
+ * equality counts an abbreviated `src/index/manifest.ts` as invented when the range named
+ * `/home/u/proj/src/index/manifest.ts`, and the column stops meaning "paths the summarizer made up".
+ *
+ * So a path is present when the range names it, or names it at the end of a longer path whose
+ * remainder ends at a separator. That accepts an abbreviation of a path that was there and still
+ * refuses a prefix of a longer filename.
  */
 export function fabricatedPaths(summary: string, range: string): string[] {
-  const present = new Set(pathsIn(range));
-  return pathsIn(summary).filter((path) => !present.has(path));
+  const present = pathsIn(range);
+  return pathsIn(summary)
+    .filter((path) => !present.some((token) => token === path || token.endsWith(`/${path}`)));
 }
 
 /** A declared fact the summarised range contains and a continuing model would be hurt by losing. */

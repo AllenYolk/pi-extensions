@@ -38,8 +38,11 @@ prints this usage on stdout and exits **0**.
 A summary passed to `--score` was never a response, so it has no response groups and cannot fail the
 first rule.
 
-The control arm — the one every `Δ out` is measured against — is the first arm on the command line.
-Put the arm you are trying to beat first.
+The control arm — the one every `Δ out` is measured against — is the first arm on the command line
+that reported output tokens. Put the arm you are trying to beat first. An arm that never ran — a
+model this host does not offer, missing credentials, a thrown request — reports no output tokens, so
+the baseline falls back to the first arm that does; when that happens a line on stderr names the arm
+`Δ out` was measured against, because the table cannot show it.
 
 ## Stop reasons, and why every group counts
 
@@ -73,7 +76,7 @@ not reproducible and cannot gate anything.
 | Metric | Definition |
 | --- | --- |
 | `sections` | How many of the nine headings the host's summarization prompt asks for the summary carries (`## Goal`, `## Constraints & Preferences`, `## Progress`, `### Done`, `### In Progress`, `### Blocked`, `## Key Decisions`, `## Next Steps`, `## Critical Context`). Heading level is not matched — a summary that writes all nine at one level has still written all nine. |
-| `fabricated` | Distinct file paths the summary names that the summarised range does not contain. The range is what the summarizer was actually given, so a path that only occurs in a part of a tool result the host truncated is counted as invented, which is the honest reading. Both sides are compared as whole path tokens, so a range naming `src/cache/spill.rs2` does not clear a summary that invented `src/cache/spill.rs`. A path needs a directory separator and a lettered extension, so `minimax-cn/MiniMax-M3.1-Flash` and `release/0.9` are not paths. |
+| `fabricated` | Distinct file paths the summary names that the summarised range does not contain. The range is what the summarizer was actually given, so a path that only occurs in a part of a tool result the host truncated is counted as invented, which is the honest reading. Containment is a segment-boundary suffix test: a range naming `src/cache/spill.rs2` does not clear a summary that invented `src/cache/spill.rs`, while a range naming `/home/u/proj/src/index/manifest.ts` does clear a summary that names `src/index/manifest.ts` — the summarizer abbreviated a path that was there rather than inventing one, and a `--session` range is raw session text full of absolute tool paths. A path needs a directory separator and a lettered extension, so `minimax-cn/MiniMax-M3.1-Flash` and `release/0.9` are not paths. |
 | `probes` | How many of the fixture's declared probes the summary carries. A probe is a literal or a regex, never a model. |
 | `Δ out` | Output tokens against the control arm. |
 
@@ -85,11 +88,12 @@ computed against a zero.
 
 ## The thinking level an arm runs at
 
-An arm's level is one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` — the same seven
-`src/config.ts` accepts. A level outside that set is refused as bad usage, naming the level and the
-supported set: `summarizerThinkingLevel` clamps whatever it does not recognise to the model's first
-available level, so accepting one would measure the arm at a level nobody asked for, typically `off`,
-and say nothing about it.
+An arm's level is one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` — `THINKING_LEVELS`
+in `src/config.ts`, the same list the configuration validates against and the summarizer clamps
+through, imported rather than copied. A level outside that set is refused as bad usage, naming the
+level and the supported set: `summarizerThinkingLevel` clamps whatever it does not recognise to the
+model's first available level, so accepting one would measure the arm at a level nobody asked for,
+typically `off`, and say nothing about it.
 
 A level that **is** one of the seven but that the model does not support is a different case, and is
 still clamped the way the host clamps it — that is the model's own limit, it is recorded as the level

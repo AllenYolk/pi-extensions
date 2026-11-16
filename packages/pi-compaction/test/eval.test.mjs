@@ -7,7 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { countSections, fabricatedPaths, pathsIn, probeMatches, scoreProbes, SECTIONS } from '../eval/score.ts';
 import { DEFAULT_FIXTURE, loadFixture } from '../eval/input.ts';
-import { exitCodeFor, renderTable, scoreArms, usageOf } from '../eval/harness.ts';
+import { exitCodeFor, parseArgs, renderTable, scoreArms, usageOf } from '../eval/harness.ts';
+import { THINKING_LEVELS } from '../src/config.ts';
 
 const harness = fileURLToPath(new URL('../eval/harness.ts', import.meta.url));
 
@@ -73,6 +74,13 @@ const range = 'read src/index/manifest.ts, then src/cache/spill.rs, and wrote sr
 test('a summary naming a path absent from the range scores one fabrication', () => {
   const summary = 'Touched src/index/manifest.ts and src/cache/ledger.rs, which does not exist.';
   assert.deepEqual(fabricatedPaths(summary, range), ['src/cache/ledger.rs']);
+});
+
+test('a path the range names under a longer prefix is not a fabrication', () => {
+  const range = 'read /home/u/proj/src/index/manifest.ts and packages/app/src/x.ts';
+  assert.deepEqual(fabricatedPaths('Touched src/index/manifest.ts and src/x.ts.', range), []);
+  // The prefix still has to end at a separator: a longer *segment* is a different path.
+  assert.deepEqual(fabricatedPaths('Touched src/index.ts.', 'wrote mysrc/index.ts'), ['src/index.ts']);
 });
 
 test('a path that is only a prefix of a different path in the range is a fabrication', () => {
@@ -398,6 +406,18 @@ test('--help prints usage on stdout and exits zero, while bad usage still exits 
   assert.match(bogus.stderr, /unknown argument --nope/);
 });
 
+test('every thinking level the package accepts is a valid arm level', () => {
+  // The harness refuses a level outside the package's set, so a second hand-written copy of that set
+  // would drift the other way: a level added to the package would become an exit-2 usage error here.
+  assert.ok(THINKING_LEVELS.length > 0);
+  for (const level of THINKING_LEVELS) {
+    assert.doesNotThrow(
+      () => parseArgs(['--arm', `provider/model@${level}`, '--arm', `provider/other@${level}`]),
+      `the package accepts ${level}, so an arm naming it must not be bad usage`,
+    );
+  }
+});
+
 test('an arm naming a thinking level that does not exist is refused rather than clamped', () => {
   const bogus = run(['--arm', 'no-such-provider/no-such-model@banana', '--arm', 'no-such-provider/other@low']);
   assert.equal(bogus.status, 2, `an unknown level must be bad usage:\n${bogus.stdout}`);
@@ -424,6 +444,37 @@ test('an unrecognised argument and a single arm are refused before anything runs
   assert.match(scored.stderr, /scoring writes nothing/);
 });
 
+/** The minimum `scoreArms` needs from a fixture: what to score a summary's probes and paths against. */
+const stubFixture = { probes: [], range: 'read src/index/manifest.ts, then src/cache/spill.rs' };
+
+test('a first arm that was never measured does not cost the table its Δ out', () => {
+  const scored = scoreArms(stubFixture, [
+    { arm: 'p/broken@low', summary: '## Goal\nx', stopReasons: ['unauthenticated'], error: 'no configured credentials' },
+    { arm: 'p/good@low', summary: '## Goal\nx', stopReasons: ['stop'], outputTokens: 1500 },
+    { arm: 'p/good2@low', summary: '## Goal\nx', stopReasons: ['stop'], outputTokens: 1200 },
+  ]);
+  assert.equal(scored[0].outputDelta, undefined, 'an arm that was never measured has no Δ of its own');
+  assert.equal(scored[1].outputDelta, 0, 'the first arm that reported output tokens is the baseline');
+  assert.equal(scored[2].outputDelta, -300);
+});
+
+test('a run whose first arm was never measured says which arm Δ out fell back to', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-compaction-eval-'));
+  const record = join(dir, 'run.json');
+  writeFileSync(record, JSON.stringify({
+    fixture: twoProbes,
+    arms: [
+      { arm: 'p/broken@low', stopReasons: ['unauthenticated'], error: 'no configured credentials', summary },
+      { arm: 'p/good@low', stopReasons: ['stop'], outputTokens: 1500, summary },
+      { arm: 'p/good2@low', stopReasons: ['stop'], outputTokens: 1200, summary },
+    ],
+  }));
+  const result = run(['--score', record]);
+  assert.match(result.stderr, /Δ out is measured against p\/good@low/, result.stderr);
+  assert.match(result.stderr, /p\/broken@low/, result.stderr);
+  assert.match(result.stdout, /p\/good2@low\s+stop\s+—\s+1200\s+—\s+—\s+9\/9\s+1\s+1\/2\s+-300/, result.stdout);
+});
+
 test('an arm the host reported no usage for is unmeasured, not measured as zero', () => {
   // A host response carries usage per attempt. An attempt whose response carried none was not
   // measured, and a recorded zero would be indistinguishable from a cheap arm.
@@ -433,8 +484,7 @@ test('an arm the host reported no usage for is unmeasured, not measured as zero'
     'a zero the host reported is a measurement');
 
   const text = 'Touched src/index/manifest.ts.';
-  const stub = { probes: [], range: 'read src/index/manifest.ts, then src/cache/spill.rs' };
-  const scored = scoreArms(stub, [
+  const scored = scoreArms(stubFixture, [
     { arm: 'a@low', summary: text, stopReasons: ['stop'], ...usageOf({ output: 6281, cost: { total: 0.0123 } }) },
     { arm: 'b@low', summary: text, stopReasons: ['stop'], ...usageOf(undefined) },
   ]);

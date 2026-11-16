@@ -18,17 +18,7 @@ import {
   SECTIONS,
 } from './score.ts';
 import { DEFAULT_FIXTURE, loadFixture, type Fixture } from './input.ts';
-import type { ThinkingLevel } from '../src/config.ts';
-
-/**
- * The levels `src/config.ts` accepts, in its order.
- *
- * An arm's level is refused against these rather than passed to `summarizerThinkingLevel`, which
- * clamps whatever it does not recognise to the model's first available level — typically `off`. A
- * clamp would measure the arm at a level the operator never asked for and say nothing, and the
- * package's own configuration rejects an unknown level outright.
- */
-const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+import { THINKING_LEVELS, type ThinkingLevel } from '../src/config.ts';
 
 /** What one arm produced. A summary scored offline has only a name and its text. */
 export interface ArmRecord {
@@ -138,6 +128,10 @@ export function parseArgs(argv: string[]): Options {
       throw new UsageError(`--arm ${arm} must be <provider/model>@<thinking>`);
     }
     const level = arm.slice(arm.lastIndexOf('@') + 1);
+    // Refused rather than passed to `summarizerThinkingLevel`, which clamps whatever it does not
+    // recognise to the model's first available level — typically `off`. A clamp would measure the arm
+    // at a level the operator never asked for and say nothing about it, and the package's own
+    // configuration rejects an unknown level outright.
     if (!THINKING_LEVELS.includes(level as ThinkingLevel)) {
       throw new UsageError(
         `--arm ${arm} names a thinking level that does not exist: ${level}\n`
@@ -156,10 +150,23 @@ export function parseArgs(argv: string[]): Options {
   return options;
 }
 
+/**
+ * The arm every `Δ out` is measured against: the first one that actually reported output tokens.
+ *
+ * Not merely the first arm on the command line. An arm `runLive` could not run at all — a model this
+ * host does not offer, missing credentials, a thrown `compact()` — carries no usage, and a baseline
+ * read off it would be `undefined` and would drop `Δ out` for every arm in the table, including the
+ * ones that were measured. Falling back keeps the comparison, and `main` says on stderr when the
+ * baseline is not the arm the operator put first.
+ */
+export function controlArm(arms: readonly ArmRecord[]): ArmRecord | undefined {
+  return arms.find((arm) => arm.outputTokens !== undefined);
+}
+
 /** Score every arm against the same range, and measure each one's length against the control arm. */
 export function scoreArms(fixture: Fixture, arms: readonly ArmRecord[]): ScoredArm[] {
   const scored = arms.map((arm) => ({ ...arm, score: scoreSummary(arm.summary, fixture) }));
-  const control = scored[0]?.outputTokens;
+  const control = controlArm(scored)?.outputTokens;
   return scored.map((arm) => ({
     ...arm,
     ...(control !== undefined && arm.outputTokens !== undefined ? { outputDelta: arm.outputTokens - control } : {}),
@@ -368,6 +375,17 @@ export async function main(argv: string[]): Promise<number> {
   }
   const fixturePath = fixture.manifestPath;
   const arms = scoreArms(fixture, live ? await runLive(fixture, options.arms) : loaded.flatMap((entry) => entry.arms));
+
+  // The baseline moved off the first arm only because that arm reported no output tokens, which is
+  // not something the table can show: the Δ column would otherwise read as if the operator's chosen
+  // control had been used.
+  const control = controlArm(arms);
+  if (control !== undefined && control !== arms[0]) {
+    console.error(
+      `Δ out is measured against ${control.arm}, not ${arms[0]?.arm ?? 'the first arm'}: `
+      + 'the first arm reported no output tokens',
+    );
+  }
 
   const record: RunRecord = {
     fixture: fixturePath,
