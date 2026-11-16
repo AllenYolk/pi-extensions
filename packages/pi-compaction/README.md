@@ -185,10 +185,19 @@ model and thinking level with it. A file this version writes is readable by 0.2.
 configured `redistill`; to go back to 0.2.x, remove that key.
 
 A half-configured `redistill` — one threshold, or a value that is not a whole number in range — is
-validated field by field, so the field that is there is checked even though the pair is off. Because
-`redistill` is file-only, a `/compaction …` save **refuses** rather than erase a `redistill` the
-configuration does not adopt: the change is not applied, the file is untouched, and the message says
-to complete the pair or remove it.
+validated field by field, so the field that is there is checked even though the pair is off.
+
+Because `redistill` is file-only, the file is where it is edited and a save has to respect that:
+
+- A **complete, valid pair on disk is kept**, so a threshold you edit mid-session is not reverted by an
+  unrelated `/compaction` change. `/compaction` then reports the pair that is in the file.
+- An **incomplete or malformed pair is refused**, with the advice that can help: complete it with both
+  `aboveTokens` and `targetTokens`, or remove it. A malformed object is never written back.
+- A file this session **could not load at all** is refused too, whatever it carries — saving would
+  replace it with this session's defaults, and the fault is elsewhere in it. The message says to fix or
+  remove the file and `/reload`, rather than naming a pair that is already complete.
+
+In every refusal the change is not applied and the file is untouched.
 
 ## The one thing that is refused
 

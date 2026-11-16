@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { estimateTokens } from '@earendil-works/pi-coding-agent';
 import { MAX_FILE_LIST_ENTRIES } from '../src/preparation.ts';
 import { DEFAULT_KEPT_WINDOW_TOKENS } from '../src/config.ts';
 import { persistedCompactions, READY, runCompaction, statusScript, summarizationRecords } from './run-compaction.mjs';
@@ -103,17 +104,88 @@ function assertStock(run) {
 }
 
 /**
+ * The transcript with the PTY driver's own noise removed, whitespace and all.
+ *
+ * The driver echoes what it sent and the pattern it matched into the same stream the program writes to,
+ * and it lands wherever the cursor happens to be — on macOS that is mid-sentence:
+ * `Complete it wi PI_DRIVE_MATCHED nothing changed th both aboveTokens`. One long `assert.match` over
+ * the raw screen therefore fails for a reason that has nothing to do with this package, and it failed
+ * on macOS and passed on ubuntu. So: strip the driver's markers and exactly the strings this test sent
+ * or waited for — never a word of the program's own output — and compare without whitespace, which also
+ * survives a terminal wrap splitting a word. A refusal that stopped happening still fails, because the
+ * fragments asserted on are none of the strings removed here, and the file on disk is checked directly.
+ *
+ * Do not collapse the assertions below back into one `assert.match` over `run.plain`.
+ */
+function screen(run, script = []) {
+  const bare = (text) => text.replace(/\s+/g, '');
+  let text = bare(run.plain.replace(/PI_DRIVE_[A-Z_]+/g, ''));
+  for (const step of script) {
+    text = text.split(bare(step.send)).join('').split(bare(step.expect)).join('');
+  }
+  return text;
+}
+
+/** Every fragment must be on the screen; short ones, because the driver's echo can land anywhere. */
+function assertSaid(run, script, fragments) {
+  const shown = screen(run, script);
+  for (const fragment of fragments) {
+    assert.ok(shown.includes(fragment.replace(/\s+/g, '')), `the run must have said "${fragment}"`);
+  }
+}
+
+/**
  * Redistilling: the previous summary is only ever merged into, so the one lever this package has that
  * does not damage the current response is the host's own `customInstructions` slot. The tests below
  * read what reached the summarization request, which is where the instruction lands as the host's
  * `Additional focus:` line.
  */
 const REDISTILL = { aboveTokens: 4_000, targetTokens: 6_000 };
-/** The host's chars/4 estimate for a summary, which is what the instruction names. */
-const summaryTokens = (summary) => Math.ceil(summary.length / 4);
-// Trimmed: the capture runs to the end of the prompt, so any trailing whitespace the host adds would
-// otherwise fail an exact-equality assertion about a request that carried exactly the right text.
-const focusOf = (record) => record.prompt.match(/Additional focus: ([\s\S]*)$/)?.[1].trim();
+
+/**
+ * The number the instruction names, measured the way the package measures it.
+ *
+ * The host's own estimator, over the previous summary **the request carried** — taken from the
+ * request's `<previous-summary>` block rather than from the persisted compaction entry, and never
+ * re-implemented as `Math.ceil(chars / 4)`. A hand-written estimate is a second copy of a host
+ * constant, and a token of drift would fail these tests for a reason that has nothing to do with
+ * redistilling. What the assertions still pin independently is the wording: `instructionFor` is a
+ * literal, and the estimator itself is covered by `test/redistill.test.mjs` and by the token-seam probe.
+ */
+const carriedSummary = (record) => record.prompt.match(/<previous-summary>\n([\s\S]*?)\n<\/previous-summary>/)?.[1];
+const hostTokens = (summary) =>
+  estimateTokens({ role: 'compactionSummary', summary, tokensBefore: 0, timestamp: 0 });
+/** The previous summary's size as the request that updates it will measure it. */
+const previousTokensIn = (record) => {
+  const carried = carriedSummary(record);
+  assert.ok(carried !== undefined, 'the request that updates a summary must carry it in <previous-summary> tags');
+  return hostTokens(carried);
+};
+
+/**
+ * The text the host appended as `Additional focus:`.
+ *
+ * The capture runs to the end of the prompt, not to the end of the line, because the value spans lines
+ * by construction: a caller's `/compact <text>` and this package's instruction are joined by a blank
+ * line, and a line-bounded capture would return the caller's text alone and quietly drop the assertion
+ * that ours follows it.
+ *
+ * That is only the focus if the host renders the line last, so the placement is checked here instead of
+ * assumed: a host that put it before the document would have this capture swallow `<conversation>`,
+ * `<previous-summary>` or the turn prefix's `# Instructions`, and no instruction this package sends
+ * contains any of those. Both request shapes end with the focus value today.
+ */
+const focusOf = (record) => {
+  const focus = record.prompt.match(/Additional focus: ([\s\S]*)$/)?.[1].trim();
+  if (focus !== undefined) {
+    assert.doesNotMatch(
+      focus,
+      /<conversation>|<\/previous-summary>|# Instructions/,
+      'the Additional focus value must be the last thing in the prompt, not a request document',
+    );
+  }
+  return focus;
+};
 /** The fixed template, written out here rather than imported, so the test is not its own oracle. */
 const instructionFor = (previousTokens, targetTokens) =>
   `The previous summary is ${previousTokens} tokens and the merged summary should stay under ${targetTokens}. `
@@ -166,8 +238,7 @@ test('a previous summary at or above the threshold is asked to re-distil, and th
 
   const persisted = persistedCompactions(run.session.file);
   assert.equal(persisted.length, 2);
-  // The number in the instruction is the host's own estimate of the summary the request carries.
-  const previous = summaryTokens(persisted[0].summary);
+  const previous = previousTokensIn(records[1]);
   assert.ok(previous >= REDISTILL.aboveTokens, `the previous summary was ${previous} tokens`);
   assert.equal(focusOf(records[1]), instructionFor(previous, REDISTILL.targetTokens));
   // Asking is all it does: the summary is still the host's, whole, and this package sent no ceiling.
@@ -184,9 +255,11 @@ test('a previous summary below the threshold injects nothing', { timeout: 180_00
     turns: 40,
   });
   assert.equal(run.report.error, undefined, run.report.error);
-  const persisted = persistedCompactions(run.session.file);
-  assert.ok(summaryTokens(persisted[0].summary) < REDISTILL.aboveTokens);
-  for (const record of summarizationRecords(run.records)) {
+  const records = summarizationRecords(run.records);
+  assert.equal(records.length, 2);
+  const previous = previousTokensIn(records[1]);
+  assert.ok(previous < REDISTILL.aboveTokens, `the previous summary was ${previous} tokens`);
+  for (const record of records) {
     assert.equal(focusOf(record), undefined);
   }
 });
@@ -211,7 +284,7 @@ test('a split turn is left alone: one instruction cannot serve both of its reque
   assert.equal(records[2].prompt.includes('# Instructions'), true, 'and its third request is the turn prefix');
 
   // The gate is what suppressed it, not a small summary: this one is over the threshold.
-  const previous = summaryTokens(persistedCompactions(run.session.file)[0].summary);
+  const previous = previousTokensIn(records[1]);
   assert.ok(previous >= REDISTILL.aboveTokens, `the previous summary was ${previous} tokens`);
 
   // The host applies one custom-instruction value to both requests, and the turn-prefix request's
@@ -241,7 +314,7 @@ test("a user's own /compact text is kept verbatim and ours is appended to it", {
   // The first compaction has nothing to re-distil, so the user's text is the whole of the slot.
   assert.equal(focusOf(records[0]), user, "the user's text reaches the request unmodified");
 
-  const previous = summaryTokens(persistedCompactions(run.session.file)[0].summary);
+  const previous = previousTokensIn(records[1]);
   const focus = focusOf(records[1]);
   assert.ok(focus.startsWith(user), `the user's text must come first and unmodified:\n${focus}`);
   // Ours is appended after it, never woven into it.
@@ -273,8 +346,16 @@ test('a redistilled request that comes back partial is still never persisted', {
   assert.equal(persisted[1].fromHook ?? false, false, 'the refused round is the host\'s');
   assertNoPartialPersisted(run);
   assert.match(run.plain, /Why: the summarizer's response stopped with "aborted"/);
-  // The handback says what it gives up, and redistilling is part of that when it was configured.
-  assert.match(run.plain, /A redistilling instruction was configured, and stock Pi does not ask for it/);
+  // The handback says what it gives up, and with redistilling configured it must not also claim the
+  // summary's length is unaffected. Fragments rather than one long match: see `screen` above.
+  assertSaid(run, [], [
+    'a redistilling instruction was configured and stock Pi does not ask for it',
+    'the summary is a union again and nothing requests a size',
+  ]);
+  assert.ok(
+    !screen(run).includes('Thesummarylengthisunaffected'),
+    'with redistilling in force the announcement must not claim the length is unaffected',
+  );
 });
 
 test('/compaction reports whether redistilling is on, and at what thresholds', { timeout: 180_000 }, () => {
@@ -295,20 +376,34 @@ test('/compaction reports whether redistilling is on, and at what thresholds', {
 test('/compaction refuses a change that would erase a half-written redistill', { timeout: 180_000 }, () => {
   // `redistill` is file-only, so a save that dropped the half-written value would destroy something
   // the command surface cannot restore. The refusal has to reach the user, not throw out of the
-  // command handler.
+  // command handler — and the file itself is the assertion that cannot be talked away.
+  const script = [
+    { expect: READY, send: '/compaction thinking high\r' },
+    { expect: 'nothing changed', send: '/compaction-probe\r' },
+  ];
   const run = runCompaction({
     name: 'redistill-partial-save-',
     config: { enabled: true, thinking: 'medium', redistill: { aboveTokens: 4_000 } },
     turns: 30,
-    script: [
-      { expect: READY, send: '/compaction thinking high\r' },
-      { expect: 'nothing changed', send: '/compaction-probe\r' },
-    ],
+    script,
+    // The script's second step waits for the refusal before driving the probe, so a refusal that
+    // stopped happening is caught by `runCompaction`'s own PI_DRIVE_TIMEOUT assertion. Thirty seconds
+    // is ample for this run and keeps that failure fast instead of eating the default 120 s budget.
+    timeoutSeconds: 30,
   });
   assert.equal(run.report.error, undefined, run.report.error);
-  assert.match(run.plain, /nothing changed; refusing to rewrite .*config\.json: it carries a redistill/);
-  assert.match(run.plain, /Complete it with both aboveTokens and targetTokens, or remove it/);
 
+  // Split into fragments on purpose: see `screen` above. Each one is a fact the refusal establishes,
+  // and none of them is a string the driver echoes, so a refusal that disappeared fails all of them.
+  assertSaid(run, script, [
+    'refusing to rewrite',            // a refusal happened at all
+    'config.json: it carries a redistill', // and it is about this file's redistill
+    'cannot be set from /compaction', // naming why the command cannot fix it
+    'aboveTokens',                    // and both fields it tells the user to complete
+    'targetTokens',
+  ]);
+
+  // The file is the proof: nothing was written, and the change was not half-applied.
   const onDisk = JSON.parse(readFileSync(join(run.agent, 'extensions/pi-compaction/config.json'), 'utf8'));
   assert.deepEqual(onDisk.redistill, { aboveTokens: 4_000 }, 'the half-written value is still there');
   assert.equal(onDisk.thinking, 'medium', 'and the refused change was not half-applied');

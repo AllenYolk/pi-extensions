@@ -209,35 +209,86 @@ export function validateConfig(config: Config): string | undefined {
 }
 
 /**
- * Write the configuration, or refuse.
+ * Write the configuration, or refuse, and return what was written.
  *
- * `redistill` is file-only: the command surface cannot set it, so a save that dropped a value the
- * parse did not adopt would destroy something the user can only restore by hand, with nothing said.
- * A file carrying a `redistill` object this configuration does not carry is therefore left alone and
- * the save throws, which the command reports as a refused change.
+ * `redistill` is file-only: the command surface cannot set it, and the in-memory copy only refreshes
+ * on `session_start`. The file is therefore where that field is edited and what a save has to respect,
+ * which is three rules rather than one:
+ *
+ * - A pair the file carries is **kept**, so a threshold edited mid-session is not reverted by an
+ *   unrelated `/compaction` change. The caller gets the configuration that was actually written, so the
+ *   status view cannot go on reporting the stale pair.
+ * - A pair that is incomplete or malformed is **refused**, with the advice that can help. A malformed
+ *   object is never written back verbatim.
+ * - A file this session could not load at all is **refused** too, whatever it carries: saving would
+ *   replace it with this session's defaults, and the fault is somewhere else in it. The advice is to
+ *   fix or remove the file and reload, not to complete a pair that is already complete.
  */
-export function saveConfig(agentDir: string, config: Config): void {
+export function saveConfig(agentDir: string, config: Config): Config {
   const path = configPath(agentDir);
-  const raw = toRaw(config);
-  const onDisk = readRedistill(path);
-  if (onDisk !== undefined && raw.redistill === undefined) {
-    throw new Error(
-      `refusing to rewrite ${path}: it carries a redistill (${JSON.stringify(onDisk)}) that this `
-      + 'configuration does not adopt, and redistill cannot be set from /compaction. Complete it with '
-      + 'both aboveTokens and targetTokens, or remove it, and try again.',
-    );
+  const existing = readConfigFile(path);
+  let redistill = config.redistill;
+  if (existing?.problem) {
+    throw refuse(path, `${existing.problem}, so saving would replace the file with this session's `
+      + 'defaults. Fix or remove the file, then /reload, and try again.');
   }
+  if (existing?.raw !== undefined) {
+    const carried = adoptable((existing.raw as { redistill?: unknown }).redistill);
+    if ('why' in carried) {
+      throw refuse(path, `it carries a redistill (${JSON.stringify((existing.raw as { redistill?: unknown }).redistill)}) `
+        + `this configuration cannot adopt: ${carried.why}. redistill cannot be set from /compaction, so `
+        + 'complete it with both aboveTokens and targetTokens, or remove it, and try again.');
+    }
+    if (carried.pair) redistill = carried.pair;
+    try {
+      parse(existing.raw);
+    } catch (error) {
+      throw refuse(path, `the configuration could not be loaded from it (${message(error)}), so saving `
+        + "would replace the file with this session's defaults. Fix or remove the file, then /reload, "
+        + 'and try again.');
+    }
+  }
+  const written: Config = { ...config, redistill };
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+  writeFileSync(path, `${JSON.stringify(toRaw(written), null, 2)}\n`);
+  return written;
 }
 
-/** The `redistill` object the file on disk carries, or undefined when it carries no object. */
-function readRedistill(path: string): unknown {
+const refuse = (path: string, reason: string) => new Error(`refusing to rewrite ${path}: ${reason}`);
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** The file as it is on disk: its parsed body, why it could not be read, or undefined when there is none. */
+function readConfigFile(path: string): { raw?: unknown; problem?: string } | undefined {
+  let text: string;
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { redistill?: unknown };
-    return typeof parsed.redistill === 'object' && parsed.redistill !== null ? parsed.redistill : undefined;
-  } catch {
-    return undefined;
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    return { problem: `it could not be read (${message(error)})` };
+  }
+  try {
+    const raw: unknown = JSON.parse(text);
+    // A body that is not an object is a file this session could not have loaded, and reading a field
+    // off it would throw a TypeError instead of refusing with something the user can act on.
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { problem: 'it is not a configuration object' };
+    }
+    return { raw };
+  } catch (error) {
+    return { problem: `it is not readable JSON (${message(error)})` };
+  }
+}
+
+/** The pair a `redistill` the file carries describes, or why this configuration cannot adopt it. */
+function adoptable(raw: unknown): { pair: Redistill | null } | { why: string } {
+  if (raw === undefined || raw === null) return { pair: null };
+  try {
+    const pair = redistill(raw);
+    if (pair) return { pair };
+    const missing = REDISTILL_FIELDS.filter((key) => !(key in (raw as Record<string, unknown>)));
+    return { why: `it is missing ${missing.join(' and ')}` };
+  } catch (error) {
+    return { why: message(error) };
   }
 }
 

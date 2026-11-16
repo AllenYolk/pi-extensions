@@ -36,9 +36,15 @@ nothing of this package's is asked for; the user's own text still reaches both r
 token estimate failed the new activation-time probe that gates it — a fourth host seam, and one whose
 mismatch turns redistilling off rather than handing compaction back.
 
-`redistill` is file-only, so a save refuses rather than erase a value the parse did not adopt, and an
-off value is written as an absent key: 0.2.x rejects a file carrying a field it does not know, and it
-rejects the whole file.
+`redistill` is file-only, so a save defers to the file: a complete valid pair on disk is kept, so a
+threshold edited mid-session is not reverted by an unrelated `/compaction` change, while an incomplete
+or malformed pair is refused with the advice that can help, and a file this session could not load at
+all is refused rather than replaced with defaults. An off value is written as an absent key, because
+0.2.x rejects a file carrying a field it does not know — and it rejects the whole file.
+
+A handback's announcement says what it gives up by name — the model, the thinking level and the cut
+point — and, when redistilling was configured, that the fixed-point request is gone and the summary is
+a union again, rather than claiming its length is unaffected.
 
 It asks; it enforces nothing. No output ceiling is sent, nothing is truncated or rewritten, and a
 model that ignores the instruction produces exactly today's summary — so the package's guarantee is

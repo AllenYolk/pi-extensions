@@ -302,8 +302,16 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
         ctx.ui.notify(`pi-compaction: nothing changed; ${invalid}`, 'error');
         return;
       }
-      saveConfig(getAgentDir(), next);
-      config = next;
+      // A save can still refuse: `redistill` is file-only, and a save must not erase a value the
+      // parse did not adopt. The message says what to do about it. It can also adopt a `redistill` the
+      // file carries, so the configuration the status view reports afterwards is the one that was
+      // written, not the one that was asked for.
+      try {
+        config = saveConfig(getAgentDir(), next);
+      } catch (error) {
+        ctx.ui.notify(`pi-compaction: nothing changed; ${error instanceof Error ? error.message : String(error)}`, 'error');
+        return;
+      }
       ctx.ui.notify(await status(ctx), 'info');
     },
   });

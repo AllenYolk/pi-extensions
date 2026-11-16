@@ -12,7 +12,7 @@ import {
 } from '../src/config.ts';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const agentDir = () => mkdtempSync(join(tmpdir(), 'pi-compaction-config-'));
 const write = (dir, body) => {
@@ -132,18 +132,99 @@ test('a half-configured redistill validates the field that is there', () => {
 
 test('a save refuses to erase a redistill the configuration does not adopt', () => {
   // `redistill` is file-only, so a save that dropped a half-written value would destroy something the
-  // command surface cannot restore, with nothing said. The save is refused instead.
+  // command surface cannot restore, with nothing said. The save is refused instead, and the advice is
+  // the one that can actually help: the pair is incomplete.
   const dir = agentDir();
+  const file = join(dir, 'extensions', 'pi-compaction', 'config.json');
   write(dir, { enabled: true, thinking: 'off', redistill: { aboveTokens: 4_000 } });
-  const before = readFileSync(join(dir, 'extensions', 'pi-compaction', 'config.json'), 'utf8');
+  const before = readFileSync(file, 'utf8');
   const loaded = loadConfig(dir);
   assert.equal(loaded.diagnostic, undefined);
   assert.equal(loaded.config.redistill, null, 'half-configured is off');
   assert.throws(
     () => saveConfig(dir, { ...loaded.config, thinking: 'high' }),
-    /refusing to rewrite .*config\.json.*redistill/s,
+    (error) => {
+      assert.match(error.message, /refusing to rewrite .*config\.json: it carries a redistill/);
+      assert.match(error.message, /cannot adopt: it is missing targetTokens/);
+      assert.match(error.message, /complete it with both aboveTokens and targetTokens, or remove it/);
+      return true;
+    },
   );
-  assert.equal(readFileSync(join(dir, 'extensions', 'pi-compaction', 'config.json'), 'utf8'), before, 'the file is untouched');
+  assert.equal(readFileSync(file, 'utf8'), before, 'the file is untouched');
+});
+
+test('a save names the right cause when the file cannot be adopted', () => {
+  // The whole file was rejected for an unrelated reason, so the in-memory configuration is the
+  // defaults and carries no redistill — but the pair on disk is complete, and "complete it" would be
+  // advice that cannot help. The message has to be about reloading, and the file must survive.
+  const dir = agentDir();
+  const file = join(dir, 'extensions', 'pi-compaction', 'config.json');
+  write(dir, { enabled: true, thinking: 'loud', redistill: { aboveTokens: 4_000, targetTokens: 6_000 } });
+  const before = readFileSync(file, 'utf8');
+  assert.equal(loadConfig(dir).config, undefined, 'the file is rejected whole');
+  assert.throws(
+    () => saveConfig(dir, { ...defaults(), enabled: true }),
+    (error) => {
+      assert.match(error.message, /the configuration could not be loaded from it \(.*thinking must be/);
+      assert.match(error.message, /then \/reload, and try again/);
+      assert.doesNotMatch(error.message, /complete it with both aboveTokens/, 'the wrong advice');
+      return true;
+    },
+  );
+  assert.equal(readFileSync(file, 'utf8'), before, 'a file this session could not load is not replaced with defaults');
+
+  // A malformed field inside the pair still gets the complete-it advice, naming the field.
+  const malformed = agentDir();
+  write(malformed, { enabled: true, redistill: { aboveTokens: 'lots', targetTokens: 6_000 } });
+  assert.throws(
+    () => saveConfig(malformed, { ...defaults(), enabled: true }),
+    (error) => {
+      assert.match(error.message, /cannot adopt: redistill\.aboveTokens must be an integer/);
+      assert.match(error.message, /complete it with both aboveTokens and targetTokens, or remove it/);
+      return true;
+    },
+  );
+
+  // And a file that is not JSON at all, or not an object, is refused rather than overwritten — with a
+  // message rather than a TypeError from reading a field off `null`.
+  for (const [body, pattern] of [['{ not json', /it is not readable JSON/], ['null', /it is not a configuration object/], ['[]', /it is not a configuration object/]]) {
+    const broken = agentDir();
+    const brokenFile = join(broken, 'extensions', 'pi-compaction', 'config.json');
+    mkdirSync(dirname(brokenFile), { recursive: true });
+    writeFileSync(brokenFile, body);
+    assert.throws(() => saveConfig(broken, defaults()), pattern, body);
+    assert.equal(readFileSync(brokenFile, 'utf8'), body, 'and left as it was');
+  }
+});
+
+test('a save keeps the redistill the file carries instead of reverting an edit', () => {
+  // `redistill` is file-only and the in-memory copy only refreshes on session_start, so a threshold
+  // edited in the file mid-session must survive an unrelated `/compaction` change — and the caller has
+  // to be told what was written, or the status view would go on reporting the stale pair.
+  const dir = agentDir();
+  const file = join(dir, 'extensions', 'pi-compaction', 'config.json');
+  write(dir, { enabled: true, redistill: { aboveTokens: 4_000, targetTokens: 6_000 } });
+  const written = saveConfig(dir, { ...defaults(), enabled: true, keptWindowTokens: 5_000 });
+  assert.deepEqual(written.redistill, { aboveTokens: 4_000, targetTokens: 6_000 }, 'the caller is told what was written');
+  const onDisk = JSON.parse(readFileSync(file, 'utf8'));
+  assert.deepEqual(onDisk.redistill, { aboveTokens: 4_000, targetTokens: 6_000 }, 'the file keeps its own pair');
+  assert.equal(onDisk.keptWindowTokens, 5_000, 'and the change being saved still lands');
+
+  // The file wins over a different in-memory pair: the file is where a file-only field is edited.
+  const edited = agentDir();
+  const editedFile = join(edited, 'extensions', 'pi-compaction', 'config.json');
+  write(edited, { enabled: true, redistill: { aboveTokens: 100, targetTokens: 200 } });
+  const fromEdit = saveConfig(edited, { ...defaults(), enabled: true, redistill: { aboveTokens: 4_000, targetTokens: 6_000 } });
+  assert.deepEqual(fromEdit.redistill, { aboveTokens: 100, targetTokens: 200 });
+  assert.deepEqual(JSON.parse(readFileSync(editedFile, 'utf8')).redistill, { aboveTokens: 100, targetTokens: 200 });
+
+  // With nothing on disk, the in-memory value is what gets written.
+  const fresh = agentDir();
+  const freshFile = join(fresh, 'extensions', 'pi-compaction', 'config.json');
+  write(fresh, { enabled: true });
+  const fromMemory = saveConfig(fresh, { ...defaults(), enabled: true, redistill: { aboveTokens: 1, targetTokens: 2 } });
+  assert.deepEqual(fromMemory.redistill, { aboveTokens: 1, targetTokens: 2 });
+  assert.deepEqual(JSON.parse(readFileSync(freshFile, 'utf8')).redistill, { aboveTokens: 1, targetTokens: 2 });
 });
 
 test('the file this version writes stays readable by 0.2.x', () => {
