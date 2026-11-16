@@ -119,10 +119,14 @@ session, resolving Pi 1.5.1 from this package's own workspace, unless it says ot
 `test/index.test.mjs` drives the registered hook directly against a compact function the test
 supplies. Two properties cannot be decided by a real-host run:
 
-- **A host seam mismatch.** `checkHostSeam` probes the host's own `compact()`, and Pi 1.5.1 passes, so
-  the mismatch branch is unreachable from `cli.test.mjs`. The extension takes the compact function it
-  probes *and* compacts with as a second argument — the injection `checkHostSeam` already had — and
-  the test hands it one with nine parameters.
+- **A host seam mismatch**, and **a cut point with nothing to summarise.** `checkHostSeam` probes the
+  host's own `compact()`, and Pi 1.5.1 passes, so the mismatch branch is unreachable from
+  `cli.test.mjs`; and a kept window larger than the whole session is the only way to reach the empty
+  cut point. The extension takes the compact function it probes *and* compacts with as a second
+  argument — the injection `checkHostSeam` already had — so the seam test hands it one with nine
+  parameters and the empty-cut-point test hands it one that records every compaction it was asked to
+  run. Both assert the same three facts before anything else: the fallback's stream function was
+  never called, no model beyond the primary was resolved, and no compaction was started.
 - **A cancellation reaching the fallback stream function.** The host will not start a request on an
   aborted signal, so a real run cannot tell this package's own guard apart from the host's. The
   test's compact function keeps calling whatever stream function it is handed, so only the package's
@@ -138,9 +142,15 @@ each test went red. The two hook-level ones:
   catch, and after `compact()` resolves — makes the cancellation test report
   `['fixture/primary', 'fixture/fallback']` where one compaction was expected, and the fallback's
   stream function is reached.
-- Letting a failed seam check fall through into the attempt loop instead of returning makes the
-  seam test report `['find fixture/primary', 'auth primary', 'find fixture/fallback', 'auth fallback']`
-  where no registry call at all was expected.
+- Letting a failed seam check fall through into the attempt loop instead of returning makes the seam
+  test fail on `the fallback stream function was never called`, with
+  `actual: ['streamSimple primary']` where `[]` was expected — the attempt the early return exists
+  to prevent.
+- Letting an empty cut point `continue` to the next candidate instead of returning makes its test
+  fail on the resolved models, with `actual: ['find fixture/primary', 'find fixture/fallback']`
+  where only the primary was expected. No request is made either way — the second attempt finds the
+  same empty range — which is why the assertion is on the fallback being *reached*, not on a request
+  being sent.
 
 The real-CLI cancellation test was also checked and is **not** sensitive to the first mutation on its
 own: with the same three guards removed it still passes, because the host refuses the second request
@@ -180,8 +190,8 @@ The three from the review round:
 
 ### This branch's own gates
 
-`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 101/101 pass on top of #33 and
-#34, of which 30 are this branch's. `npm run check` — 187/187 pass. `npm pack --json --ignore-scripts`
+`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 102/102 pass on top of #33 and
+#34, of which 31 are this branch's. `npm run check` — 188/188 pass. `npm pack --json --ignore-scripts`
 still produces exactly the eight entries listed below. The gates table above is #34's and is left as
 it stands; the maintainer corrects it after the merge.
 
