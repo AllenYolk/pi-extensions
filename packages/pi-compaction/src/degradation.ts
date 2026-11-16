@@ -94,9 +94,16 @@ export interface CompactionRecord {
   attempts: Attempt[];
 }
 
-/** Whether the compaction ended in a handback rather than a summary this package produced. */
-export const handedBack = (record: CompactionRecord): boolean =>
-  record.attempts[record.attempts.length - 1]!.reason !== undefined;
+/**
+ * Whether the compaction ended in a handback rather than a summary this package produced.
+ *
+ * A record with no attempt in it is not a handback — nothing in it failed — so the answer is `false`.
+ * The renderers below say so in words rather than letting this predicate decide a headline for them.
+ */
+export const handedBack = (record: CompactionRecord): boolean => {
+  const last = record.attempts[record.attempts.length - 1];
+  return last !== undefined && last.reason !== undefined;
+};
 
 /**
  * A record as it was written, whichever version wrote it.
@@ -157,6 +164,22 @@ const NEXT =
   + 'window <tokens> to change the cut point, or /compaction disable to make stock Pi the default.';
 
 /**
+ * What an unreadable record says.
+ *
+ * A hand-edited or truncated entry can carry no attempt at all, and then neither the model that ran
+ * nor the reason one failed can be read from it. This surface is the one that must never crash —
+ * `/compaction`'s status view and the handback announcement, read by whoever is already trying to
+ * find out what went wrong — so it says what it does not know instead of guessing a headline.
+ */
+const NO_ATTEMPTS = [
+  'unreadable — the compaction record carries no attempt',
+  'Summarizer: none recorded',
+  'Why: the record names no attempt, so neither the model that ran nor the reason one failed can be read from it',
+  'Now: unknown — this record cannot say whether the package summarised or handed back.',
+  NEXT,
+];
+
+/**
  * The announcement, as the lines the user reads. Line one is the headline; the rest name the
  * summarizer, the reason, what the session's behaviour now is and what to do about it.
  *
@@ -164,7 +187,8 @@ const NEXT =
  * only appear once there is a second model to report.
  */
 export function announcement(record: CompactionRecord): string[] {
-  const last = record.attempts[record.attempts.length - 1]!;
+  const last = record.attempts[record.attempts.length - 1];
+  if (last === undefined) return [...NO_ATTEMPTS];
   const earlier = record.attempts.slice(0, -1);
   const handback = handedBack(record);
   const lines = [
@@ -186,7 +210,10 @@ export function announcement(record: CompactionRecord): string[] {
 
 /** The one line `/compaction` reports a recorded outcome in. */
 export function describeRecord(record: CompactionRecord): string {
-  const last = record.attempts[record.attempts.length - 1]!;
+  const last = record.attempts[record.attempts.length - 1];
+  if (last === undefined) {
+    return 'Last compaction: a record carrying no attempt, so neither the model that ran nor a failure can be read from it';
+  }
   const earlier = record.attempts.slice(0, -1).map((failed) => `${failed.summarizer} — ${failed.reason}`);
   if (!handedBack(record)) {
     return `Last compaction: the fallback summarizer ${last.summarizer} produced the summary after ${earlier.join('; ')}`;

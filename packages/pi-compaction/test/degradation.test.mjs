@@ -187,6 +187,38 @@ test('a successful fallback is recorded under its own entry type', () => {
   assert.notEqual(FALLBACK_ENTRY, 'pi-compaction-degradation');
 });
 
+const EMPTY = { attempts: [] };
+
+test('handedBack answers for a record with no attempt instead of throwing', () => {
+  // The read path is closed today — `toRecord` never returns an empty record — but this predicate is
+  // exported, and the surface it serves is the one that must never crash. An empty record is not a
+  // handback: nothing in it failed.
+  assert.equal(handedBack(EMPTY), false);
+  assert.equal(handedBack({ attempts: [attempt('p/m (api)')] }), false);
+  assert.equal(handedBack({ attempts: [attempt('p/m (api)', 'because')] }), true);
+});
+
+test('announcement answers for a record with no attempt instead of throwing', () => {
+  // A session file carrying a hand-edited or truncated entry must not turn a diagnostic into a thrown
+  // error, and the reader who needed the diagnostic is the one least able to recover from it.
+  const lines = announcement(EMPTY);
+  assert.ok(Array.isArray(lines), 'it returns lines rather than throwing');
+  assert.ok(lines.every((line) => typeof line === 'string' && line.length > 0));
+  // And it guesses neither way: an empty record cannot say whether this package summarised or handed
+  // back, so it must not claim either.
+  assert.doesNotMatch(lines.join('\n'), /handed back to stock Pi/);
+  assert.doesNotMatch(lines.join('\n'), /the fallback summarizer produced the summary/);
+  assert.match(lines.join('\n'), /no attempt/);
+});
+
+test('describeRecord answers for a record with no attempt instead of throwing', () => {
+  const line = describeRecord(EMPTY);
+  assert.equal(typeof line, 'string');
+  assert.ok(line.length > 0);
+  assert.match(line, /no attempt/);
+  assert.doesNotMatch(line, /Last degradation: summarizer /, 'it names no summarizer, because none was recorded');
+});
+
 test('a record written by 0.2.1 is normalised, not skipped', () => {
   // 0.2.1 recorded one attempt as `{ summarizer, reason }`. A session outlives the version that
   // compacted it, and the custom entry is the half of the announcement that survives a restart — so

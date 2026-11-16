@@ -157,6 +157,13 @@ The three from the review round:
   the fallback request really carried `reasoning: "high"` while the announcement claimed otherwise.
 - Dropping the `fallbackModel === summarizerModel` check from `parse()` turns the config test and the
   real-CLI test red, the latter by timing out on the command output that no longer appears.
+- Restoring the three non-null assertions in `handedBack`, `announcement` and `describeRecord` turns
+  all three empty-record tests red with `TypeError: Cannot read properties of undefined (reading
+  'reason')`. The read path is closed — `toRecord` never returns an empty record — but the three are
+  exported, and they serve the two surfaces that must never crash: the status view and the handback
+  announcement. An empty record now answers in words rather than guessing a headline: `handedBack`
+  is `false` because nothing in it failed, and the two renderers say the record names no attempt and
+  that neither the model that ran nor a failure can be read from it.
 
 ### Not established for the fallback
 
@@ -173,8 +180,8 @@ The three from the review round:
 
 ### This branch's own gates
 
-`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 98/98 pass on top of #33 and
-#34, of which 27 are this branch's. `npm run check` — 184/184 pass. `npm pack --json --ignore-scripts`
+`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 101/101 pass on top of #33 and
+#34, of which 30 are this branch's. `npm run check` — 187/187 pass. `npm pack --json --ignore-scripts`
 still produces exactly the eight entries listed below. The gates table above is #34's and is left as
 it stands; the maintainer corrects it after the merge.
 
