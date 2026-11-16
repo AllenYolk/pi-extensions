@@ -190,8 +190,8 @@ The three from the review round:
 
 ### This branch's own gates
 
-`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 102/102 pass on top of #33 and
-#34, of which 31 are this branch's. `npm run check` — 188/188 pass. `npm pack --json --ignore-scripts`
+`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 110/110 pass on top of #33,
+#34 and #38, of which 31 are this branch's. `npm run check` — 196/196 pass. `npm pack --json --ignore-scripts`
 still produces exactly the eight entries listed below. The gates table above is #34's and is left as
 it stands; the maintainer corrects it after the merge.
 
