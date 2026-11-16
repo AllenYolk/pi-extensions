@@ -42,9 +42,15 @@ export function pathsIn(text: string): string[] {
  * summarizer invented. The range is the text the summarizer was given, so a path that only occurs
  * in a part of a tool result the host truncated away counts as invented, which is the honest
  * reading: the summarizer could not have seen it.
+ *
+ * Containment is whole path tokens on both sides, not `String.includes`: a substring test makes a
+ * path count as present whenever it is a prefix of a *different* path in the range, so a range
+ * naming `src/cache/spill.rs2` would clear a summary that invented `src/cache/spill.rs` — which is
+ * the failure this metric exists to catch.
  */
 export function fabricatedPaths(summary: string, range: string): string[] {
-  return pathsIn(summary).filter((path) => !range.includes(path));
+  const present = new Set(pathsIn(range));
+  return pathsIn(summary).filter((path) => !present.has(path));
 }
 
 /** A declared fact the summarised range contains and a continuing model would be hurt by losing. */

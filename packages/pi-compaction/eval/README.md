@@ -30,9 +30,10 @@ node eval/harness.ts \
 | `--json` | Emit the run record instead of the table. |
 
 Exit status is **0** when every arm stopped with `stop`, **1** when an arm did not, and **2** for bad
-usage or unusable input — an unknown argument, a single arm, a missing fixture, a manifest whose
-probes do not occur in its own session, a run record that is not one, or a recorded session that has
-since been deleted.
+usage or unusable input — an unknown argument, a single arm, an arm naming a thinking level that does
+not exist, a missing fixture, a manifest whose probes do not occur in its own session, a run record
+that is not one, or a recorded session that has since been deleted. `--help` is none of those: it
+prints this usage on stdout and exits **0**.
 
 A summary passed to `--score` was never a response, so it has no response groups and cannot fail the
 first rule.
@@ -72,13 +73,27 @@ not reproducible and cannot gate anything.
 | Metric | Definition |
 | --- | --- |
 | `sections` | How many of the nine headings the host's summarization prompt asks for the summary carries (`## Goal`, `## Constraints & Preferences`, `## Progress`, `### Done`, `### In Progress`, `### Blocked`, `## Key Decisions`, `## Next Steps`, `## Critical Context`). Heading level is not matched — a summary that writes all nine at one level has still written all nine. |
-| `fabricated` | Distinct file paths the summary names that the summarised range does not contain. The range is what the summarizer was actually given, so a path that only occurs in a part of a tool result the host truncated is counted as invented, which is the honest reading. A path needs a directory separator and a lettered extension, so `minimax-cn/MiniMax-M3.1-Flash` and `release/0.9` are not paths. |
+| `fabricated` | Distinct file paths the summary names that the summarised range does not contain. The range is what the summarizer was actually given, so a path that only occurs in a part of a tool result the host truncated is counted as invented, which is the honest reading. Both sides are compared as whole path tokens, so a range naming `src/cache/spill.rs2` does not clear a summary that invented `src/cache/spill.rs`. A path needs a directory separator and a lettered extension, so `minimax-cn/MiniMax-M3.1-Flash` and `release/0.9` are not paths. |
 | `probes` | How many of the fixture's declared probes the summary carries. A probe is a literal or a regex, never a model. |
 | `Δ out` | Output tokens against the control arm. |
 
 Recorded per arm from a live run, and shown as `—` for a scored summary that has none of them: wall
 time, output tokens, reasoning tokens, cost, every response group's stop reason, and the summary
-text.
+text. A field the host's response did not report stays unrecorded rather than becoming a measured
+`0`, so an arm that was never measured reads `—` and its `Δ out` is unavailable rather than a number
+computed against a zero.
+
+## The thinking level an arm runs at
+
+An arm's level is one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` — the same seven
+`src/config.ts` accepts. A level outside that set is refused as bad usage, naming the level and the
+supported set: `summarizerThinkingLevel` clamps whatever it does not recognise to the model's first
+available level, so accepting one would measure the arm at a level nobody asked for, typically `off`,
+and say nothing about it.
+
+A level that **is** one of the seven but that the model does not support is a different case, and is
+still clamped the way the host clamps it — that is the model's own limit, it is recorded as the level
+that ran, and it is where an unexpectedly expensive arm usually comes from.
 
 ## The fixture
 
@@ -115,9 +130,7 @@ arm.
 
 At the rates behind the table in `docs/validation.md`, that is **cents, not dollars**: the owner's
 $1.42 conversation-model arm was measured on a range about six times this size. The exact figure
-depends entirely on the models you name — check their prices before you run it, and remember that a
-thinking level the model does not support is clamped upward, which is where an unexpectedly expensive
-arm usually comes from.
+depends entirely on the models you name — check their prices before you run it.
 
 A live run needs the models to be ones this host offers with configured credentials. An arm it cannot
 resolve is recorded with the reason and fails the exit status; the other arms still run, so a

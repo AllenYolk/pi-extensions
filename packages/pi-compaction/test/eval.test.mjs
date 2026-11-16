@@ -7,15 +7,23 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { countSections, fabricatedPaths, pathsIn, probeMatches, scoreProbes, SECTIONS } from '../eval/score.ts';
 import { DEFAULT_FIXTURE, loadFixture } from '../eval/input.ts';
-import { exitCodeFor, renderTable } from '../eval/harness.ts';
+import { exitCodeFor, renderTable, scoreArms, usageOf } from '../eval/harness.ts';
 
 const harness = fileURLToPath(new URL('../eval/harness.ts', import.meta.url));
 
-/** Run the harness the way an operator does. No credentials are in this environment. */
+/**
+ * Run the harness the way an operator does, against a disposable profile.
+ *
+ * The empty agent directory is what makes that safe: `--score` needs nothing from it, and an `--arm`
+ * invocation — including one this suite expects to be refused — finds no model and no configured
+ * credentials there, so no test can reach a provider or spend money whatever the harness does with
+ * the arguments it was handed.
+ */
 function run(args) {
+  const agent = mkdtempSync(join(tmpdir(), 'pi-compaction-agent-'));
   const result = spawnSync(process.execPath, [harness, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, PI_OFFLINE: '1' },
+    env: { ...process.env, PI_OFFLINE: '1', PI_CODING_AGENT_DIR: agent },
   });
   assert.equal(result.error, undefined, result.error?.message);
   return result;
@@ -65,6 +73,11 @@ const range = 'read src/index/manifest.ts, then src/cache/spill.rs, and wrote sr
 test('a summary naming a path absent from the range scores one fabrication', () => {
   const summary = 'Touched src/index/manifest.ts and src/cache/ledger.rs, which does not exist.';
   assert.deepEqual(fabricatedPaths(summary, range), ['src/cache/ledger.rs']);
+});
+
+test('a path that is only a prefix of a different path in the range is a fabrication', () => {
+  const sibling = 'wrote src/cache/spill.rs2 and src/index/manifest.ts';
+  assert.deepEqual(fabricatedPaths('Touched src/cache/spill.rs.', sibling), ['src/cache/spill.rs']);
 });
 
 test('every path the range contains is not a fabrication, however often it is named', () => {
@@ -374,6 +387,25 @@ test('the exit code is the arms\' own, and a clean arm list is zero', () => {
   assert.equal(exitCodeFor([arm({})]), 0, 'a summary that was never a response cannot fail');
 });
 
+test('--help prints usage on stdout and exits zero, while bad usage still exits two', () => {
+  const help = run(['--help']);
+  assert.equal(help.status, 0, `asking for help is not bad usage:\n${help.stderr}`);
+  assert.match(help.stdout, /^usage:/);
+  assert.match(help.stdout, /Exit status: 0 all arms stopped cleanly/);
+  assert.equal(help.stderr, '', 'usage goes to stdout, not stderr');
+  const bogus = run(['--nope']);
+  assert.equal(bogus.status, 2, 'a genuinely invalid argument is still bad usage');
+  assert.match(bogus.stderr, /unknown argument --nope/);
+});
+
+test('an arm naming a thinking level that does not exist is refused rather than clamped', () => {
+  const bogus = run(['--arm', 'no-such-provider/no-such-model@banana', '--arm', 'no-such-provider/other@low']);
+  assert.equal(bogus.status, 2, `an unknown level must be bad usage:\n${bogus.stdout}`);
+  assert.equal(bogus.stdout, '', 'nothing may be measured');
+  assert.match(bogus.stderr, /banana/);
+  assert.match(bogus.stderr, /off, minimal, low, medium, high, xhigh, max/);
+});
+
 test('an unrecognised argument and a single arm are refused before anything runs', () => {
   const bogus = run(['--nope']);
   assert.equal(bogus.status, 2);
@@ -390,6 +422,27 @@ test('an unrecognised argument and a single arm are refused before anything runs
   const scored = run(['--score', scoredSummaryFile(), '--out', '/tmp/nowhere']);
   assert.equal(scored.status, 2);
   assert.match(scored.stderr, /scoring writes nothing/);
+});
+
+test('an arm the host reported no usage for is unmeasured, not measured as zero', () => {
+  // A host response carries usage per attempt. An attempt whose response carried none was not
+  // measured, and a recorded zero would be indistinguishable from a cheap arm.
+  assert.deepEqual(usageOf(undefined), {});
+  assert.deepEqual(usageOf({}), {});
+  assert.deepEqual(usageOf({ output: 0, cost: { total: 0 } }), { outputTokens: 0, cost: 0 },
+    'a zero the host reported is a measurement');
+
+  const text = 'Touched src/index/manifest.ts.';
+  const stub = { probes: [], range: 'read src/index/manifest.ts, then src/cache/spill.rs' };
+  const scored = scoreArms(stub, [
+    { arm: 'a@low', summary: text, stopReasons: ['stop'], ...usageOf({ output: 6281, cost: { total: 0.0123 } }) },
+    { arm: 'b@low', summary: text, stopReasons: ['stop'], ...usageOf(undefined) },
+  ]);
+  assert.equal(scored[1].outputTokens, undefined, 'no output tokens is not zero output tokens');
+  assert.equal(scored[1].cost, undefined, 'no cost is not a cost of nothing');
+  assert.equal(scored[1].outputDelta, undefined, 'a Δ against an arm that was never measured is not a number');
+  assert.equal(scored[0].outputDelta, 0, 'the control arm is measured against itself, and that is a real zero');
+  assert.match(renderTable(scored).split('\n')[3], /^b@low\s+stop\s+—\s+—\s+—\s+—\s+0\/9\s+0\s+0\/0\s+—$/);
 });
 
 test('the table renders one column per metric for an arm with nothing recorded', () => {

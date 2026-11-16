@@ -18,6 +18,17 @@ import {
   SECTIONS,
 } from './score.ts';
 import { DEFAULT_FIXTURE, loadFixture, type Fixture } from './input.ts';
+import type { ThinkingLevel } from '../src/config.ts';
+
+/**
+ * The levels `src/config.ts` accepts, in its order.
+ *
+ * An arm's level is refused against these rather than passed to `summarizerThinkingLevel`, which
+ * clamps whatever it does not recognise to the model's first available level — typically `off`. A
+ * clamp would measure the arm at a level the operator never asked for and say nothing, and the
+ * package's own configuration rejects an unknown level outright.
+ */
+const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 /** What one arm produced. A summary scored offline has only a name and its text. */
 export interface ArmRecord {
@@ -74,6 +85,8 @@ interface Options {
   session?: string;
   json: boolean;
   out?: string;
+  /** `--help` was asked for. Usage on stdout and a zero status — help is not one of the failures. */
+  help: boolean;
 }
 
 const USAGE = `usage:
@@ -92,7 +105,7 @@ Exit status: 0 all arms stopped cleanly, 1 an arm did not stop with "stop", 2 ba
 
 /** Parse the command line. Anything unrecognised is refused rather than ignored. */
 export function parseArgs(argv: string[]): Options {
-  const options: Options = { arms: [], scores: [], json: false };
+  const options: Options = { arms: [], scores: [], json: false, help: false };
   const value = (flag: string, index: number): string => {
     const next = argv[index + 1];
     if (next === undefined || next.startsWith('--')) throw new UsageError(`${flag} needs a value`);
@@ -101,7 +114,7 @@ export function parseArgs(argv: string[]): Options {
   for (let index = 0; index < argv.length; index++) {
     const flag = argv[index]!;
     switch (flag) {
-      case '--help': case '-h': throw new UsageError(USAGE);
+      case '--help': case '-h': return { ...options, help: true };
       case '--json': options.json = true; break;
       case '--arm': options.arms.push(value(flag, index++)); break;
       case '--score': options.scores.push(value(flag, index++)); break;
@@ -123,6 +136,13 @@ export function parseArgs(argv: string[]): Options {
   for (const arm of options.arms) {
     if (!/^[^@\s]+\/[^@\s]+@[a-z]+$/.test(arm)) {
       throw new UsageError(`--arm ${arm} must be <provider/model>@<thinking>`);
+    }
+    const level = arm.slice(arm.lastIndexOf('@') + 1);
+    if (!THINKING_LEVELS.includes(level as ThinkingLevel)) {
+      throw new UsageError(
+        `--arm ${arm} names a thinking level that does not exist: ${level}\n`
+        + `thinking must be one of ${THINKING_LEVELS.join(', ')}`,
+      );
     }
   }
   // A session override would change the range a summary is scored against, which is the one thing a
@@ -289,12 +309,18 @@ async function runLive(fixture: Fixture, arms: string[]): Promise<ArmRecord[]> {
   return records;
 }
 
-function usageOf(usage: unknown): Pick<ArmRecord, 'outputTokens' | 'reasoningTokens' | 'cost'> {
+/**
+ * The measurement fields a host response's usage object carries over. A field the host did not
+ * report stays absent: `0` output tokens and `$0.0000` are what an arm that was never measured looks
+ * like once they are recorded as numbers, and `Δ out` would then be computed against that zero.
+ */
+export function usageOf(usage: unknown): Pick<ArmRecord, 'outputTokens' | 'reasoningTokens' | 'cost'> {
   const value = (usage ?? {}) as { output?: number; reasoning?: number; cost?: { total?: number } };
+  const cost = value.cost?.total;
   return {
-    outputTokens: value.output ?? 0,
+    ...(value.output === undefined ? {} : { outputTokens: value.output }),
     ...(value.reasoning === undefined ? {} : { reasoningTokens: value.reasoning }),
-    cost: value.cost?.total ?? 0,
+    ...(cost === undefined ? {} : { cost }),
   };
 }
 
@@ -314,6 +340,11 @@ export async function main(argv: string[]): Promise<number> {
     if (!(error instanceof UsageError)) throw error;
     console.error(error.message);
     return 2;
+  }
+
+  if (options.help) {
+    console.log(USAGE);
+    return 0;
   }
 
   const live = options.scores.length === 0;
