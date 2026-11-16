@@ -60,7 +60,8 @@ export function loadFixture(manifestPath: string, sessionOverride?: string): Fix
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest;
   const base = dirname(manifestPath);
   const resolve = (path: string) => (isAbsolute(path) ? path : join(base, path));
-  const sessionPath = sessionOverride ? resolve(sessionOverride) : resolve(manifest.session);
+  const declaredSession = resolve(manifest.session);
+  const sessionPath = sessionOverride ? resolve(sessionOverride) : declaredSession;
   const previousSummaryPath = manifest.previousSummary ? resolve(manifest.previousSummary) : undefined;
   const previousSummary = previousSummaryPath ? readFileSync(previousSummaryPath, 'utf8') : '';
   const keptWindowTokens = manifest.keptWindowTokens ?? 16_000;
@@ -94,9 +95,10 @@ export function loadFixture(manifestPath: string, sessionOverride?: string): Fix
   ));
   const range = `${sessionText}\n${previousSummary}`;
   const dropped = probes.filter((probe) => !probeMatches(probe, range)).map((probe) => probe.id);
-  // The committed fixture has to be self-consistent. An operator's own session is measured on
-  // whatever it happens to contain, so probes it lacks are reported rather than refused.
-  if (dropped.length > 0 && !sessionOverride) {
+  // The committed fixture has to be self-consistent, and it is checked whenever the range is its own
+  // session — including when a run record names that same path back. An operator's own session is
+  // measured on whatever it happens to contain, so probes it lacks are reported rather than refused.
+  if (dropped.length > 0 && sessionPath === declaredSession) {
     throw new Error(`probes that do not occur in ${sessionPath}: ${dropped.join(', ')}`);
   }
 

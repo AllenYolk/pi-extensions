@@ -30,11 +30,11 @@ output ceiling and the prune path.
 
 | Check | Result |
 | --- | --- |
-| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **66/66 tests pass** (45 behaviour, 21 evaluation harness) |
-| `npm run check` | **152/152 tests pass** (66 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
+| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **71/71 tests pass** (45 behaviour, 26 evaluation harness) |
+| `npm run check` | **157/157 tests pass** (71 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
 | `npm run benchmark` | **deliberately skipped** — the presentation benchmark is for `@allenyolk/pi-minimal-display`; this package registers no TUI component and patches nothing. CI runs it on every push regardless. |
 
-The 21 harness tests are the scorers and the `--score` mode of [the evaluation harness](../eval/README.md).
+The 26 harness tests are the scorers and the `--score` mode of [the evaluation harness](../eval/README.md).
 They make no request: they read the committed fixture, score summaries that already exist, and spawn
 the harness with `--score`. The live mode is unreachable without `--arm` and is not run by any check.
 
@@ -163,7 +163,10 @@ reproducible and cannot gate anything. Each arm is scored on how many of the nin
 prompt asks for it carries, how many file paths it names that the summarised range does not contain,
 how many of the fixture's declared probes survived, and its output tokens against the control arm.
 Wall time, output and reasoning tokens, cost and stop reason are recorded beside them, and an arm
-whose every summarization response did not stop with `stop` fails the run.
+whose every summarization response did not stop with `stop` fails the run. A split turn makes two
+summarization requests that the host concatenates into one summary, so both of its response groups are
+recorded and both are checked — a clean second group says nothing about a partial first one, which is
+the same rule the hook in `src/index.ts` applies before it persists anything.
 
 ```sh
 node eval/harness.ts --score summary.md                   # offline: no credentials, no request

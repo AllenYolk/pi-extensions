@@ -30,11 +30,39 @@ node eval/harness.ts \
 | `--json` | Emit the run record instead of the table. |
 
 Exit status is **0** when every arm stopped with `stop`, **1** when an arm did not, and **2** for bad
-usage. A summary passed to `--score` was never a response, so it carries no stop reason and cannot
-fail the first rule.
+usage or unusable input — an unknown argument, a single arm, a missing fixture, a manifest whose
+probes do not occur in its own session, a run record that is not one, or a recorded session that has
+since been deleted.
+
+A summary passed to `--score` was never a response, so it has no response groups and cannot fail the
+first rule.
 
 The control arm — the one every `Δ out` is measured against — is the first arm on the command line.
 Put the arm you are trying to beat first.
+
+## Stop reasons, and why every group counts
+
+An arm records `stopReasons`: **one entry per response group**, in order, and `null` for a group whose
+response carried no stop reason at all. An arm is clean only when it produced at least one group and
+every one of them stopped with `stop`.
+
+A split turn makes **two** summarization requests through the same stream function, and the host
+concatenates both into one summary. Reading only the last group would score a half-written summary as
+a clean one — a partial history response followed by a clean turn-prefix response is exactly the case
+the hook in `src/index.ts` refuses to persist, and the harness refuses to score as a pass. The stop
+column shows every distinct group outcome, so a split turn reads `aborted,stop` rather than `stop`.
+
+## Re-scoring a run
+
+`run.json` records the fixture **and the session** the run summarised, and `--score run.json` scores
+against both. That is what makes `--session` usable: a run over a real session is re-scored over that
+session, not over the synthetic fixture — which would turn the session's real paths into fabrications
+and the probes it does not contain into probes the summarizer "lost".
+
+The manifest is still held to its own probes: if the range is the session the manifest declares, a
+probe that does not occur in it is an error rather than a score of zero. Only a session the operator
+substituted gets the softer treatment, where absent probes are listed on stderr and left out of the
+score.
 
 ## What is scored
 
@@ -49,7 +77,8 @@ not reproducible and cannot gate anything.
 | `Δ out` | Output tokens against the control arm. |
 
 Recorded per arm from a live run, and shown as `—` for a scored summary that has none of them: wall
-time, output tokens, reasoning tokens, cost, stop reason, and the summary text.
+time, output tokens, reasoning tokens, cost, every response group's stop reason, and the summary
+text.
 
 ## The fixture
 
@@ -73,8 +102,9 @@ for every arm and for every `--score`. The fixture is deliberately much smaller 
 `docs/validation.md` reports on: it is sized so a full comparison costs cents.
 
 To measure a real session instead, pass `--session <path>` to a live run. The session is read at run
-time and never written to the repository; probes the session does not contain are reported and left
-out of the score rather than counted as lost.
+time and never written to the repository; the run records which session it summarised, so re-scoring
+it later uses that same session. Probes the session does not contain are reported and left out of the
+score rather than counted as lost.
 
 ## What a live run costs
 

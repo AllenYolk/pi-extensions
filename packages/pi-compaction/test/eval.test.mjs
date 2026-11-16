@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -149,6 +149,20 @@ test('a probe the session does not contain is rejected rather than scored', () =
   assert.throws(() => loadFixture(path), /ghost/);
 });
 
+test('a manifest is held to its own probes even when a record names its session back', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-compaction-eval-'));
+  const fixture = manifestWith([{ id: 'ghost', kind: 'literal', value: 'a-string-the-session-never-contains' }]);
+  const record = join(dir, 'run.json');
+  writeFileSync(record, JSON.stringify({
+    fixture,
+    session: committed.sessionPath,
+    arms: [{ arm: 'a', stopReasons: ['stop'], summary }],
+  }));
+  const result = run(['--score', record]);
+  assert.equal(result.status, 2, result.stdout);
+  assert.match(result.stderr, /ghost/);
+});
+
 test('a probe with an unusable regex is rejected', () => {
   const path = manifestWith([{ id: 'broken', kind: 'regex', value: '412\\s*(' }]);
   assert.throws(() => loadFixture(path), /broken/);
@@ -241,8 +255,8 @@ test('a recorded arm that did not stop with "stop" exits non-zero, and is scored
   writeFileSync(record, JSON.stringify({
     fixture: twoProbes,
     arms: [
-      { arm: 'cheap@low', stopReason: 'stop', outputTokens: 6281, summary },
-      { arm: 'expensive@high', stopReason: 'length', outputTokens: 12812, summary },
+      { arm: 'cheap@low', stopReasons: ['stop'], outputTokens: 6281, summary },
+      { arm: 'expensive@high', stopReasons: ['length'], outputTokens: 12812, summary },
     ],
   }));
   const result = run(['--score', record]);
@@ -253,11 +267,111 @@ test('a recorded arm that did not stop with "stop" exits non-zero, and is scored
   assert.match(result.stdout, /1\/2/);
 });
 
+/**
+ * A split turn makes two summarization requests through the same stream function and the host
+ * concatenates both, so the history group's response and the turn-prefix group's response are two
+ * groups of one attempt. A clean second group says nothing about a partial first one.
+ */
+const splitTurn = {
+  fixture: twoProbes,
+  arms: [{ arm: 'split@low', stopReasons: ['aborted', 'stop'], outputTokens: 900, summary }],
+};
+
+test('a split turn whose first response group is partial fails, whatever the second did', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-compaction-eval-'));
+  const record = join(dir, 'run.json');
+  writeFileSync(record, JSON.stringify(splitTurn));
+  const result = run(['--score', record]);
+  assert.equal(result.status, 1, `a partial group must fail the run:\n${result.stdout}`);
+  assert.match(result.stdout, /split@low\s+aborted,stop/);
+});
+
+test('a split turn whose every group stopped cleanly passes, and both groups are shown', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-compaction-eval-'));
+  const record = join(dir, 'run.json');
+  writeFileSync(record, JSON.stringify({
+    ...splitTurn,
+    arms: [{ ...splitTurn.arms[0], stopReasons: ['stop', 'stop'] }],
+  }));
+  const result = run(['--score', record]);
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /split@low\s+stop\s/);
+});
+
+test('an attempt that observed no response at all is not a clean one', () => {
+  assert.equal(exitCodeFor([arm({ stopReasons: [] })]), 1);
+  assert.equal(exitCodeFor([arm({ stopReasons: ['stop'] })]), 0);
+  assert.equal(exitCodeFor([arm({ stopReasons: ['stop', 'stop'] })]), 0);
+  assert.equal(exitCodeFor([arm({ stopReasons: ['stop', 'aborted'] })]), 1);
+  assert.equal(exitCodeFor([arm({ stopReasons: [null] })]), 1, 'a response with no stop reason is not a proven-complete one');
+  assert.equal(exitCodeFor([arm({})]), 0, 'a summary that was never a response cannot fail');
+});
+
+/** A recorded run over a session that is not the fixture's own must be scored over that session. */
+function recordedSessionRun() {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-compaction-eval-'));
+  // The committed session with one real path renamed — a path the previous summary does not mention,
+  // so the probe for it is genuinely absent from the whole range. A summary naming the renamed path
+  // is honest against this session and a fabrication against the fixture's own.
+  const session = join(dir, 'renamed.jsonl');
+  writeFileSync(session, readFileSync(committed.sessionPath, 'utf8')
+    .replaceAll('src/index/reopen.ts', 'src/index/reopen2.ts'));
+  // The manifest still declares the committed session: this is a `--session` run, not a new fixture.
+  const fixture = manifestWith([
+    { id: 'commit', kind: 'literal', value: '9f3c1ab7' },
+    { id: 'file-reopen', kind: 'literal', value: 'src/index/reopen.ts' },
+  ]);
+  const record = join(dir, 'run.json');
+  writeFileSync(record, JSON.stringify({
+    fixture,
+    session,
+    arms: [{ arm: 'real@low', stopReasons: ['stop'], outputTokens: 800, summary: renamedSummary }],
+  }));
+  return { record, session, fixture };
+}
+
+const renamedSummary = `## Goal
+Land the lock fix.
+
+## Constraints & Preferences
+- do not change the on-disk format
+
+## Progress
+### Done
+- [x] Bisected to 9f3c1ab7.
+
+### In Progress
+- [ ] Land src/index/reopen2.ts.
+
+### Blocked
+- (none)
+
+## Key Decisions
+- **One commit**: the revert has to be a pure code revert.
+
+## Next Steps
+1. Deploy to one staging node.
+
+## Critical Context
+- The freeze is 2026-03-14.
+`;
+
+test('a recorded --session run is scored over the session it summarised', () => {
+  const { record } = recordedSessionRun();
+  const result = run(['--score', record]);
+  assert.equal(result.status, 0, result.stdout);
+  // src/index/reopen2.ts is in the recorded session, so it is not a fabrication; the fixture's own
+  // session does not contain it, and scoring there would report one.
+  assert.match(result.stdout, /real@low\s+stop\s+—\s+800\s+—\s+—\s+9\/9\s+0\s+1\/1/);
+  // The probe for the old path is absent from that session, so it is reported and left out of the
+  // score rather than counted as a probe the summarizer lost.
+  assert.match(result.stderr, /not scored, absent from the session: file-reopen/);
+});
+
 test('the exit code is the arms\' own, and a clean arm list is zero', () => {
-  const clean = [{ arm: 'a', summary: '', stopReason: 'stop', score: { sections: { count: 0, total: 9, missing: [] }, fabricated: [], probes: { count: 0, total: 0, lost: [] } } }];
-  assert.equal(exitCodeFor(clean), 0);
-  assert.equal(exitCodeFor([{ ...clean[0], stopReason: 'aborted' }]), 1);
-  assert.equal(exitCodeFor([{ arm: 'a', summary: '', score: clean[0].score }]), 0, 'a summary that was never a response cannot fail');
+  assert.equal(exitCodeFor([arm({ stopReasons: ['stop'] })]), 0);
+  assert.equal(exitCodeFor([arm({ stopReasons: ['aborted'] })]), 1);
+  assert.equal(exitCodeFor([arm({})]), 0, 'a summary that was never a response cannot fail');
 });
 
 test('an unrecognised argument and a single arm are refused before anything runs', () => {
@@ -279,10 +393,15 @@ test('an unrecognised argument and a single arm are refused before anything runs
 });
 
 test('the table renders one column per metric for an arm with nothing recorded', () => {
-  const rendered = renderTable([{
-    arm: 'x', summary: '',
-    score: { sections: { count: 0, total: 9, missing: [] }, fabricated: [], probes: { count: 0, total: 0, lost: [] } },
-  }]);
+  const rendered = renderTable([arm({})]);
   assert.equal(rendered.split('\n').length, 3);
   assert.match(rendered.split('\n')[2], /^x\s+—\s+—\s+—\s+—\s+—\s+0\/9\s+0\s+0\/0\s+—$/);
 });
+
+/** A scored arm with the given recorded fields and an empty score. */
+function arm(record) {
+  return {
+    arm: 'x', summary: '', ...record,
+    score: { sections: { count: 0, total: 9, missing: [] }, fabricated: [], probes: { count: 0, total: 0, lost: [] } },
+  };
+}

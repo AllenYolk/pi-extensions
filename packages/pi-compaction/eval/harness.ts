@@ -26,7 +26,16 @@ export interface ArmRecord {
   /** The level that ran, after the host's clamp. */
   thinking?: string;
   requestedThinking?: string;
-  stopReason?: string;
+  /**
+   * Every response group the attempt produced, in order; `null` for a group whose response carried
+   * no stop reason at all.
+   *
+   * A split turn makes **two** summarization requests through the same stream function and the host
+   * concatenates both into one summary, so a clean second group says nothing about a partial first
+   * one. This is the same shape `src/index.ts` checks before it persists anything, and the same
+   * reason: reading only the last group would score a half-written summary as a clean one.
+   */
+  stopReasons?: (string | null)[];
   wallMs?: number;
   outputTokens?: number;
   reasoningTokens?: number;
@@ -148,11 +157,16 @@ function scoreSummary(summary: string, fixture: Fixture): SummaryScore {
 }
 
 /**
- * An arm that did not stop with `stop` produced a summary the host would not have persisted whole.
- * A scored summary that was never a response has no stop reason, and cannot fail this.
+ * An arm is clean only when **every** response group it produced stopped with `stop`, and it produced
+ * at least one. A split turn's groups are all checked, and an attempt whose responses were never
+ * observed is not a clean one — the same two rules the hook applies before it persists a summary.
+ *
+ * A summary passed to `--score` was never a response, so it has no groups and cannot fail this.
  */
 export function exitCodeFor(arms: readonly ScoredArm[]): number {
-  return arms.some((arm) => arm.stopReason !== undefined && arm.stopReason !== 'stop') ? 1 : 0;
+  const unclean = (arm: ScoredArm) => arm.stopReasons !== undefined
+    && (arm.stopReasons.length === 0 || arm.stopReasons.some((reason) => reason !== 'stop'));
+  return arms.some(unclean) ? 1 : 0;
 }
 
 const COLUMNS = ['arm', 'stop', 'wall', 'out tok', 'reason tok', 'cost', 'sections', 'fabricated', 'probes', 'Δ out'] as const;
@@ -160,7 +174,7 @@ const COLUMNS = ['arm', 'stop', 'wall', 'out tok', 'reason tok', 'cost', 'sectio
 export function renderTable(arms: readonly ScoredArm[]): string {
   const rows = arms.map((arm) => [
     arm.arm,
-    arm.stopReason ?? '—',
+    arm.stopReasons === undefined ? '—' : stops(arm.stopReasons),
     arm.wallMs === undefined ? '—' : `${(arm.wallMs / 1000).toFixed(1)}s`,
     arm.outputTokens === undefined ? '—' : String(arm.outputTokens),
     arm.reasoningTokens === undefined ? '—' : String(arm.reasoningTokens),
@@ -183,17 +197,37 @@ export function renderTable(arms: readonly ScoredArm[]): string {
 
 const signed = (value: number) => (value > 0 ? `+${value}` : String(value));
 
-/** A summary file, or a run record a live run wrote — which carries its fixture and its stop reasons. */
-function readScored(path: string): { arms: ArmRecord[]; fixture?: string } {
+/** The stop column: every distinct group outcome, so a split turn shows both of its halves. */
+const stops = (reasons: readonly (string | null)[]) =>
+  reasons.length === 0 ? 'none' : [...new Set(reasons.map((reason) => reason ?? 'no stop reason'))].join(',');
+
+/** Why an arm is not clean, in the hook's terms. Undefined when every group stopped with `stop`. */
+function uncleanNote(stopReasons: readonly (string | null)[]): string | undefined {
+  if (stopReasons.length === 0) return 'no summarization response was observed at all';
+  const unclean = stopReasons.filter((reason) => reason !== 'stop');
+  if (unclean.length === 0) return undefined;
+  const of = (reason: string | null) => (reason === null ? 'no stop reason' : `"${reason}"`);
+  return unclean.length === stopReasons.length
+    ? `every summarization response failed to stop with "stop" (${unclean.map(of).join(', ')})`
+    : `${unclean.length} of ${stopReasons.length} summarization responses did not stop with "stop" `
+      + `(${unclean.map(of).join(', ')}) — a split turn's responses are all checked`;
+}
+
+/** A summary file, or a run record a live run wrote — which carries its fixture, its session and its stop reasons. */
+function readScored(path: string): { arms: ArmRecord[]; fixture?: string; session?: string } {
   const text = readFileSync(path, 'utf8');
   if (!path.endsWith('.json')) return { arms: [{ arm: basename(path).replace(/\.md$/, ''), summary: text }] };
-  const record = JSON.parse(text) as { arms?: unknown; fixture?: unknown };
+  const record = JSON.parse(text) as { arms?: unknown; fixture?: unknown; session?: unknown };
   if (!Array.isArray(record.arms)) throw new UsageError(`${path} is not a run record: it has no arms`);
   const arms = record.arms.map((arm) => {
     const { score: _score, outputDelta: _delta, ...rest } = arm as ScoredArm;
     return rest;
   });
-  return { arms, ...(typeof record.fixture === 'string' ? { fixture: record.fixture } : {}) };
+  return {
+    arms,
+    ...(typeof record.fixture === 'string' ? { fixture: record.fixture } : {}),
+    ...(typeof record.session === 'string' ? { session: record.session } : {}),
+  };
 }
 
 async function runLive(fixture: Fixture, arms: string[]): Promise<ArmRecord[]> {
@@ -216,31 +250,38 @@ async function runLive(fixture: Fixture, arms: string[]): Promise<ArmRecord[]> {
     const model = registry.find(name.slice(0, separator), name.slice(separator + 1));
     const base: ArmRecord = { arm: spec, model: name, requestedThinking, summary: '' };
     if (!model) {
-      records.push({ ...base, stopReason: 'unavailable', error: `this host does not offer ${name}` });
+      records.push({ ...base, stopReasons: ['unavailable'], error: `this host does not offer ${name}` });
       continue;
     }
     if (!registry.hasConfiguredAuth(model)) {
-      records.push({ ...base, stopReason: 'unauthenticated', error: `no configured credentials for ${name}` });
+      records.push({ ...base, stopReasons: ['unauthenticated'], error: `no configured credentials for ${name}` });
       continue;
     }
     const thinking = summarizerThinkingLevel(model, { model: name, thinking: requestedThinking as never });
+    // One entry per response group. The host's retry policy calls the stream function again with the
+    // same context, and observingStream replaces that group's entry, so a retried-away failure is not
+    // an outcome — while a split turn's two ranges stay separate and both are recorded.
     const outcomes = new Map<object, { stopReason?: string }>();
     const started = performance.now();
+    const stopReasons = () => [...outcomes.values()].map((seen) => seen.stopReason ?? null);
     try {
       const result = await compact(
         fixture.prepared, model, undefined, undefined, undefined, undefined, thinking as never,
         observingStream(registry, (group, seen) => { outcomes.set(group, seen); }),
         undefined, hostRetryPolicy({}), undefined, 'pi-compaction-eval',
       );
+      const reasons = stopReasons();
+      const note = uncleanNote(reasons);
       records.push({
         ...base, thinking, summary: result.summary,
-        stopReason: [...outcomes.values()].at(-1)?.stopReason ?? 'unobserved',
+        stopReasons: reasons,
         wallMs: Math.round(performance.now() - started),
         ...usageOf(result.usage),
+        ...(note ? { error: note } : {}),
       });
     } catch (error) {
       records.push({
-        ...base, thinking, stopReason: [...outcomes.values()].at(-1)?.stopReason ?? 'error',
+        ...base, thinking, stopReasons: stopReasons(),
         wallMs: Math.round(performance.now() - started), error: String(error),
       });
     }
@@ -276,11 +317,25 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   const live = options.scores.length === 0;
-  const loaded = live ? [] : options.scores.map(readScored);
-  // A recorded run names the fixture it ran against, so re-scoring it reproduces the same range
-  // without the operator having to remember which fixture that was.
-  const fixturePath = options.fixture ?? loaded.find((entry) => entry.fixture)?.fixture ?? DEFAULT_FIXTURE;
-  const fixture = loadFixture(fixturePath, options.session);
+  // Everything the operator supplied is loaded here: a missing or malformed fixture, a run record
+  // that is not one, a recorded session that has since been deleted, and a manifest whose probes do
+  // not occur in its own session are all input errors, and get a line rather than a stack trace.
+  let loaded: ReturnType<typeof readScored>[];
+  let fixture: Fixture;
+  try {
+    loaded = live ? [] : options.scores.map(readScored);
+    // A recorded run names the fixture **and the session** it ran against, so re-scoring it
+    // reproduces the same range without the operator having to remember either. This is what makes
+    // `--session` usable: a run over a real session is scored over that session, not over the
+    // synthetic fixture, which would turn its real paths into fabrications and its absent probes
+    // into losses.
+    const recorded = loaded.find((entry) => entry.fixture || entry.session);
+    fixture = loadFixture(options.fixture ?? recorded?.fixture ?? DEFAULT_FIXTURE, options.session ?? recorded?.session);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+  const fixturePath = fixture.manifestPath;
   const arms = scoreArms(fixture, live ? await runLive(fixture, options.arms) : loaded.flatMap((entry) => entry.arms));
 
   const record: RunRecord = {
