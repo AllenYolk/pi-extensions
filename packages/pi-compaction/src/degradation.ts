@@ -110,7 +110,8 @@ const FALLBACK_COST =
   + 'chose is not the one that wrote it.';
 
 const NEXT =
-  'Next: /compaction model provider/model to summarise with a different model, /compaction '
+  'Next: /compaction fallback provider/model to try a second summarizer before the host takes over, '
+  + '/compaction model provider/model to summarise with a different model, /compaction '
   + 'thinking off|minimal|low|medium|high|xhigh|max to change how hard it thinks, /compaction '
   + 'window <tokens> to change the cut point, or /compaction disable to make stock Pi the default.';
 

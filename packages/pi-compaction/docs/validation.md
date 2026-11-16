@@ -94,7 +94,10 @@ session, resolving Pi 1.5.1 from this package's own workspace, unless it says ot
   byte-identical and both carry `reasoning: "low"`, which is the only way to show the cut point did
   not move between them.
 - A rejected configuration stays inert — `fallbackModel: "no-slash"` rejects the file whole, and a
-  hook-level run with a rejected file resolves no model and requests nothing.
+  hook-level run with a rejected file resolves no model and requests nothing. `null`, `"conversation"`
+  and `"none"` all load as no fallback, from the file and from the command, so the two entry points
+  spell it the same way; `summarizerModel` still rejects `none`, because its null is the conversation
+  model rather than the absence of one.
 - `/compaction fallback` with no value prints usage and changes nothing, an invalid id is refused by
   `validateConfig`, and the status view reports `none`, a model this host does not offer, a model with
   no configured credentials, and one it can run.
@@ -148,9 +151,10 @@ the real run.
 
 ### This branch's own gates
 
-`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 65/65 pass (45 before this
-change). `npm run check` — 151/151 pass. `npm pack --json --ignore-scripts` still produces exactly the
-eight entries listed below.
+`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 92/92 pass on top of #33 and
+#34, of which 21 are this branch's. `npm run check` — 178/178 pass. `npm pack --json --ignore-scripts`
+still produces exactly the eight entries listed below. The gates table above is #34's and is left as
+it stands; the maintainer corrects it after the merge.
 
 ## The packed artifact
 

@@ -53,7 +53,7 @@ project-level overrides, and `/reload` picks up a change without restarting.
 | --- | --- |
 | `enabled` | Whether the package acts at all. Defaults to `false`. |
 | `summarizerModel` | `provider/model`, or `null` — the default — for the conversation model. `"conversation"` is accepted as a spelling of `null`. |
-| `fallbackModel` | `provider/model`, or `null` — the default — for no fallback at all. `"conversation"` is accepted as a spelling of `null`. |
+| `fallbackModel` | `provider/model`, or `null` — the default — for no fallback at all. `"conversation"` and `"none"` are both accepted as spellings of `null`, in the file and from the command. |
 | `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Defaults to `medium`, and is clamped to what the chosen model supports. |
 | `keptWindowTokens` | Token target for the kept window. Defaults to `16000`. |
 
@@ -150,8 +150,7 @@ your back.
 Handing compaction back to stock Pi gives up the summarizer you configured: stock Pi compacts with
 the **conversation model** at the **session's thinking level**. What the owner's machine has recorded
 for compactions on a summarizer chosen for the job — and what it could not re-derive — is in
-[validation](docs/validation.md#measured-on-the-owners-machine). `fallbackModel` puts one step in
-between.
+[validation](docs/validation.md#measured-on-the-owners-machine).
 
 `fallbackModel` puts one step in between. It is off by default, and `null` — or an absent field — is
 exactly the behaviour above.
@@ -285,9 +284,10 @@ Every knob is settable from it, and each change is written back to the configura
 /compaction window <tokens>
 ```
 
-`conversation` and `none` both mean no fallback. There is deliberately no way to name the conversation
-model as a fallback: the host handback already is that, and saying it twice would hide which one
-happened.
+`conversation` and `none` both mean no fallback, and the configuration file takes both as well as
+`null` — the two entry points spell it the same way on purpose. There is deliberately no way to name
+the conversation model as a fallback: the host handback already is that, and saying it twice would
+hide which one happened.
 
 ## Host-seam check
 

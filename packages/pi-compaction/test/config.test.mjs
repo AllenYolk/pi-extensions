@@ -62,7 +62,7 @@ test('no fallback model is the default, and an absent field keeps it', () => {
   assert.equal(loadConfig(dir).config.fallbackModel, null);
 });
 
-test('a fallback model round-trips, and both spellings of none mean no fallback', () => {
+test('a fallback model round-trips, and every spelling of none means no fallback', () => {
   const dir = agentDir();
   saveConfig(dir, { ...defaults(), enabled: true, fallbackModel: 'p/f' });
   const { config, diagnostic } = loadConfig(dir);
@@ -72,11 +72,17 @@ test('a fallback model round-trips, and both spellings of none mean no fallback'
 
   // `conversation` is a spelling of `null` here for the same reason it is for `summarizerModel`:
   // the field names a model, and the word for "not a model" is the one the command already uses.
-  for (const written of [null, CONVERSATION_MODEL]) {
+  // `none` is the command's own spelling, and the file takes it too — two entry points that spell
+  // "no fallback" differently is a trap, and a rejected file is the worst way to find out.
+  for (const written of [null, CONVERSATION_MODEL, 'none']) {
     const other = agentDir();
     write(other, { fallbackModel: written });
     assert.equal(loadConfig(other).config.fallbackModel, null, String(written));
   }
+  // And the saved form has no absent keys, so a reload reads back exactly what was written.
+  const roundTrip = agentDir();
+  saveConfig(roundTrip, { ...defaults(), fallbackModel: null });
+  assert.equal(loadConfig(roundTrip).config.fallbackModel, null);
 });
 
 test('null and the conversation word both mean the conversation model', () => {
@@ -104,6 +110,9 @@ test('an invalid value is rejected whole, and the caller is told where to look',
     [{ summarizerModel: 'no-slash' }, /summarizerModel must be/],
     [{ fallbackModel: 'no-slash' }, /fallbackModel must be/],
     [{ fallbackModel: 7 }, /fallbackModel must be/],
+    // `none` is accepted, but only exactly: a near-miss is a malformed model id like any other.
+    // `none/x` is not a near-miss — it is a well-formed id whose provider happens to be `none`.
+    [{ fallbackModel: 'None' }, /fallbackModel must be/],
     // A half-applied fallback is worse than none, so one bad field still rejects the whole file.
     [{ summarizerModel: 'p/m', fallbackModel: 'no-slash' }, /fallbackModel must be/],
     [{ fallbackModels: 'p/f' }, /unknown field fallbackModels/],
@@ -131,4 +140,16 @@ test('a configuration assembled by the command goes through the same validation'
   assert.match(validateConfig({ ...defaults(), summarizerModel: 'no-slash' }), /summarizerModel must be/);
   assert.match(validateConfig({ ...defaults(), fallbackModel: 'no-slash' }), /fallbackModel must be/);
   assert.equal(validateConfig({ ...defaults(), fallbackModel: 'p/f' }), undefined);
+  // The command's spelling goes through the same validation, so it cannot write a file that would
+  // not load back.
+  assert.equal(validateConfig({ ...defaults(), fallbackModel: null }), undefined);
+});
+
+test('the two model fields do not share a spelling they should not', () => {
+  // `none` means "no fallback". For `summarizerModel` there is no such thing: its null is the
+  // conversation model, and accepting `none` there would make two different values look alike.
+  const dir = agentDir();
+  write(dir, { summarizerModel: 'none' });
+  assert.equal(loadConfig(dir).config, undefined, 'summarizerModel still rejects it');
+  assert.match(loadConfig(dir).diagnostic, /summarizerModel must be/);
 });

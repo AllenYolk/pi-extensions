@@ -75,22 +75,27 @@ test('the announcement names the summarizer, the reason and everything a handbac
   assert.match(lines[3], /neither path sends an output ceiling/);
   assert.match(lines[3], /those three are the whole of what this package controls/);
 
-  // The guidance has to name every level the command accepts, and the third knob.
-  assert.match(lines[4], /Next: \/compaction model provider\/model/);
+  // The guidance has to name every level the command accepts, and every knob. There are four knobs
+  // now, and `fallback` leads because it is the one a reader most needs after a handback: it is the
+  // only one that would have prevented it.
+  assert.match(lines[4], /Next: \/compaction fallback provider\/model/);
+  assert.match(lines[4], /\/compaction model provider\/model/);
   assert.match(lines[4], /thinking off\|minimal\|low\|medium\|high\|xhigh\|max/);
   assert.match(lines[4], /\/compaction window <tokens>/);
   assert.match(lines[4], /\/compaction disable/);
 });
 
-test('one attempt announces exactly what it announced before a fallback existed', () => {
-  // `fallbackModel: null` has to behave as the released package does, and the announcement is part
-  // of that: no extra line, and no wording that only makes sense once a second model is configured.
+test('one attempt keeps the shape it had before a fallback existed', () => {
+  // `fallbackModel: null` has to take the released path, and the announcement's shape is part of
+  // that: five lines, no `Earlier:` line, and nothing that only reads correctly once a second model
+  // has been tried. The guidance line is deliberately *not* frozen — it names the fallback knob now,
+  // because that knob exists whether or not this session configured one.
   const record = { attempts: [attempt('p/m (api)', 'the summarizer reported an error (503)')] };
   assert.equal(handedBack(record), true);
   const lines = announcement(record);
   assert.equal(lines.length, 5);
-  assert.doesNotMatch(lines.join('\n'), /fallback/i, 'a single attempt says nothing about a fallback');
   assert.doesNotMatch(lines.join('\n'), /^Earlier:/m);
+  assert.doesNotMatch(lines.join('\n'), /recovered — the fallback summarizer/);
 });
 
 test('a handback after two attempts names both of them', () => {

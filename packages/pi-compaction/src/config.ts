@@ -62,11 +62,17 @@ export function configPath(agentDir: string): string {
   return join(agentDir, 'extensions', 'pi-compaction', 'config.json');
 }
 
-/** A `provider/model` id, or `null` for the conversation model — which for a fallback means none. */
-function modelId(value: unknown, label: string): string | null {
-  if (value === CONVERSATION_MODEL) return null;
+/**
+ * A `provider/model` id, or `null` — which is the conversation model for `summarizerModel`, and no
+ * fallback at all for `fallbackModel`. `spellings` are the extra words a field accepts for `null`;
+ * `fallbackModel` takes `none` because the command offers it, and two entry points that spell the
+ * same value differently is a trap.
+ */
+function modelId(value: unknown, label: string, spellings: string[] = []): string | null {
+  const accepted = [CONVERSATION_MODEL, ...spellings];
+  if (typeof value === 'string' && accepted.includes(value)) return null;
   if (typeof value !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(value)) {
-    throw new Error(`${label} must be "provider/model", "${CONVERSATION_MODEL}" or null`);
+    throw new Error(`${label} must be "provider/model", ${accepted.map((word) => `"${word}"`).join(', ')} or null`);
   }
   return value;
 }
@@ -93,7 +99,7 @@ function parse(raw: unknown): Config {
     config.summarizerModel = modelId(record.summarizerModel, 'summarizerModel');
   }
   if ('fallbackModel' in record && record.fallbackModel !== null) {
-    config.fallbackModel = modelId(record.fallbackModel, 'fallbackModel');
+    config.fallbackModel = modelId(record.fallbackModel, 'fallbackModel', ['none']);
   }
   if ('thinking' in record) {
     if (!THINKING_LEVELS.includes(record.thinking as ThinkingLevel)) {
