@@ -342,93 +342,29 @@ recorded.
 
 ## The redistilling experiment
 
-The inert `redistill` field ([ADR 0006](adr/0006-ask-for-a-fixed-point.md),
-[#31](https://github.com/AllenYolk/pi-extensions/issues/31)) asks the summarizer to merge the previous
-summary towards a fixed point instead of only adding to it. Whether a model does anything with that
-request is the whole question, and **no arm has been run**. This section is the method; the numbers
-are not here yet.
+**Not run, and not scheduled.** The owner decided against running it, so the requirement to measure
+`redistill` before describing it as effective is withdrawn. The field ships **inert and unvalidated**,
+and nothing in this document, the README or the changeset claims it works. That is a decision about
+effort, not a result: whether a summarizer does anything with a fixed-point request is still an open
+question, and the specification records one model ignoring the host's own "keep each section concise"
+on 16 of 16 compactions.
 
-### The bar
-
-An arm ships enabled-by-default, or gets documented as effective, only if it
-
-- reduces output tokens by **≥ 25%** against the control arm, **and**
-- loses **zero** declared probes, **and**
-- keeps **9/9** sections, **and**
-- adds **no** fabricated paths, **and**
-- costs **no** wall time. A second request, or a longer prompt that makes the model think longer, is a
-  fail.
-
-If no arm clears it, the field stays inert and undocumented as effective and the negative result is
-recorded here. A prompt that models ignore is a fact about the models.
-
-### The trap in the fixture
-
-The committed fixture's previous summary is **261 tokens**. An arm at #31's own
-`aboveTokens: 4000` therefore asks for **nothing** — it is the control arm under another name. The
-harness prints a line on stderr for any arm that asked for nothing, naming the previous summary's
-size, and a run whose redistilling arms all did that measures nothing.
-
-There are two honest ways to run it, and they answer the same question at different scales.
-
-**At fixture scale**, with thresholds that actually trigger on a 261-token previous summary. One
-three-arm run per summarizer, cheap enough to repeat:
+The [evaluation harness](#reproducing-a-comparison-the-evaluation-harness) can measure it whenever
+someone wants the number, with no new machinery: give each arm a `+above:target` suffix and the first
+arm on the command line is the control every `Δ out` is measured against.
 
 ```sh
-cd packages/pi-compaction
-
-# The cheap summarizer this package is built around.
 node eval/harness.ts \
   --arm 'minimax-cn/MiniMax-M3.1-Flash@low' \
   --arm 'minimax-cn/MiniMax-M3.1-Flash@low+200:400' \
   --arm 'minimax-cn/MiniMax-M3.1-Flash@low+200:260' \
-  --out work/redistill-flash-low
-
-# The conversation model at its session level — the other half of #31's question, since the
-# specification's 16/16 non-compliance was measured on gpt-6.1-sol.
-node eval/harness.ts \
-  --arm 'mafia-o/gpt-6.1-sol@high' \
-  --arm 'mafia-o/gpt-6.1-sol@high+200:400' \
-  --arm 'mafia-o/gpt-6.1-sol@high+200:260' \
-  --out work/redistill-sol-high
+  --out work/redistill
 ```
 
-The first arm on each command line is the control every `Δ out` is measured against. `+200:400` is
-the soft arm (a target above the previous summary's size) and `+200:260` the hard one (a target at
-it), which is #31's 6,000/4,000 pair scaled to this fixture.
-
-**At #31's literal thresholds**, which need a previous summary of at least 4,000 tokens. `--session`
-does not provide one — the previous summary comes from the manifest, not from the session — so this
-needs a manifest of your own:
-
-```sh
-# A copy of eval/fixtures/long-session.json whose "previousSummary" names a file of at least
-# 4,000 tokens, with probes that occur in the range that manifest declares. Never commit it.
-node eval/harness.ts \
-  --fixture /path/to/your-manifest.json \
-  --arm 'mafia-o/gpt-6.1-sol@high' \
-  --arm 'mafia-o/gpt-6.1-sol@high+4000:6000' \
-  --arm 'mafia-o/gpt-6.1-sol@high+4000:4000' \
-  --out work/redistill-sol-high-4000
-```
-
-Either run writes `run.json` and one file per summary under `--out`, and records the instruction each
-arm actually sent. Re-scoring needs no credentials and no request:
-
-```sh
-node eval/harness.ts --score work/redistill-flash-low/run.json
-```
-
-Exit status is 0 when every arm's every response group stopped with `stop`, 1 when one did not, and 2
-for bad input. A redistilling arm that came back partial is a fail of the guarantee, not a data point.
-
-### Results
-
-**Not run.** Nothing in this document, the README or the changeset claims this field works. When an
-arm is run, record here: the date, the host and model versions, the exact command, the fixture or
-manifest used, and the full table the harness printed — `stop`, wall, output tokens, reasoning tokens,
-cost, `sections`, `fabricated`, `probes` and `Δ out` for each arm — followed by whether each arm
-cleared the bar above, **whatever the numbers say**.
+One trap, recorded because it makes a run measure nothing: **the committed fixture's previous summary
+is 261 tokens**, so an arm at `aboveTokens: 4000` asks for nothing and is the control arm under
+another name. Scale the thresholds to the fixture, or supply a manifest whose `previousSummary` is
+large enough. The harness prints a line on stderr for any arm that asked for nothing.
 
 ## Known limits
 
