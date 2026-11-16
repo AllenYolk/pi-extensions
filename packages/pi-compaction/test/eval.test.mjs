@@ -407,12 +407,31 @@ test('an arm may carry redistill thresholds, and a malformed pair is refused', (
     aboveTokens: 4_000,
     targetTokens: 6_000,
   });
-  for (const spec of ['a/b@low+4000', 'a/b@low+4000:', 'a/b@low+x:6000', 'a/b@low+0:6000', 'a/b@low+4000:6000:1']) {
+  // The bounds are the configuration's own, so an arm cannot measure an instruction the package would
+  // refuse to send — or one naming a number the operator never typed.
+  assert.deepEqual(parseArm('a/b@low+1:1000000').redistill, { aboveTokens: 1, targetTokens: 1_000_000 });
+  for (const spec of [
+    'a/b@low+4000',
+    'a/b@low+4000:',
+    'a/b@low+x:6000',
+    'a/b@low+0:6000',
+    'a/b@low+4000:6000:1',
+    'a/b@low+4000:0',
+    'a/b@low+1000001:6000',
+    // 1e39 and 1e35: finite, integral, and far outside the bound.
+    'a/b@low+1:999999999999999999999999999999999999999',
+    'a/b@low+4000:99999999999999999999999999999999999',
+    // Long enough to overflow to Infinity, which no comparison against a bound catches on its own.
+    `a/b@low+1:${'9'.repeat(400)}`,
+  ]) {
     assert.throws(() => parseArm(spec), /must be <provider\/model>@<thinking>/, spec);
   }
   const malformed = run(['--arm', 'a/b@low+4000', '--arm', 'c/d@low']);
   assert.equal(malformed.status, 2);
   assert.match(malformed.stderr, /must be <provider\/model>@<thinking>/);
+  const unbounded = run(['--arm', `a/b@low+1:${'9'.repeat(400)}`, '--arm', 'c/d@low']);
+  assert.equal(unbounded.status, 2, unbounded.stderr);
+  assert.match(unbounded.stderr, /must be <provider\/model>@<thinking>/);
 });
 
 test('an arm sends the instruction its thresholds ask for, or nothing', () => {

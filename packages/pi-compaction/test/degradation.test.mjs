@@ -75,6 +75,8 @@ test('the announcement names the summarizer, the reason and everything a handbac
   assert.match(lines[3], /The summary length is unaffected/);
   assert.match(lines[3], /neither path sends an output ceiling/);
   assert.match(lines[3], /those three are the whole of what this package controls/);
+  // Redistilling is off by default, so nothing is said about it unless it was configured.
+  assert.doesNotMatch(lines[3], /redistill/i);
 
   // The guidance has to name every level the command accepts, and every knob. There are four knobs
   // now, and `fallback` leads because it is the one a reader most needs after a handback: it is the

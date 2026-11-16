@@ -18,7 +18,12 @@ import {
   SECTIONS,
 } from './score.ts';
 import { DEFAULT_FIXTURE, loadFixture, type Fixture } from './input.ts';
-import { THINKING_LEVELS, type Redistill, type ThinkingLevel } from '../src/config.ts';
+import {
+  redistillThreshold,
+  THINKING_LEVELS,
+  type Redistill,
+  type ThinkingLevel,
+} from '../src/config.ts';
 import { previousSummaryTokens, redistillInstructions } from '../src/redistill.ts';
 
 /** What one arm produced. A summary scored offline has only a name and its text. */
@@ -113,8 +118,18 @@ export function parseArm(spec: string): Arm {
   if (!match) throw refused();
   const [, name, thinking, above, target] = match;
   if (above === undefined) return { name: name!, thinking: thinking!, redistill: null };
-  const redistill = { aboveTokens: Number(above), targetTokens: Number(target) };
-  if (redistill.aboveTokens < 1 || redistill.targetTokens < 1) throw refused();
+  // The configuration's own bounds, not a second set: an arm must not measure an instruction naming a
+  // number the package would refuse to send, and a digit string long enough to become 1e39 or
+  // Infinity is neither an integer within the bound nor a number the operator typed.
+  let redistill: Redistill;
+  try {
+    redistill = {
+      aboveTokens: redistillThreshold(Number(above), 'aboveTokens'),
+      targetTokens: redistillThreshold(Number(target), 'targetTokens'),
+    };
+  } catch {
+    throw refused();
+  }
   return { name: name!, thinking: thinking!, redistill };
 }
 
@@ -123,7 +138,9 @@ export function parseArm(spec: string): Arm {
  * same module, so an arm measures what the package would actually ask for.
  */
 export function armInstructions(fixture: Fixture, spec: string): string | undefined {
-  return redistillInstructions(fixture.prepared.previousSummary, parseArm(spec).redistill, undefined);
+  return redistillInstructions(
+    fixture.prepared.previousSummary, parseArm(spec).redistill, undefined, fixture.prepared.isSplitTurn,
+  );
 }
 
 /** Parse the command line. Anything unrecognised is refused rather than ignored. */
@@ -305,10 +322,11 @@ async function runLive(fixture: Fixture, arms: string[]): Promise<ArmRecord[]> {
     if (redistill && !customInstructions) {
       // An arm that asked for nothing is the control arm under another name, and reading it as a
       // redistilling arm would turn "the instruction did nothing" into "the model ignored it".
-      console.error(
-        `${spec}: asked for nothing — the previous summary is ${previousSummaryTokens(fixture.prepared.previousSummary ?? '')} `
-        + 'tokens, below this arm\'s aboveTokens',
-      );
+      const why = fixture.prepared.isSplitTurn
+        ? 'the cut is a split turn, which this package leaves alone'
+        : `the previous summary is ${previousSummaryTokens(fixture.prepared.previousSummary ?? '')} tokens, `
+          + "below this arm's aboveTokens";
+      console.error(`${spec}: asked for nothing — ${why}`);
     }
     const separator = name.indexOf('/');
     const model = registry.find(name.slice(0, separator), name.slice(separator + 1));

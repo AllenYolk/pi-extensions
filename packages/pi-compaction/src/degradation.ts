@@ -132,12 +132,23 @@ export function toRecord(data: unknown): CompactionRecord | undefined {
  * and neither does stock Pi, so both produce a summary as long as the host's prompt and the model
  * make it. What a handback gives up is the three things this package controls — the model, the
  * thinking level, and the cut point.
+ *
+ * This deliberately does not claim those three are the *whole* of what it controls: redistilling is a
+ * fourth, and `REDISTILL_COST` has to be able to add it to the same line without contradicting this
+ * sentence.
  */
 const HANDBACK_COST =
   'stock Pi compacts with the conversation model, the session\'s own thinking level, and the host\'s '
   + 'recent-token setting rather than this package\'s kept-window target. The summary length is '
   + 'unaffected — neither path sends an output ceiling — but those three are the whole of what this '
   + 'package controls, so a handback gives all of them up.';
+
+/**
+ * What a handback additionally gives up when redistilling was configured. The instruction is this
+ * package's, and the host applies only the caller's own `/compact <text>` on its own path, so a
+ * handback stops asking for it — which the sentence above would otherwise leave out.
+ */
+const REDISTILL_COST = ' A redistilling instruction was configured, and stock Pi does not ask for it.';
 
 /**
  * What a fallback costs. The cut point and the whole-summary guarantee are unchanged, but the
@@ -186,7 +197,7 @@ const NO_ATTEMPTS = [
  * A single attempt announces exactly what it announced before a fallback existed: the extra lines
  * only appear once there is a second model to report.
  */
-export function announcement(record: CompactionRecord): string[] {
+export function announcement(record: CompactionRecord, redistilling = false): string[] {
   const last = record.attempts[record.attempts.length - 1];
   if (last === undefined) return [...NO_ATTEMPTS];
   const earlier = record.attempts.slice(0, -1);
@@ -204,7 +215,7 @@ export function announcement(record: CompactionRecord): string[] {
   // A handback names every attempt that failed before the last one; a recovery already names them in
   // `Why:`, which is the only place a fallback's own reason can be reported.
   if (handback) for (const failed of earlier) lines.push(`Earlier: ${failed.summarizer} — ${failed.reason}`);
-  lines.push(`Now: ${handback ? HANDBACK_COST : fallbackCost(last.thinking)}`, NEXT);
+  lines.push(`Now: ${handback ? HANDBACK_COST + (redistilling ? REDISTILL_COST : '') : fallbackCost(last.thinking)}`, NEXT);
   return lines;
 }
 

@@ -22,9 +22,23 @@ semantics, from union to fixed point, by naming what may be dropped rather than 
 
 Absent, `null` or half-configured means off, and the fifth argument to `compact()` is then exactly
 what it was; an unknown or malformed `redistill` rejects the configuration whole, like every other
-field. A session's first compaction has nothing to re-distil and injects nothing. A `/compact <text>`
-of the user's own is appended to and never replaced. `/compaction` reports whether redistilling is on
-and at what thresholds.
+field, and so does a malformed field inside a half-configured pair — the field that is present is
+checked even though the pair is off. A session's first compaction has nothing to re-distil and injects
+nothing. A `/compact <text>` of the user's own is appended to and never replaced.
+
+**A split turn is left alone.** The host applies one custom-instruction value to both of a split turn's
+summarization requests, and the second one's document is only the current turn's prefix: no previous
+summary, and its output is concatenated onto the merged summary rather than being one. The
+instruction's premise would be false there and its pruning clause would aim at the newest range, so
+nothing of this package's is asked for; the user's own text still reaches both requests.
+
+`/compaction` reports whether redistilling is on and at what thresholds, and says so when the host's
+token estimate failed the new activation-time probe that gates it — a fourth host seam, and one whose
+mismatch turns redistilling off rather than handing compaction back.
+
+`redistill` is file-only, so a save refuses rather than erase a value the parse did not adopt, and an
+off value is written as an absent key: 0.2.x rejects a file carrying a field it does not know, and it
+rejects the whole file.
 
 It asks; it enforces nothing. No output ceiling is sent, nothing is truncated or rewritten, and a
 model that ignores the instruction produces exactly today's summary — so the package's guarantee is

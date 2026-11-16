@@ -10,7 +10,7 @@ import {
   saveConfig,
   validateConfig,
 } from '../src/config.ts';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -106,6 +106,66 @@ test('redistill is off unless both thresholds are given', () => {
     assert.equal(effective(config).redistill, null, JSON.stringify(body));
   }
   assert.equal(defaults().redistill, null);
+});
+
+test('a half-configured redistill validates the field that is there', () => {
+  // Off because the counterpart is missing, not because nobody looked: the field that IS present goes
+  // through the same check it would go through next to its counterpart, so a typo cannot hide behind
+  // a missing key and silently disable the feature.
+  for (const [field, value] of [
+    ['aboveTokens', '4000'],
+    ['aboveTokens', 0],
+    ['aboveTokens', 2_000_000],
+    ['aboveTokens', 1.5],
+    ['targetTokens', 'soon'],
+    ['targetTokens', -1],
+    ['targetTokens', null],
+  ]) {
+    const dir = agentDir();
+    write(dir, { redistill: { [field]: value } });
+    const { config, diagnostic } = loadConfig(dir);
+    assert.equal(config, undefined, `redistill.${field} = ${JSON.stringify(value)}`);
+    assert.match(diagnostic, new RegExp(`redistill\\.${field} must be an integer`), `redistill.${field} = ${JSON.stringify(value)}`);
+    assert.match(diagnostic, /compaction stays stock Pi/);
+  }
+});
+
+test('a save refuses to erase a redistill the configuration does not adopt', () => {
+  // `redistill` is file-only, so a save that dropped a half-written value would destroy something the
+  // command surface cannot restore, with nothing said. The save is refused instead.
+  const dir = agentDir();
+  write(dir, { enabled: true, thinking: 'off', redistill: { aboveTokens: 4_000 } });
+  const before = readFileSync(join(dir, 'extensions', 'pi-compaction', 'config.json'), 'utf8');
+  const loaded = loadConfig(dir);
+  assert.equal(loaded.diagnostic, undefined);
+  assert.equal(loaded.config.redistill, null, 'half-configured is off');
+  assert.throws(
+    () => saveConfig(dir, { ...loaded.config, thinking: 'high' }),
+    /refusing to rewrite .*config\.json.*redistill/s,
+  );
+  assert.equal(readFileSync(join(dir, 'extensions', 'pi-compaction', 'config.json'), 'utf8'), before, 'the file is untouched');
+});
+
+test('the file this version writes stays readable by 0.2.x', () => {
+  // 0.2.x rejects any key outside `enabled`, `summarizerModel`, `thinking` and `keptWindowTokens`,
+  // and it rejects the whole file rather than the key — so writing an inert `redistill: null` would
+  // take a returning user's summarizer model and thinking level with it.
+  const OLD_FIELDS = ['enabled', 'summarizerModel', 'thinking', 'keptWindowTokens'];
+  const dir = agentDir();
+  saveConfig(dir, { ...defaults(), enabled: true, summarizerModel: 'p/m' });
+  const written = JSON.parse(readFileSync(join(dir, 'extensions', 'pi-compaction', 'config.json'), 'utf8'));
+  assert.deepEqual(Object.keys(written).sort(), [...OLD_FIELDS].sort());
+  assert.equal('redistill' in written, false, 'an off redistill is an absent key, not a null one');
+  // A configured one is written, and says so; 0.2.x would reject that file, which is the documented
+  // cost of configuring a field that did not exist then.
+  saveConfig(dir, { ...defaults(), redistill: { aboveTokens: 4_000, targetTokens: 6_000 } });
+  const configured = JSON.parse(readFileSync(join(dir, 'extensions', 'pi-compaction', 'config.json'), 'utf8'));
+  assert.deepEqual(configured.redistill, { aboveTokens: 4_000, targetTokens: 6_000 });
+  assert.deepEqual(Object.keys(configured).filter((key) => !OLD_FIELDS.includes(key)), ['redistill']);
+  // And an absent key reads back as off, which is what makes omitting it safe.
+  const fresh = agentDir();
+  write(fresh, { enabled: true });
+  assert.equal(loadConfig(fresh).config.redistill, null);
 });
 
 test('an unknown or malformed redistill rejects the configuration whole', () => {

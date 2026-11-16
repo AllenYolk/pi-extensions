@@ -31,17 +31,18 @@ and host versions are unchanged from the earlier gate run.
 
 | Check | Result |
 | --- | --- |
-| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **90/90 tests pass** (62 behaviour, 28 evaluation harness), on the branch that added the inert `redistill` field |
-| `npm run check` | **176/176 tests pass** (90 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
+| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **98/98 tests pass** (70 behaviour, 28 evaluation harness), on the branch that added the inert `redistill` field |
+| `npm run check` | **184/184 tests pass** (98 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
 | `npm run benchmark` | **deliberately skipped** — the presentation benchmark is for `@allenyolk/pi-minimal-display`; this package registers no TUI component and patches nothing. CI runs it on every push regardless. |
 
 The 28 harness tests are the scorers and the `--score` mode of [the evaluation harness](../eval/README.md).
 They make no request: they read the committed fixture, score summaries that already exist, and spawn
 the harness with `--score`. The live mode is unreachable without `--arm` and is not run by any check.
-The 62 behaviour tests include seven real packaged-CLI runs that drive redistilling through the host's
-own compaction path — off, at the threshold, below it, a split turn, a user's `/compact <text>`, a
-partial response to a redistilled request, and the status view — six unit tests over the decision
-itself, and one over what a handback says it gives up when redistilling was configured.
+The behaviour tests include eight real packaged-CLI runs that drive redistilling through the host's
+own compaction path — off in four configurations, at the threshold, below it, a split turn, a user's
+`/compact <text>`, a partial response to a redistilled request, the status view, and a refused save —
+ten unit tests over the decision, the token-estimate probe and the status line, and two over what a
+handback says it gives up.
 
 Which host proves what matters here. The package's own checks resolve Pi 1.5.1 from
 `packages/pi-compaction/node_modules`, so every compaction assertion — including the real
@@ -440,6 +441,14 @@ These are properties of the design, documented in the package README, not defect
   and rewrites nothing, so a model that ignores it produces exactly today's summary — and a model
   that half-follows it may over-drop. No arm of [the experiment](#the-redistilling-experiment) has
   been run, so the field ships inert and nothing claims it works.
+- **Redistilling is not asked for on a split turn, and not on a host whose token estimate fails its
+  probe.** The first is a limit of the seam — one custom-instruction value reaches both of a split
+  turn's requests, and the turn-prefix one has no previous summary to re-distil. The second is
+  deliberate: an unrecognised message shape would report 0 or `NaN` and turn the gate into
+  always-open. Both leave a caller's own `/compact <text>` untouched.
+- **`redistill` is file-only, so a save refuses rather than erase it.** A half-configured pair is off,
+  and a `/compaction …` change that would drop it is not applied. An off value is written as an absent
+  key so a file this version writes stays readable by 0.2.x.
 - **A handback gives up the model and the thinking level, and nothing else about the summary's
   length.** It does not change the length, because neither path sends a ceiling. A configured
   redistilling instruction is given up as well — see above — and the announcement says so.

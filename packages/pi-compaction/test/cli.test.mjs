@@ -111,7 +111,9 @@ function assertStock(run) {
 const REDISTILL = { aboveTokens: 4_000, targetTokens: 6_000 };
 /** The host's chars/4 estimate for a summary, which is what the instruction names. */
 const summaryTokens = (summary) => Math.ceil(summary.length / 4);
-const focusOf = (record) => record.prompt.match(/Additional focus: ([\s\S]*)$/)?.[1];
+// Trimmed: the capture runs to the end of the prompt, so any trailing whitespace the host adds would
+// otherwise fail an exact-equality assertion about a request that carried exactly the right text.
+const focusOf = (record) => record.prompt.match(/Additional focus: ([\s\S]*)$/)?.[1].trim();
 /** The fixed template, written out here rather than imported, so the test is not its own oracle. */
 const instructionFor = (previousTokens, targetTokens) =>
   `The previous summary is ${previousTokens} tokens and the merged summary should stay under ${targetTokens}. `
@@ -119,13 +121,20 @@ const instructionFor = (previousTokens, targetTokens) =>
   + 'that is still true. Drop an entry when a later entry supersedes it, and drop detail about work '
   + 'that is finished and no longer referenced. Do not append a changelog and do not add a history section.';
 
-test('redistill off, null or half-configured leaves the fifth argument exactly as it was', { timeout: 300_000 }, () => {
+test('redistill off, null or half-configured leaves the fifth argument exactly as it was', { timeout: 600_000 }, () => {
+  // Above the sum of the four runs' own 120 s driveHost budgets: a run that hangs fails on
+  // runCompaction's own PI_DRIVE_TIMEOUT assertion, and this cap must not kill it first and make the
+  // break read as flakiness.
+  const user = 'focus on the failing test; keep the port number';
   for (const redistill of [undefined, null, { aboveTokens: 4_000 }, { targetTokens: 6_000 }]) {
     const run = runCompaction({
       name: 'redistill-off-',
       config: { enabled: true, ...(redistill === undefined ? {} : { redistill }) },
-      // Two rounds, so the second one has a previous summary to re-distil and still must not.
-      probe: { ROUNDS: 2, FOLLOWUP: 24_000 },
+      // Two rounds, so the second one has a previous summary to re-distil and still must not. The
+      // caller's own text is what makes "unchanged" observable: without it every record would
+      // legitimately carry no `Additional focus:` line, and a regression that dropped the fifth
+      // argument whenever redistill is off would pass.
+      probe: { ROUNDS: 2, FOLLOWUP: 24_000, INSTRUCTIONS: user },
       fixture: { SUMMARY: 5_000 },
       turns: 40,
     });
@@ -133,7 +142,8 @@ test('redistill off, null or half-configured leaves the fifth argument exactly a
     const records = summarizationRecords(run.records);
     assert.equal(records.length, 2, JSON.stringify(redistill));
     for (const record of records) {
-      assert.equal(focusOf(record), undefined, `${JSON.stringify(redistill)}: nothing was appended`);
+      assert.equal(focusOf(record), user, `${JSON.stringify(redistill)}: the caller's text, unchanged`);
+      assert.doesNotMatch(record.prompt, /The previous summary is \d+ tokens/, `${JSON.stringify(redistill)}: nothing appended`);
     }
     assert.deepEqual(persistedCompactions(run.session.file).map((entry) => entry.fromHook), [true, true]);
   }
@@ -181,14 +191,15 @@ test('a previous summary below the threshold injects nothing', { timeout: 180_00
   }
 });
 
-test('a split turn injects into both of its summarization requests', { timeout: 180_000 }, () => {
+test('a split turn is left alone: one instruction cannot serve both of its requests', { timeout: 180_000 }, () => {
+  const user = 'focus on the failing test; keep the port number';
   const run = runCompaction({
     name: 'redistill-split-',
     // A kept window larger than the follow-up turn puts the second round's cut point inside one of
     // the entries the first round kept, which is what makes that round a split turn.
     config: { enabled: true, keptWindowTokens: 34_000, redistill: REDISTILL },
     fixture: { SUMMARY: 5_000 },
-    probe: { ROUNDS: 2, FOLLOWUP: 24_000 },
+    probe: { ROUNDS: 2, FOLLOWUP: 24_000, INSTRUCTIONS: user },
     turns: 40,
   });
   assert.equal(run.report.error, undefined, run.report.error);
@@ -199,11 +210,19 @@ test('a split turn injects into both of its summarization requests', { timeout: 
   assert.equal(records[1].prompt.includes('<previous-summary>'), true, 'the second round\'s history request updates one');
   assert.equal(records[2].prompt.includes('# Instructions'), true, 'and its third request is the turn prefix');
 
-  assert.equal(focusOf(records[0]), undefined, 'the first round injects nothing');
+  // The gate is what suppressed it, not a small summary: this one is over the threshold.
   const previous = summaryTokens(persistedCompactions(run.session.file)[0].summary);
-  const instruction = instructionFor(previous, REDISTILL.targetTokens);
-  assert.equal(focusOf(records[1]), instruction, 'the history request carries it');
-  assert.equal(focusOf(records[2]), instruction, 'and so does the turn prefix');
+  assert.ok(previous >= REDISTILL.aboveTokens, `the previous summary was ${previous} tokens`);
+
+  // The host applies one custom-instruction value to both requests, and the turn-prefix request's
+  // document is only the current turn: no previous summary, and its output is concatenated onto the
+  // merged summary rather than being one. The instruction's premise would be false there and its
+  // pruning clause would aim at the newest range, so nothing of ours is asked for.
+  assert.equal(focusOf(records[1]), user, 'the history request carries only the caller\'s own text');
+  assert.equal(focusOf(records[2]), user, 'and so does the turn prefix');
+  assert.equal(focusOf(records[0]), user, 'the first round never had a previous summary to re-distil');
+  assert.doesNotMatch(records[1].prompt, /The previous summary is \d+ tokens/, 'no instruction on a split turn');
+  assert.doesNotMatch(records[2].prompt, /The previous summary is \d+ tokens/, 'none on its turn prefix either');
 });
 
 test("a user's own /compact text is kept verbatim and ours is appended to it", { timeout: 180_000 }, () => {
@@ -225,7 +244,9 @@ test("a user's own /compact text is kept verbatim and ours is appended to it", {
   const previous = summaryTokens(persistedCompactions(run.session.file)[0].summary);
   const focus = focusOf(records[1]);
   assert.ok(focus.startsWith(user), `the user's text must come first and unmodified:\n${focus}`);
+  // Ours is appended after it, never woven into it.
   assert.equal(focus, `${user}\n\n${instructionFor(previous, REDISTILL.targetTokens)}`);
+  assert.equal(focus.indexOf(user), 0, 'and the user text is at the start of the slot');
 });
 
 test('a redistilled request that comes back partial is still never persisted', { timeout: 180_000 }, () => {
@@ -269,6 +290,29 @@ test('/compaction reports whether redistilling is on, and at what thresholds', {
     run.plain,
     /Redistilling: on — asks for a fixed point once the previous summary reaches 4000 tokens, naming 6000 as the target \(a request, not a ceiling\)/,
   );
+});
+
+test('/compaction refuses a change that would erase a half-written redistill', { timeout: 180_000 }, () => {
+  // `redistill` is file-only, so a save that dropped the half-written value would destroy something
+  // the command surface cannot restore. The refusal has to reach the user, not throw out of the
+  // command handler.
+  const run = runCompaction({
+    name: 'redistill-partial-save-',
+    config: { enabled: true, thinking: 'medium', redistill: { aboveTokens: 4_000 } },
+    turns: 30,
+    script: [
+      { expect: READY, send: '/compaction thinking high\r' },
+      { expect: 'nothing changed', send: '/compaction-probe\r' },
+    ],
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+  assert.match(run.plain, /nothing changed; refusing to rewrite .*config\.json: it carries a redistill/);
+  assert.match(run.plain, /Complete it with both aboveTokens and targetTokens, or remove it/);
+
+  const onDisk = JSON.parse(readFileSync(join(run.agent, 'extensions/pi-compaction/config.json'), 'utf8'));
+  assert.deepEqual(onDisk.redistill, { aboveTokens: 4_000 }, 'the half-written value is still there');
+  assert.equal(onDisk.thinking, 'medium', 'and the refused change was not half-applied');
+  assert.equal(persistedCompactions(run.session.file)[0].fromHook, true, 'compaction still ran, with redistill off');
 });
 
 test('the package is inert until it is enabled', { timeout: 180_000 }, () => {
@@ -970,14 +1014,16 @@ test('the command shows status and sets every knob without shadowing /compact', 
   assert.match(run.plain, /Error: pi-compaction: nothing changed; thinking must be/);
 
   const persisted = JSON.parse(readFileSync(join(run.agent, 'extensions/pi-compaction/config.json'), 'utf8'));
+  // No `redistill` key at all: an off value is absent rather than null, because 0.2.x rejects a file
+  // carrying a field it does not know — and rejects the whole file, not the key.
   assert.deepEqual(persisted, {
     enabled: false,
     summarizerModel: null,
     fallbackModel: null,
     thinking: 'high',
     keptWindowTokens: 12_000,
-    redistill: null,
   });
+  assert.equal('redistill' in persisted, false);
 
   // `/compaction` must not shadow the host's own `/compact`, which still compacts on its own.
   const compactions = persistedCompactions(run.session.file);

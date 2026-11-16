@@ -25,15 +25,31 @@ An inert `redistill` configuration field:
 ```
 
 When it is set, a previous summary of at least `aboveTokens` makes the package append one fixed
-instruction to `compact()`'s `customInstructions` argument — the host renders it as an
-`Additional focus:` line on the main summary and on a split turn's turn prefix alike. The instruction
-asks for a change of merge semantics, from union to fixed point, by naming what may be dropped rather
-than by asking for brevity: the host already says "keep each section concise" and the specification
-records a model that ignored it on 16 of 16 compactions.
+instruction to `compact()`'s `customInstructions` argument, which the host renders as an
+`Additional focus:` line. The instruction asks for a change of merge semantics, from union to fixed
+point, by naming what may be dropped rather than by asking for brevity: the host already says "keep
+each section concise" and the specification records a model that ignored it on 16 of 16 compactions.
 
 Absent, `null` or half-configured means off, and the fifth argument to `compact()` is then exactly
 what it was. The wording is a fixed template in the source with two numbers in it, not a free-text
 prompt field: a template is testable, and a prompt knob would be a second prompt to maintain.
+
+**A split turn is left alone.** The host applies one `customInstructions` value to *both* of a split
+turn's summarization requests, and the second one's document is only the current turn's prefix: no
+previous summary, and its output is concatenated onto the merged summary rather than being one. There
+the instruction's premise is false and its pruning clause — drop detail about work that is finished and
+no longer referenced — aims at the newest range, the one no earlier summary covers and the one loss
+this package otherwise refuses to risk. Giving the two requests different wording would mean
+rewriting the built prompt inside our own stream function, which is a fourth kind of "changing what
+the summarizer reads" and a seam this package does not take. A caller's own `/compact <text>` is
+unaffected and still reaches both requests.
+
+**The size the instruction names is itself a host seam**, the fourth this package depends on:
+`estimateTokens()` accepting a `compactionSummary` message. It is probed at activation alongside the
+other three, because a host that stopped recognising the shape would report 0 or `NaN`, every summary
+would then read as below `aboveTokens`, and redistilling would turn itself on for every compaction
+while naming a wrong number. A failed probe turns redistilling off and says so in `/compaction`;
+compaction itself is untouched.
 
 ## Why this is not the ceiling ADR 0005 removed
 
@@ -67,6 +83,15 @@ probes, sections and fabricated paths rather than in tokens, and why the field s
 Two more limits are deliberate. It asks; it does not enforce, so a model that ignores it costs nothing
 and gains nothing. And it is one request, unchanged in count — the value of a compaction that finishes
 in 36 s is not spent on a second call.
+
+The instruction is also **not durable across a handback**. The host applies only the caller's own
+`/compact <text>` on its own path, so a degraded compaction stops asking for it; the announcement says
+so rather than claiming that three things are the whole of what this package controls.
+
+And `redistill` is **file-only**. The command surface cannot set it, so a save must not erase a value
+the parse did not adopt: a half-configured pair is off, and a `/compaction …` change is refused rather
+than silently dropping it. For the same reason an off value is written as an absent key, because 0.2.x
+rejects a file carrying a field it does not know — and rejects the whole file, not the key.
 
 ## Status
 

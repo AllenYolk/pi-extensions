@@ -50,9 +50,10 @@ That does not reopen this decision, because it changes the **request** and not t
 `max_output_tokens` is sent, nothing is truncated, no response is rewritten, and the stop-reason
 refusal below is untouched — a partial response to a redistilled request is still never persisted. A
 model that ignores the instruction produces exactly the summary this ADR describes, and a model that
-half-follows it produces a complete summary organised differently. It is recorded here because a
-reader who finds the field should know it was deliberate, and because it is **unvalidated**: no arm
-of its experiment has been run.
+half-follows it produces a complete summary organised differently. It is left off on a split turn, so
+it cannot prune the newest range either. It is recorded here because a reader who finds the field
+should know it was deliberate, and because it is **unvalidated**: no arm of its experiment has been
+run.
 
 ## Superseded
 

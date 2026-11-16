@@ -100,6 +100,14 @@ function integer(value: unknown, label: string, min: number): number {
   return value;
 }
 
+/**
+ * A redistill threshold, with the bounds every token number in this package shares. Exported so the
+ * evaluation harness refuses the same values a configuration file would.
+ */
+export function redistillThreshold(value: unknown, label: string): number {
+  return integer(value, `redistill.${label}`, 1);
+}
+
 function parse(raw: unknown): Config {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('config must be an object');
   const record = raw as Record<string, unknown>;
@@ -135,7 +143,11 @@ function parse(raw: unknown): Config {
   return config;
 }
 
-/** Absent, null or half-configured is off; anything else that is not two thresholds rejects the file. */
+/**
+ * Absent or null is off. Anything present is validated field by field, so a half-configured pair is
+ * off because its counterpart is missing and not because nobody looked at the field that is there —
+ * a typo may not hide behind a missing key. A missing counterpart then decides that it is off.
+ */
 function redistill(raw: unknown): Redistill | null {
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('redistill must be an object or null');
@@ -143,11 +155,9 @@ function redistill(raw: unknown): Redistill | null {
   for (const key of Object.keys(record)) {
     if (!REDISTILL_FIELDS.includes(key)) throw new Error(`unknown field redistill.${key}`);
   }
-  if (!REDISTILL_FIELDS.every((key) => key in record)) return null;
-  return {
-    aboveTokens: integer(record.aboveTokens, 'redistill.aboveTokens', 1),
-    targetTokens: integer(record.targetTokens, 'redistill.targetTokens', 1),
-  };
+  const above = 'aboveTokens' in record ? redistillThreshold(record.aboveTokens, 'aboveTokens') : undefined;
+  const target = 'targetTokens' in record ? redistillThreshold(record.targetTokens, 'targetTokens') : undefined;
+  return above === undefined || target === undefined ? null : { aboveTokens: above, targetTokens: target };
 }
 
 /**
@@ -170,7 +180,13 @@ export function loadConfig(agentDir: string): { config?: Config; diagnostic?: st
   }
 }
 
-/** The persisted shape: no absent keys, so a reload reads back exactly what was written. */
+/**
+ * The persisted shape: no absent keys, so a reload reads back exactly what was written.
+ *
+ * `redistill` is the one key that is omitted rather than written as `null`, because 0.2.x rejects any
+ * key it does not know — and rejects the whole file, taking the summarizer model and the thinking
+ * level with it. An absent key already reads back as off, so omitting it costs nothing here.
+ */
 function toRaw(config: Config): Record<string, unknown> {
   return {
     enabled: config.enabled,
@@ -178,7 +194,7 @@ function toRaw(config: Config): Record<string, unknown> {
     fallbackModel: config.fallbackModel ?? null,
     thinking: config.thinking,
     keptWindowTokens: config.keptWindowTokens,
-    redistill: config.redistill,
+    ...(config.redistill ? { redistill: config.redistill } : {}),
   };
 }
 
@@ -192,10 +208,37 @@ export function validateConfig(config: Config): string | undefined {
   }
 }
 
+/**
+ * Write the configuration, or refuse.
+ *
+ * `redistill` is file-only: the command surface cannot set it, so a save that dropped a value the
+ * parse did not adopt would destroy something the user can only restore by hand, with nothing said.
+ * A file carrying a `redistill` object this configuration does not carry is therefore left alone and
+ * the save throws, which the command reports as a refused change.
+ */
 export function saveConfig(agentDir: string, config: Config): void {
   const path = configPath(agentDir);
+  const raw = toRaw(config);
+  const onDisk = readRedistill(path);
+  if (onDisk !== undefined && raw.redistill === undefined) {
+    throw new Error(
+      `refusing to rewrite ${path}: it carries a redistill (${JSON.stringify(onDisk)}) that this `
+      + 'configuration does not adopt, and redistill cannot be set from /compaction. Complete it with '
+      + 'both aboveTokens and targetTokens, or remove it, and try again.',
+    );
+  }
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(toRaw(config), null, 2)}\n`);
+  writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+}
+
+/** The `redistill` object the file on disk carries, or undefined when it carries no object. */
+function readRedistill(path: string): unknown {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { redistill?: unknown };
+    return typeof parsed.redistill === 'object' && parsed.redistill !== null ? parsed.redistill : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function effective(config: Config): Effective {

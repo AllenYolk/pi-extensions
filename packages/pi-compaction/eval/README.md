@@ -56,7 +56,10 @@ node eval/harness.ts \
 ```
 
 The instruction comes from `src/redistill.ts` — the module the hook itself uses — so an arm measures
-what the package would actually ask for, and `run.json` records the text each arm sent.
+what the package would actually ask for, and `run.json` records the text each arm sent. The thresholds
+go through the configuration's own bounds, so an arm cannot measure an instruction naming a number the
+package would refuse to send, and a split turn is left alone here for the same reason the hook leaves
+it alone.
 
 An arm whose `aboveTokens` is above the previous summary's size asks for **nothing**, which makes it
 the control arm under another name. The harness prints that on stderr, with the previous summary's

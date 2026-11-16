@@ -14,7 +14,12 @@ import {
   type ThinkingLevel,
 } from './config.ts';
 import { prepareCompaction } from './preparation.ts';
-import { redistillInstructions } from './redistill.ts';
+import {
+  checkTokenSeam,
+  redistillFor,
+  redistillInstructions,
+  redistillStatus,
+} from './redistill.ts';
 import {
   announcement,
   DEGRADATION_ENTRY,
@@ -49,8 +54,14 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
   let config: Config = defaults();
   let diagnostic: string | undefined;
   let seam: Promise<SeamResult> | undefined;
-  /** What the compaction did when its summarizer did not produce the summary, waiting for it to settle. */
-  let pending: CompactionRecord | undefined;
+  let tokenSeam: SeamResult | undefined;
+  /**
+   * What the compaction did when its summarizer did not produce the summary, waiting for it to settle,
+   * with the redistilling setting that was in force when it was raised. The setting is captured here
+   * rather than read at settle time: a `/reload` between the two would otherwise let the pinned widget
+   * describe a configuration that was not the one that ran.
+   */
+  let pending: { record: CompactionRecord; redistilling: boolean } | undefined;
 
   const reload = () => {
     const loaded = loadConfig(getAgentDir());
@@ -58,6 +69,7 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
     diagnostic = loaded.diagnostic;
   };
   const seamResult = () => (seam ??= checkHostSeam(compactFn));
+  const tokenSeamResult = () => (tokenSeam ??= checkTokenSeam());
   const report = (ctx: ExtensionContext, message: string, type: 'info' | 'warning' | 'error' = 'warning') => {
     const line = `pi-compaction: ${message}`;
     if (ctx.hasUI) ctx.ui.notify(line, type);
@@ -76,24 +88,26 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
    * restart. `/compaction` reads that entry back, which is the part that stays visible afterwards.
    */
   const settle = (ctx: ExtensionContext) => {
-    const record = pending;
+    const raised = pending;
     pending = undefined;
-    if (!record) {
+    if (!raised) {
       // A compaction that completed resolves whatever an earlier one degraded into.
       if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, undefined);
       return;
     }
-    pi.appendEntry(handedBack(record) ? DEGRADATION_ENTRY : FALLBACK_ENTRY, record);
-    if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, announcement(record));
+    pi.appendEntry(handedBack(raised.record) ? DEGRADATION_ENTRY : FALLBACK_ENTRY, raised.record);
+    if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, announcement(raised.record, raised.redistilling));
   };
 
   pi.on('session_start', (_event, ctx) => {
     reload();
     seam = undefined;
+    tokenSeam = undefined;
     pending = undefined;
     if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, undefined);
-    // Activation-time check: the status view reports it, and the hook awaits the same promise.
+    // Activation-time checks: the status view reports them, and the hook awaits the same promise.
     void seamResult();
+    tokenSeamResult();
   });
 
   pi.on('session_compact', (_event, ctx) => settle(ctx));
@@ -103,6 +117,7 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
     config = defaults();
     diagnostic = undefined;
     seam = undefined;
+    tokenSeam = undefined;
     pending = undefined;
     if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, undefined);
   });
@@ -110,6 +125,8 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
   pi.on('session_before_compact', async (event: SessionBeforeCompactEvent, ctx: ExtensionContext): Promise<SessionBeforeCompactResult | void> => {
     const settings = effective(config);
     const tuple = settings.tuple;
+    // Nothing is asked for unless this host's token estimate checked out; see `checkTokenSeam`.
+    const redistill = redistillFor(settings.redistill, tokenSeamResult());
     // Inert until enabled: installing the package changes nothing.
     if (!settings.enabled) return;
 
@@ -120,8 +137,8 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
      */
     const handBack = (attempts: Attempt[]): SessionBeforeCompactResult | void => {
       if (event.signal.aborted) return { cancel: true };
-      pending = { attempts };
-      report(ctx, announcement(pending).join('\n'), 'error');
+      pending = { record: { attempts }, redistilling: redistill !== null };
+      report(ctx, announcement(pending.record, pending.redistilling).join('\n'), 'error');
       return undefined;
     };
 
@@ -196,7 +213,7 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
           model,
           undefined,
           undefined,
-          redistillInstructions(prepared.previousSummary, settings.redistill, event.customInstructions),
+          redistillInstructions(prepared.previousSummary, redistill, event.customInstructions, prepared.isSplitTurn),
           event.signal,
           level as never,
           observingStream(ctx.modelRegistry, (group, seen) => { outcomes.set(group, seen); }),
@@ -236,8 +253,8 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
         summarizer: named,
         thinking: level === tuple.thinking ? { level } : { level, clampedFrom: tuple.thinking },
       });
-      pending = { attempts };
-      report(ctx, announcement(pending).join('\n'), 'warning');
+      pending = { record: { attempts }, redistilling: redistill !== null };
+      report(ctx, announcement(pending.record, pending.redistilling).join('\n'), 'warning');
       return { compaction: result };
     }
     return handBack(attempts);
@@ -321,10 +338,7 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
         : `Fallback model: ${fallback.provider}/${fallback.id} (${fallback.api})`
           + (ctx.modelRegistry.hasConfiguredAuth(fallback) ? '' : ' — no configured credentials on this host'));
     lines.push(`Kept window: ${settings.keptWindowTokens} tokens`);
-    const redistill = settings.redistill;
-    lines.push(redistill
-      ? `Redistilling: on — asks for a fixed point once the previous summary reaches ${redistill.aboveTokens} tokens, naming ${redistill.targetTokens} as the target (a request, not a ceiling)`
-      : 'Redistilling: off');
+    lines.push(redistillStatus(settings.redistill, tokenSeamResult()));
     lines.push('Summary length: not bounded by this package — the host sends no output ceiling and neither do we');
     const checked = await seamResult();
     lines.push(`Host seam: ${checked.ok ? 'ok' : 'MISMATCH'} — ${checked.detail}`);

@@ -138,7 +138,7 @@ touch the response:
 
 Absent, `null`, or either field on its own means **off**, and the package then behaves exactly as
 `0.2.x` does. An unknown or malformed `redistill` rejects the configuration whole, like every other
-field.
+field, and so does a malformed field inside a half-configured pair.
 
 When it applies, one fixed instruction is appended to the host's `Additional focus:` line:
 
@@ -157,15 +157,38 @@ longer referenced. Do not append a changelog and do not add a history section.
 - It applies **only when there is a previous summary** of at least `aboveTokens` tokens. A session's
   first compaction has nothing to re-distil.
 - A `/compact <text>` of your own is **appended to, never replaced**, and reaches both summarization
-  requests of a split turn.
+  requests of a split turn — your text always does, whatever this package is configured to ask for.
+- A **split turn is left alone**. The host applies one custom-instruction value to both of a split
+  turn's requests, and the second one's document is only the current turn's prefix: no previous
+  summary, and its output is concatenated onto the merged summary rather than being one. The
+  instruction's premise would be false there and its pruning clause would aim at the newest range — the
+  one loss this package otherwise refuses to risk — so nothing of this package's is asked for. Giving
+  the two requests different wording would mean rewriting the prompt inside our own stream function,
+  which is a seam this package does not take.
 - The wording is a **fixed template in the source**, with those two numbers as its only variable
   parts. There is no free-text prompt field: a template is testable, and a prompt knob would be a
   second prompt to maintain.
+- Nothing is asked for unless this host's token estimate checks out — see
+  [Host-seam check](#host-seam-check).
 
-`/compaction` reports whether it is on and at what thresholds. **No arm of its experiment has been
-run**, so nothing here claims it works: [the method and the place for the numbers are in
+`/compaction` reports whether it is on and at what thresholds, and says so when the host's token
+estimate ruled it out. **No arm of its experiment has been run**, so nothing here claims it works:
+[the method and the place for the numbers are in
 validation](docs/validation.md#the-redistilling-experiment), including the negative result if that is
 what the measurement says.
+
+### What it writes, and what it will not overwrite
+
+An off `redistill` is an **absent key**, not `"redistill": null`: 0.2.x rejects any key it does not
+know, and it rejects the whole file, so writing an inert null would take a returning user's summarizer
+model and thinking level with it. A file this version writes is readable by 0.2.x unless it carries a
+configured `redistill`; to go back to 0.2.x, remove that key.
+
+A half-configured `redistill` — one threshold, or a value that is not a whole number in range — is
+validated field by field, so the field that is there is checked even though the pair is off. Because
+`redistill` is file-only, a `/compaction …` save **refuses** rather than erase a `redistill` the
+configuration does not adopt: the change is not applied, the file is untouched, and the message says
+to complete the pair or remove it.
 
 ## The one thing that is refused
 
@@ -356,16 +379,24 @@ there is nothing to turn on from a command — see [Asking for a fixed point](#a
 
 ## Host-seam check
 
-Three seams this package depends on are not documented extension APIs: the argument list of the host's
-`compact()`, the point at which it calls its stream function, and that it awaits `result()` on
-whatever that function returns. All three are verified at activation — the arity, and an actual call
-through a stream function the package supplies, which needs no credentials and makes no request. A
-mismatch degrades to the host instead of letting the package misbehave, and the status view reports
-it. Tested signatures decide compatibility, not version text.
+Four seams this package depends on are not documented extension APIs: the argument list of the host's
+`compact()`, the point at which it calls its stream function, that it awaits `result()` on whatever
+that function returns, and that `estimateTokens()` accepts a `compactionSummary` message and returns
+its size. All four are verified at activation — the arity, an actual call through a stream function the
+package supplies, and two sizes of a known message, none of which needs credentials or makes a request.
+Tested signatures decide compatibility, not version text.
 
-The third is the one the package reads a response's stop reason through, which is how it refuses to
-persist a partial summary. Losing it would not break compaction — summaries would still be produced,
-just unchecked — so it is probed rather than assumed.
+The first three carry compaction: a mismatch hands it back to the host instead of letting the package
+misbehave, and the status view reports it. The third is the one the package reads a response's stop
+reason through, which is how it refuses to persist a partial summary; losing it would not break
+compaction — summaries would still be produced, just unchecked — so it is probed rather than assumed.
+
+The fourth is narrower and is only used by [redistilling](#asking-for-a-fixed-point). A host that
+stopped recognising the shape would report 0 or `NaN`, every summary would then read as below
+`aboveTokens`, and redistilling would turn itself on for every compaction while naming a wrong number
+— silently the opposite of inert. So a failed probe turns redistilling **off** and says so in
+`/compaction`; compaction itself is unaffected, and a caller's own `/compact <text>` still reaches the
+request.
 
 ## Install
 
