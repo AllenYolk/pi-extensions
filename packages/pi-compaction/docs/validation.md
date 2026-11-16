@@ -49,8 +49,10 @@ resource filter. Compaction behaviour itself is **not** exercised on 0.99.1.
 ## The fallback summarizer
 
 [Issue #30](https://github.com/AllenYolk/pi-extensions/issues/30) added `fallbackModel`. This section
-records only what that change is and what was verified for it; the gates table above is unchanged by
-it, and this branch's own run of both gates is noted at the end.
+records only what that change is and what was verified for it. It restates nothing from
+[Measured on the owner's machine](#measured-on-the-owners-machine), which owns every figure; the
+gates table above is unchanged by this branch, and this branch's own run of both gates is noted at
+the end.
 
 ### What it changes about the degradation record
 
@@ -133,18 +135,16 @@ the real run.
 
 ### Not established for the fallback
 
-- **No measurement of what a fallback saves, and none is possible from this repository.** The owner
-  recorded 36 s / $0.011 for the configured summarizer against 211 s / $1.42 for the handback, on the
-  same conversation model and compaction ordinal, in
-  [issue #28](https://github.com/AllenYolk/pi-extensions/issues/28). Those figures are **owner-recorded
-  and not reproduced here**, and they are no longer re-derivable on this machine: the main-session
-  files that carried the native `gpt-6-astra` compactions at ordinals 2–4 have been deleted, and the
-  only native compactions still on disk are six inside `tasks/` subagent sessions from 2026-11-05 and
-  2026-11-09. Nothing here measures a fallback step either.
-- **Thirteen real compactions have produced zero degradations**, so no fallback has run on a real
-  session. Every fallback path above is exercised against the fixture provider.
-- **A fallback has not been observed against a real second provider.** The fixtures are two in-process
-  providers on different `api` identifiers.
+- **No fallback has ever run, so nothing measures what one saves.** The store holds zero
+  `pi-compaction-degradation` entries and every compaction recorded while the package was enabled
+  carries `fromHook: true` — see
+  [Measured on the owner's machine](#measured-on-the-owners-machine), which owns that count and every
+  figure derived from it. A fallback step itself is unmeasured: no second model has ever been reached
+  on a real session.
+- **Every fallback path above is exercised against the fixture provider**, not against a real second
+  provider. The fixtures are two in-process providers on different `api` identifiers.
+- **Whether a fallback summarizer produces an acceptable summary is unknown**, in the same way it is
+  for the primary: no summary-quality comparison has been run on either.
 
 ### This branch's own gates
 
