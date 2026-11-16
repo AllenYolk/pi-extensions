@@ -80,6 +80,17 @@ the host's prompt and the model make it.
 announced, never silent. It gives up the summarizer model and its thinking level — the whole of what
 the extension controls — and changes nothing about the summary's length.
 
+**Fallback summarizer**: the one model a compaction tries after the configured summarizer fails, and
+before it hands back. Optional, single, and never the conversation model: the handback already is
+that. It runs at the primary's thinking level and over the primary's cut point, and the whole-summary
+guarantee applies to it unchanged. Only a failed attempt reaches it — a cancellation, a host seam
+mismatch, a cut point with nothing to summarise and a rejected configuration all end the compaction
+where they are.
+
+**Attempt**: one summarizer a compaction tried, in the order it tried them. The last attempt ran
+unless it carries a reason, which is how one record shape distinguishes a handback from a successful
+fallback.
+
 ## Code and state ownership
 
 Paths below are relative to `packages/` unless stated otherwise.
@@ -94,8 +105,8 @@ Paths below are relative to `packages/` unless stated otherwise.
 | Display projection and private host access | `pi-minimal-display/src/presentation.ts` | Owns fingerprint checks and presentation/mouse/expansion wrappers; execution and saved data remain Pi-owned. |
 | Compaction activation, configuration and the compaction hook | `pi-compaction/src/index.ts` | Registers `/compaction`, owns the inert-until-enabled switch, the slash-command surface and the `session_before_compact` hook that supplies a compaction or hands it back. |
 | The cut point and the summarised range | `pi-compaction/src/preparation.ts` | Chooses the kept-window boundary and builds the range to summarise from the branch entries, so nothing between the two is lost. |
-| The summarizer model, its thinking level and the host seam | `pi-compaction/src/summarizer.ts` | Resolves the summarizer model, clamps its thinking level to what the model supports, owns the observing stream function the stop-reason read goes through, and owns the activation-time host-seam check. |
-| The degradation announcement | `pi-compaction/src/degradation.ts` | Owns the failure wording, the announcement and the durable record of a degradation. |
+| The summarizer model, its thinking level and the host seam | `pi-compaction/src/summarizer.ts` | Resolves a summarizer model, clamps its thinking level to what the model supports, owns the observing stream function the stop-reason read goes through, and owns the activation-time host-seam check. |
+| The attempt sequence and its record | `pi-compaction/src/degradation.ts` | Owns the failure wording, the announcement, the durable record of a handback and of a successful fallback, and the entry type each is written as. |
 | Collection/package boundaries | Repository-root manifest, `test/` and `.github/workflows/` | Aggregate installation, independent-package checks, coexistence and shared development/release tooling. |
 
 Pi session records and parent links are the source of ancestry; the plugins do not maintain

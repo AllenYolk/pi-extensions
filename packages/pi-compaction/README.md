@@ -43,6 +43,7 @@ project-level overrides, and `/reload` picks up a change without restarting.
 {
   "enabled": true,
   "summarizerModel": "minimax-cn/MiniMax-M3.1-Flash",
+  "fallbackModel": "mafia-g/gemini-3.8-flash",
   "thinking": "off",
   "keptWindowTokens": 16000
 }
@@ -52,11 +53,13 @@ project-level overrides, and `/reload` picks up a change without restarting.
 | --- | --- |
 | `enabled` | Whether the package acts at all. Defaults to `false`. |
 | `summarizerModel` | `provider/model`, or `null` — the default — for the conversation model. `"conversation"` is accepted as a spelling of `null`. |
+| `fallbackModel` | `provider/model`, or `null` — the default — for no fallback at all. `"conversation"` is accepted as a spelling of `null`. |
 | `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Defaults to `medium`, and is clamped to what the chosen model supports. |
 | `keptWindowTokens` | Token target for the kept window. Defaults to `16000`. |
 
 An invalid value is rejected whole: the package reports the file and the field, and compaction stays
-stock Pi rather than half-applying a configuration.
+stock Pi rather than half-applying a configuration. That includes `fallbackModel` — a half-applied
+fallback is worse than none.
 
 ### Choosing a summarizer
 
@@ -69,7 +72,8 @@ silently lowers your summary quality. Choosing a cheaper or faster summarizer is
 ```
 
 The chosen model must be one this host offers with configured credentials; if it is not, the package
-says so and hands compaction back to Pi rather than failing the compaction.
+says so and hands compaction back to Pi rather than failing the compaction — unless a
+[fallback](#degrading-to-a-fallback-summarizer) is configured.
 
 ### When `off` does not take effect
 
@@ -141,6 +145,77 @@ hit the model's own output limit — a genuinely incomplete summary, not a budge
 A cancellation stops everything and answers `{cancel: true}`: no fallback compaction begins behind
 your back.
 
+## Degrading to a fallback summarizer
+
+Handing compaction back to stock Pi is the most expensive outcome available: stock Pi summarises with
+the **conversation model at the session's thinking level**. On the machine this package was built on
+that is the difference between 36 s / $0.011 and 211 s / $1.42 for the same compaction.
+
+`fallbackModel` puts one step in between. It is off by default, and `null` — or an absent field — is
+exactly the behaviour above.
+
+### Resolution order
+
+`summarizerModel` → `fallbackModel` → hand back to the host. One fallback, never a list: a chain is a
+policy nobody can reason about, and the step after it is the host anyway.
+
+The fallback attempt gets the **same thinking level** and the **same kept window** as the primary. It
+is a different model, not a different compaction.
+
+### Which failures fall back
+
+| Failure | Falls back? |
+| --- | --- |
+| This host does not offer the summarizer model | **yes** |
+| The host has no configured credentials for it | **yes** |
+| The summarizer reported an error (503, model unavailable, …) | **yes** |
+| A partial or unobserved response | **yes** |
+| A cancellation | no — `{cancel: true}`, and nothing is attempted |
+| A host seam mismatch | no — a second model would fail identically |
+| A cut point with nothing to summarise | no — there is no request to make |
+| A rejected configuration | no — the file is refused whole and compaction stays stock Pi |
+
+### The partial-summary guarantee still applies
+
+A partial or unobserved response **from the fallback** is refused exactly as one from the primary is.
+Nothing this package cannot vouch for is ever persisted, whichever model wrote it. After a refused
+fallback attempt, compaction hands back.
+
+### What it looks like
+
+A fallback that produced the summary is not a handback, and is not announced as one:
+
+```text
+pi-compaction: recovered — the fallback summarizer produced the summary
+Summarizer: mafia-g/gemini-3.8-flash (google-generative-ai)
+Why: minimax-cn/MiniMax-M3.1-Flash (anthropic-messages) failed: the summarizer reported an error
+  (503 model_unavailable); the fallback ran and its summary was complete
+Now: the summarizer configured here did not run. This summary is the fallback's, at the same thinking
+  level and the same cut point, so nothing else about the compaction changed — but the model you
+  chose is not the one that wrote it.
+```
+
+A handback after both attempts names both of them:
+
+```text
+pi-compaction: degraded — compaction handed back to stock Pi
+Summarizer: mafia-g/gemini-3.8-flash (google-generative-ai)
+Why: the host has no configured credentials for it
+Earlier: minimax-cn/MiniMax-M3.1-Flash (anthropic-messages) — the summarizer reported an error (503 model_unavailable)
+Now: stock Pi compacts with the conversation model, …
+```
+
+With no fallback configured, the announcement is unchanged: one attempt, and nothing about a second
+model.
+
+### The record
+
+A handback is recorded as the `pi-compaction-degradation` custom session entry, as before. A fallback
+that produced the summary is recorded as **`pi-compaction-fallback`** — a distinct entry type, because
+a fallback that ran is not a degradation and the entry type is what anything scanning the session
+reads. Both carry every attempt in order, with the reason each one failed and the model that actually
+ran, and `/compaction` reports them.
+
 ## Degradation
 
 Degradation is handing compaction back to stock Pi after the package's own attempt fails. It is never
@@ -188,20 +263,29 @@ Config: /home/you/.pi/agent/extensions/pi-compaction/config.json
 Enabled: yes
 Summarizer model: minimax-cn/MiniMax-M3.1-Flash (anthropic-messages)
 Thinking: off
+Fallback model: mafia-g/gemini-3.8-flash (google-generative-ai)
 Kept window: 16000 tokens
 Summary length: not bounded by this package — the host sends no output ceiling and neither do we
 Host seam: ok — compact() arity 12; our stream function received {apiKey, cacheRetention, env, headers, sessionId, signal} and its result() was awaited
 Last degradation: none in this session
 ```
 
+The fallback line says what this host can actually run: `none`, the model and its API, or the reason
+it could not — `not available on this host`, or `no configured credentials on this host`.
+
 Every knob is settable from it, and each change is written back to the configuration file:
 
 ```text
 /compaction enable | disable
 /compaction model provider/model | conversation
+/compaction fallback provider/model | conversation | none
 /compaction thinking off | minimal | low | medium | high | xhigh | max
 /compaction window <tokens>
 ```
+
+`conversation` and `none` both mean no fallback. There is deliberately no way to name the conversation
+model as a fallback: the host handback already is that, and saying it twice would hide which one
+happened.
 
 ## Host-seam check
 

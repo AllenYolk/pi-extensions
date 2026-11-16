@@ -24,6 +24,8 @@ export interface Config {
   enabled: boolean;
   /** `null` — the default — is the conversation model. */
   summarizerModel: string | null;
+  /** `null` — the default — is no fallback at all, which is the behaviour before this field existed. */
+  fallbackModel: string | null;
   thinking: ThinkingLevel;
   keptWindowTokens: number;
 }
@@ -32,6 +34,7 @@ export interface Config {
 export interface Effective {
   enabled: boolean;
   tuple: Tuple;
+  fallbackModel: string | null;
   keptWindowTokens: number;
 }
 
@@ -44,18 +47,28 @@ export interface Effective {
  */
 export const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-const FIELDS = ['enabled', 'summarizerModel', 'thinking', 'keptWindowTokens'];
+const FIELDS = ['enabled', 'summarizerModel', 'fallbackModel', 'thinking', 'keptWindowTokens'];
 const MAX_TOKENS = 1_000_000;
 
 export const defaults = (): Config => ({
   enabled: false,
   summarizerModel: null,
+  fallbackModel: null,
   thinking: DEFAULT_THINKING,
   keptWindowTokens: DEFAULT_KEPT_WINDOW_TOKENS,
 });
 
 export function configPath(agentDir: string): string {
   return join(agentDir, 'extensions', 'pi-compaction', 'config.json');
+}
+
+/** A `provider/model` id, or `null` for the conversation model — which for a fallback means none. */
+function modelId(value: unknown, label: string): string | null {
+  if (value === CONVERSATION_MODEL) return null;
+  if (typeof value !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(value)) {
+    throw new Error(`${label} must be "provider/model", "${CONVERSATION_MODEL}" or null`);
+  }
+  return value;
 }
 
 function integer(value: unknown, label: string, min: number): number {
@@ -77,14 +90,10 @@ function parse(raw: unknown): Config {
     config.enabled = record.enabled;
   }
   if ('summarizerModel' in record && record.summarizerModel !== null) {
-    const model = record.summarizerModel;
-    if (model === CONVERSATION_MODEL) {
-      config.summarizerModel = null;
-    } else if (typeof model !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(model)) {
-      throw new Error(`summarizerModel must be "provider/model", "${CONVERSATION_MODEL}" or null`);
-    } else {
-      config.summarizerModel = model;
-    }
+    config.summarizerModel = modelId(record.summarizerModel, 'summarizerModel');
+  }
+  if ('fallbackModel' in record && record.fallbackModel !== null) {
+    config.fallbackModel = modelId(record.fallbackModel, 'fallbackModel');
   }
   if ('thinking' in record) {
     if (!THINKING_LEVELS.includes(record.thinking as ThinkingLevel)) {
@@ -121,6 +130,7 @@ function toRaw(config: Config): Record<string, unknown> {
   return {
     enabled: config.enabled,
     summarizerModel: config.summarizerModel ?? null,
+    fallbackModel: config.fallbackModel ?? null,
     thinking: config.thinking,
     keptWindowTokens: config.keptWindowTokens,
   };
@@ -147,5 +157,6 @@ export function effective(config: Config): Effective {
     enabled: config.enabled,
     keptWindowTokens: config.keptWindowTokens,
     tuple: { model: config.summarizerModel, thinking: config.thinking },
+    fallbackModel: config.fallbackModel,
   };
 }

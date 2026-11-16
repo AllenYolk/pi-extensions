@@ -1,5 +1,43 @@
 # @allenyolk/pi-compaction
 
+## Unreleased
+
+### Minor Changes
+
+Degrade to a configured fallback summarizer before handing back to the conversation model.
+
+Every failure used to hand compaction straight back to stock Pi, which summarises with the
+**conversation model at the session's thinking level**. On the machine this package was built on that
+is 211 s and $1.42 against 36 s and $0.011 for the configured summarizer — the thing this package
+exists to avoid. One optional field puts a step in between.
+
+- **`fallbackModel`** — `provider/model`, or `null` — the default — for no fallback, which is the
+  behaviour of `0.2.1` exactly. `"conversation"` is accepted as a spelling of `null`; so is `none` from
+  the command. There is deliberately no way to name the conversation model as a fallback, because the
+  host handback already is that.
+
+Resolution is `summarizerModel` → `fallbackModel` → hand back to the host. One fallback, never a list.
+The fallback attempt gets the **same thinking level** and the **same kept window** as the primary: it
+is a different model, not a different compaction.
+
+Four failures fall back — this host does not offer the summarizer model, the host has no configured
+credentials for it, the summarizer reported an error, and a partial or unobserved response. Four do
+not: a cancellation still answers `{cancel: true}` and attempts nothing, a host seam mismatch, a cut
+point with nothing to summarise, and a rejected configuration.
+
+**The partial-summary guarantee applies to the fallback too.** A partial or unobserved response from
+the fallback is refused exactly as one from the primary is, and then compaction hands back. Nothing
+this package cannot vouch for is persisted, whichever model wrote it.
+
+**The record does not lie.** A fallback that produced the summary is recorded as a new
+`pi-compaction-fallback` custom session entry rather than a `pi-compaction-degradation` one, and is
+announced as a recovery rather than a handback. Both records now carry every attempt in order, with
+the reason each failed and the model that actually ran; `/compaction` reports them, and with no
+fallback configured its output and the announcement are unchanged.
+
+`/compaction fallback provider/model | conversation | none` sets it, and `/compaction` reports the
+fallback along with whether this host offers it with configured credentials.
+
 ## 0.2.1
 
 ### Patch Changes

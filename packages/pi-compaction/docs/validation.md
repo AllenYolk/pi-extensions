@@ -46,6 +46,67 @@ activates, deactivates on removal, stays inert when present and not enabled, coe
 two extensions across repeated reloads, and installs from the git collection with and without a
 resource filter. Compaction behaviour itself is **not** exercised on 0.99.1.
 
+## The fallback summarizer
+
+[Issue #30](https://github.com/AllenYolk/pi-extensions/issues/30) added `fallbackModel`. What follows
+is what was verified for it, on the same machine and host as everything above.
+
+### What is established
+
+| Claim | How |
+| --- | --- |
+| `fallbackModel: null` and an absent field are `0.2.1`'s behaviour | A real-CLI run with the field set to `null` and a failing summarizer: one request of ours, then stock Pi's own, a host-originated compaction entry, the five-line announcement with no `Earlier:` line and no fallback wording, and a one-attempt record |
+| The four failures fall back, and the fallback's summary is persisted | One real-CLI run per class — model not offered, no configured credentials, a reported error, a partial response — each asserting the request order, `fromHook: true` on the persisted compaction, the recovery announcement and a two-attempt `pi-compaction-fallback` record |
+| Both attempts failing hands back and names both | A run whose primary is not offered and whose fallback has no credentials: the only summarization request is the host's own, and the record carries both attempts with both reasons |
+| The guarantee applies to the fallback | A run where both of our attempts return a partial response: three requests in order, a host-originated compaction, and the partial text nowhere in the session file or in any persisted summary |
+| A fallback is the same compaction with a different model | The two attempts' recorded prompts are byte-identical and both carry `reasoning: "low"`, which is the only way to show the cut point did not move between them |
+| A cancellation attempts nothing | A real-CLI run that cancels on the primary's response, plus a hook-level test — see below |
+| A host seam mismatch attempts no fallback | A hook-level test — see below |
+| A rejected configuration stays inert | `fallbackModel: "no-slash"` rejects the file whole in the config unit tests, and a hook-level run with a rejected file resolves no model and requests nothing |
+| `/compaction fallback` and the status view | A scripted real-CLI run: no value prints usage and changes nothing, an invalid id is refused by `validateConfig`, and the status view reports `none`, a model this host does not offer, a model with no configured credentials, and one it can run |
+
+### The two hook-level tests, and why they exist
+
+`test/index.test.mjs` drives the registered hook directly against a compact function the test
+supplies. Two properties cannot be decided by a real-host run:
+
+- **A host seam mismatch.** `checkHostSeam` probes the host's own `compact()`, and Pi 1.5.1 passes, so
+  the mismatch branch is unreachable from `cli.test.mjs`. The extension takes the compact function it
+  probes *and* compacts with as a second argument — the injection `checkHostSeam` already had — and
+  the test hands it one with nine parameters.
+- **A cancellation reaching the fallback stream function.** The host will not start a request on an
+  aborted signal, so a real run cannot tell this package's own guard apart from the host's. The
+  test's compact function keeps calling whatever stream function it is handed, so only the package's
+  guard can keep the fallback from running. The real-CLI cancellation test is kept as the
+  end-to-end half: nothing persisted, no fallback request, no record.
+
+### Mutation checks
+
+Both hook-level properties were mutation-checked in the direction that matters, and both tests went
+red:
+
+- Removing the three `event.signal.aborted` reads in the attempt loop — before each attempt, in the
+  catch, and after `compact()` resolves — makes the cancellation test report
+  `['fixture/primary', 'fixture/fallback']` where one compaction was expected, and the fallback's
+  stream function is reached.
+- Letting a failed seam check fall through into the attempt loop instead of returning makes the
+  seam test report `['find fixture/primary', 'auth primary', 'find fixture/fallback', 'auth fallback']`
+  where no registry call at all was expected.
+
+The real-CLI cancellation test was also checked and is **not** sensitive to the first mutation on its
+own: with the same three guards removed it still passes, because the host refuses the second request
+before a provider sees it. That is why the hook-level test exists rather than a stronger assertion on
+the real run.
+
+### Not established for the fallback
+
+- **No measurement of what a fallback saves.** The 211 s / $1.42 against 36 s / $0.011 figures are the
+  owner's, from issue #28; nothing here re-measures them, and nothing measures a fallback step.
+- **Thirteen real compactions have produced zero degradations**, so no fallback has run on a real
+  session. Every fallback path above is exercised against the fixture provider.
+- **A fallback has not been observed against a real second provider.** The fixtures are two in-process
+  providers on different `api` identifiers.
+
 ## The packed artifact
 
 `npm pack --json --ignore-scripts` in `packages/pi-compaction` produces exactly eight entries: the

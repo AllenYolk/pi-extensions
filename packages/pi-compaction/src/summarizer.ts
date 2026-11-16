@@ -13,10 +13,11 @@ export type SummarizerStream = NonNullable<CompactArguments[7]>;
 export type SummarizationPreparation = CompactArguments[0];
 type StreamOptions = NonNullable<Parameters<SummarizerStream>[2]>;
 
-export function resolveSummarizerModel(tuple: Tuple, ctx: ExtensionContext): SummarizerModel | undefined {
-  if (tuple.model === null) return ctx.model;
-  const separator = tuple.model.indexOf('/');
-  return ctx.modelRegistry.find(tuple.model.slice(0, separator), tuple.model.slice(separator + 1));
+/** The host's model for a `provider/model` id; `null` is the conversation model. */
+export function resolveModel(id: string | null, ctx: ExtensionContext): SummarizerModel | undefined {
+  if (id === null) return ctx.model;
+  const separator = id.indexOf('/');
+  return ctx.modelRegistry.find(id.slice(0, separator), id.slice(separator + 1));
 }
 
 /** The host's own clamping: prefer a higher supported level, then a lower one. */

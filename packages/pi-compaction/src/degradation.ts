@@ -8,8 +8,16 @@ import type { AttemptOutcome } from './summarizer.ts';
  * the reason and what the session's behaviour now is, rather than printing a line and hoping.
  */
 
-/** The custom session entry a degradation is recorded as. Custom entries carry no LLM context. */
+/** The custom session entry a handback is recorded as. Custom entries carry no LLM context. */
 export const DEGRADATION_ENTRY = 'pi-compaction-degradation';
+
+/**
+ * The custom session entry a *successful* fallback is recorded as.
+ *
+ * A distinct entry type rather than a flag inside the degradation one: the type is what anything
+ * scanning the session reads, and a fallback that produced the summary is not a degradation.
+ */
+export const FALLBACK_ENTRY = 'pi-compaction-fallback';
 
 /** The widget the announcement is pinned under, so a later compaction can take it down. */
 export const DEGRADATION_WIDGET = 'pi-compaction-degradation';
@@ -57,12 +65,28 @@ function quote(text: string): string {
 export const UNOBSERVED_RESPONSE =
   "the summarizer's responses were never observed, so the package cannot prove the summary is complete";
 
-export interface Degradation {
-  /** What the compaction was to summarise with, or what there was instead. */
+export interface Attempt {
+  /** What the attempt was to summarise with, or what there was instead. */
   summarizer: string;
-  /** Why the attempt failed. */
-  reason: string;
+  /** Why it failed. Absent on the attempt that produced the summary. */
+  reason?: string;
 }
+
+/**
+ * What a compaction did when the summarizer it was configured with did not produce the summary.
+ *
+ * One shape covers both outcomes, and the last attempt carries the difference: it ran unless it has
+ * a reason, so a handback and a successful fallback are told apart by the record itself rather than
+ * by a flag kept beside it.
+ */
+export interface CompactionRecord {
+  /** Every attempt the compaction made, in the order it made them. */
+  attempts: Attempt[];
+}
+
+/** Whether the compaction ended in a handback rather than a summary this package produced. */
+export const handedBack = (record: CompactionRecord): boolean =>
+  record.attempts[record.attempts.length - 1]!.reason !== undefined;
 
 /**
  * What a handback costs. It is not a change in summary length: this package sends no output ceiling
@@ -77,17 +101,54 @@ const HANDBACK_COST =
   + 'package controls, so a handback gives all of them up.';
 
 /**
+ * What a fallback costs. The compaction itself is unchanged — the same thinking level, the same cut
+ * point, the same summary guarantee — so what it gives up is the model the operator chose.
+ */
+const FALLBACK_COST =
+  'the summarizer configured here did not run. This summary is the fallback\'s, at the same thinking '
+  + 'level and the same cut point, so nothing else about the compaction changed — but the model you '
+  + 'chose is not the one that wrote it.';
+
+const NEXT =
+  'Next: /compaction model provider/model to summarise with a different model, /compaction '
+  + 'thinking off|minimal|low|medium|high|xhigh|max to change how hard it thinks, /compaction '
+  + 'window <tokens> to change the cut point, or /compaction disable to make stock Pi the default.';
+
+/**
  * The announcement, as the lines the user reads. Line one is the headline; the rest name the
  * summarizer, the reason, what the session's behaviour now is and what to do about it.
+ *
+ * A single attempt announces exactly what it announced before a fallback existed: the extra lines
+ * only appear once there is a second model to report.
  */
-export function announcement(degradation: Degradation): string[] {
-  return [
-    'degraded — compaction handed back to stock Pi',
-    `Summarizer: ${degradation.summarizer}`,
-    `Why: ${degradation.reason}`,
-    `Now: ${HANDBACK_COST}`,
-    'Next: /compaction model provider/model to summarise with a different model, /compaction '
-      + 'thinking off|minimal|low|medium|high|xhigh|max to change how hard it thinks, /compaction '
-      + 'window <tokens> to change the cut point, or /compaction disable to make stock Pi the default.',
+export function announcement(record: CompactionRecord): string[] {
+  const last = record.attempts[record.attempts.length - 1]!;
+  const earlier = record.attempts.slice(0, -1);
+  const handback = handedBack(record);
+  const lines = [
+    handback
+      ? 'degraded — compaction handed back to stock Pi'
+      : 'recovered — the fallback summarizer produced the summary',
+    `Summarizer: ${last.summarizer}`,
+    handback
+      ? `Why: ${last.reason}`
+      : `Why: ${earlier.map((failed) => `${failed.summarizer} failed: ${failed.reason}`).join('; ')}; `
+        + 'the fallback ran and its summary was complete',
   ];
+  // A handback names every attempt that failed before the last one; a recovery already names them in
+  // `Why:`, which is the only place a fallback's own reason can be reported.
+  if (handback) for (const failed of earlier) lines.push(`Earlier: ${failed.summarizer} — ${failed.reason}`);
+  lines.push(`Now: ${handback ? HANDBACK_COST : FALLBACK_COST}`, NEXT);
+  return lines;
+}
+
+/** The one line `/compaction` reports a recorded outcome in. */
+export function describeRecord(record: CompactionRecord): string {
+  const last = record.attempts[record.attempts.length - 1]!;
+  const earlier = record.attempts.slice(0, -1).map((failed) => `${failed.summarizer} — ${failed.reason}`);
+  if (!handedBack(record)) {
+    return `Last compaction: the fallback summarizer ${last.summarizer} produced the summary after ${earlier.join('; ')}`;
+  }
+  const suffix = earlier.length > 0 ? ` (after ${earlier.join('; ')})` : '';
+  return `Last degradation: summarizer ${last.summarizer} — ${last.reason}${suffix}`;
 }

@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { announcement, describeFailure, UNOBSERVED_RESPONSE } from '../src/degradation.ts';
+import {
+  announcement,
+  describeFailure,
+  describeRecord,
+  FALLBACK_ENTRY,
+  handedBack,
+  UNOBSERVED_RESPONSE,
+} from '../src/degradation.ts';
+
+const attempt = (summarizer, reason) => (reason === undefined ? { summarizer } : { summarizer, reason });
 
 test('a failure is described from the response, not from the host\'s prose', () => {
   assert.match(describeFailure({ stopReason: 'stop', toolCall: true }, new Error('x')), /tried to call a tool/);
@@ -49,7 +58,7 @@ test('an unobserved attempt has its own sentence', () => {
 });
 
 test('the announcement names the summarizer, the reason and everything a handback gives up', () => {
-  const lines = announcement({ summarizer: 'p/m (anthropic-messages)', reason: 'because' });
+  const lines = announcement({ attempts: [attempt('p/m (anthropic-messages)', 'because')] });
   assert.equal(lines.length, 5);
   assert.match(lines[0], /degraded — compaction handed back to stock Pi/);
   assert.equal(lines[1], 'Summarizer: p/m (anthropic-messages)');
@@ -71,4 +80,75 @@ test('the announcement names the summarizer, the reason and everything a handbac
   assert.match(lines[4], /thinking off\|minimal\|low\|medium\|high\|xhigh\|max/);
   assert.match(lines[4], /\/compaction window <tokens>/);
   assert.match(lines[4], /\/compaction disable/);
+});
+
+test('one attempt announces exactly what it announced before a fallback existed', () => {
+  // `fallbackModel: null` has to behave as the released package does, and the announcement is part
+  // of that: no extra line, and no wording that only makes sense once a second model is configured.
+  const record = { attempts: [attempt('p/m (api)', 'the summarizer reported an error (503)')] };
+  assert.equal(handedBack(record), true);
+  const lines = announcement(record);
+  assert.equal(lines.length, 5);
+  assert.doesNotMatch(lines.join('\n'), /fallback/i, 'a single attempt says nothing about a fallback');
+  assert.doesNotMatch(lines.join('\n'), /^Earlier:/m);
+});
+
+test('a handback after two attempts names both of them', () => {
+  const record = {
+    attempts: [
+      attempt('primary/m (api)', 'the summarizer reported an error (503 model_unavailable)'),
+      attempt('fallback/f (api)', 'the host has no configured credentials for it'),
+    ],
+  };
+  assert.equal(handedBack(record), true);
+  const lines = announcement(record);
+  assert.match(lines[0], /degraded — compaction handed back to stock Pi/);
+  assert.equal(lines[1], 'Summarizer: fallback/f (api)');
+  assert.equal(lines[2], 'Why: the host has no configured credentials for it');
+  assert.equal(lines[3], 'Earlier: primary/m (api) — the summarizer reported an error (503 model_unavailable)');
+  assert.match(lines[4], /^Now: stock Pi compacts with the conversation model/);
+  assert.match(lines[5], /^Next: /);
+});
+
+test('a fallback that produced the summary is not announced as a handback', () => {
+  // The record must not lie. A handback announcement after a *successful* fallback would say stock
+  // Pi compacted the session when this package's own fallback wrote the summary.
+  const record = {
+    attempts: [
+      attempt('primary/m (api)', 'the summarizer reported an error (503 model_unavailable)'),
+      attempt('fallback/f (api)'),
+    ],
+  };
+  assert.equal(handedBack(record), false);
+  const lines = announcement(record);
+  assert.doesNotMatch(lines.join('\n'), /handed back to stock Pi/, 'nothing claims a handback');
+  assert.equal(lines[1], 'Summarizer: fallback/f (api)');
+  assert.match(lines[2], /primary\/m \(api\)/);
+  assert.match(lines[2], /503 model_unavailable/);
+  assert.match(lines[2], /the fallback ran and its summary was complete/);
+  assert.match(lines[3], /^Now: /);
+  assert.doesNotMatch(lines[3], /stock Pi compacts with the conversation model/);
+  assert.match(lines[3], /same thinking level and the same cut point/);
+  assert.equal(lines.filter((line) => line.startsWith('Earlier:')).length, 0, 'Why: already names the failed attempt');
+});
+
+test('the status line reports a handback and a fallback differently', () => {
+  const one = { attempts: [attempt('p/m (api)', 'because')] };
+  assert.equal(describeRecord(one), 'Last degradation: summarizer p/m (api) — because');
+
+  const two = { attempts: [attempt('a/a (api)', 'first'), attempt('b/b (api)', 'second')] };
+  assert.equal(describeRecord(two), 'Last degradation: summarizer b/b (api) — second (after a/a (api) — first)');
+
+  const recovered = { attempts: [attempt('a/a (api)', 'first'), attempt('b/b (api)')] };
+  const line = describeRecord(recovered);
+  assert.match(line, /^Last compaction: /);
+  assert.match(line, /b\/b \(api\)/);
+  assert.match(line, /a\/a \(api\) — first/);
+  assert.doesNotMatch(line, /Last degradation/);
+});
+
+test('a successful fallback is recorded under its own entry type', () => {
+  // The entry type is read back by anything scanning the session, so it has to say which happened.
+  assert.equal(FALLBACK_ENTRY, 'pi-compaction-fallback');
+  assert.notEqual(FALLBACK_ENTRY, 'pi-compaction-degradation');
 });

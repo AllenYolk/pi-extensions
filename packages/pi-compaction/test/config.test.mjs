@@ -48,9 +48,35 @@ test('a summarizer model and a thinking level round-trip through the file', () =
   assert.deepEqual(config, {
     enabled: true,
     summarizerModel: 'p/m',
+    fallbackModel: null,
     thinking: 'off',
     keptWindowTokens: 4_000,
   });
+});
+
+test('no fallback model is the default, and an absent field keeps it', () => {
+  assert.equal(defaults().fallbackModel, null);
+  assert.equal(effective(defaults()).fallbackModel, null);
+  const dir = agentDir();
+  write(dir, { enabled: true, summarizerModel: 'p/m' });
+  assert.equal(loadConfig(dir).config.fallbackModel, null);
+});
+
+test('a fallback model round-trips, and both spellings of none mean no fallback', () => {
+  const dir = agentDir();
+  saveConfig(dir, { ...defaults(), enabled: true, fallbackModel: 'p/f' });
+  const { config, diagnostic } = loadConfig(dir);
+  assert.equal(diagnostic, undefined);
+  assert.equal(config.fallbackModel, 'p/f');
+  assert.equal(effective(config).fallbackModel, 'p/f');
+
+  // `conversation` is a spelling of `null` here for the same reason it is for `summarizerModel`:
+  // the field names a model, and the word for "not a model" is the one the command already uses.
+  for (const written of [null, CONVERSATION_MODEL]) {
+    const other = agentDir();
+    write(other, { fallbackModel: written });
+    assert.equal(loadConfig(other).config.fallbackModel, null, String(written));
+  }
 });
 
 test('null and the conversation word both mean the conversation model', () => {
@@ -76,6 +102,11 @@ test('an invalid value is rejected whole, and the caller is told where to look',
     [{ enabled: 'yes' }, /enabled must be boolean/],
     [{ thinking: 'loud' }, /thinking must be/],
     [{ summarizerModel: 'no-slash' }, /summarizerModel must be/],
+    [{ fallbackModel: 'no-slash' }, /fallbackModel must be/],
+    [{ fallbackModel: 7 }, /fallbackModel must be/],
+    // A half-applied fallback is worse than none, so one bad field still rejects the whole file.
+    [{ summarizerModel: 'p/m', fallbackModel: 'no-slash' }, /fallbackModel must be/],
+    [{ fallbackModels: 'p/f' }, /unknown field fallbackModels/],
     [{ keptWindowTokens: -1 }, /keptWindowTokens must be an integer/],
     [{ keptWindowTokens: 1.5 }, /keptWindowTokens must be an integer/],
     // The removed knobs are unknown fields now, and an unknown field rejects the whole file.
@@ -98,4 +129,6 @@ test('a configuration assembled by the command goes through the same validation'
   assert.equal(validateConfig(defaults()), undefined);
   assert.match(validateConfig({ ...defaults(), thinking: 'nonsense' }), /thinking must be/);
   assert.match(validateConfig({ ...defaults(), summarizerModel: 'no-slash' }), /summarizerModel must be/);
+  assert.match(validateConfig({ ...defaults(), fallbackModel: 'no-slash' }), /fallbackModel must be/);
+  assert.equal(validateConfig({ ...defaults(), fallbackModel: 'p/f' }), undefined);
 });
