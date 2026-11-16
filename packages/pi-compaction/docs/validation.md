@@ -30,9 +30,13 @@ output ceiling and the prune path.
 
 | Check | Result |
 | --- | --- |
-| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **45/45 tests pass** |
-| `npm run check` | **131/131 tests pass** (45 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
+| `npm --workspace @allenyolk/pi-compaction run check` | typecheck clean; **71/71 tests pass** (45 behaviour, 26 evaluation harness) |
+| `npm run check` | **157/157 tests pass** (71 compaction on Pi 1.5.1, 16 delete, 52 display, 18 repository on Pi 0.99.1) |
 | `npm run benchmark` | **deliberately skipped** — the presentation benchmark is for `@allenyolk/pi-minimal-display`; this package registers no TUI component and patches nothing. CI runs it on every push regardless. |
+
+The 26 harness tests are the scorers and the `--score` mode of [the evaluation harness](../eval/README.md).
+They make no request: they read the committed fixture, score summaries that already exist, and spawn
+the harness with `--score`. The live mode is unreachable without `--arm` and is not run by any check.
 
 Which host proves what matters here. The package's own checks resolve Pi 1.5.1 from
 `packages/pi-compaction/node_modules`, so every compaction assertion — including the real
@@ -47,6 +51,9 @@ resource filter. Compaction behaviour itself is **not** exercised on 0.99.1.
 `npm pack --json --ignore-scripts` in `packages/pi-compaction` produces exactly eight entries: the
 five TypeScript sources under `src/`, `README.md`, `LICENSE` and `package.json`. No tests, no
 `docs/`, no `tsconfig.json`, no `work/`, no `node_modules`.
+
+The evaluation harness is deliberately outside it: `eval/` is not in `files`, so the fixture, the
+scorers and the live mode are development tooling that no installed copy carries.
 
 - `repository.directory` is `packages/pi-compaction`, so npm shows the right subdirectory.
 - `exports` and `pi.extensions` both name `./src/index.ts`; Pi loads that TypeScript source directly,
@@ -134,6 +141,47 @@ files do go missing from this store — the `daodao` t3-worktree session directo
 empty, and the 2026-11-03/05/08 `daodao` directories retain only their `tasks/` subagent sessions —
 so those figures are recorded as the owner's, not as re-derived here. Everything above is the
 re-derived set.
+
+## Reproducing a comparison: the evaluation harness
+
+The re-derived figures are in [Measured on the owner's machine](#measured-on-the-owners-machine), and
+that section is explicit about what they are not: a controlled comparison. The two groups in it differ
+in conversation model, date, session kind, ordinal and host prompt, so no row there measures one
+summarizer against another on the same input. [The evaluation harness](../eval/README.md) is that
+measurement — one fixed input, several summarizer configurations, one scorer.
+
+Both confounders are fixed by construction rather than by care:
+
+- **The conversation model** is an arm, not a variable. Every arm is an explicit `{model, thinking}`
+  tuple given on the command line.
+- **The compaction ordinal** is pinned. One session, one previous summary and one cut point, so every
+  arm runs the host's update prompt over exactly the same range at the same ordinal — which is what
+  the ad-hoc numbers this package was built on had to control for by hand.
+
+Scoring is deterministic and involves no model, because a model grading a model's summary is not
+reproducible and cannot gate anything. Each arm is scored on how many of the nine sections the host's
+prompt asks for it carries, how many file paths it names that the summarised range does not contain,
+how many of the fixture's declared probes survived, and its output tokens against the control arm.
+Wall time, output and reasoning tokens, cost and stop reason are recorded beside them, and an arm
+whose every summarization response did not stop with `stop` fails the run. A split turn makes two
+summarization requests that the host concatenates into one summary, so both of its response groups are
+recorded and both are checked — a clean second group says nothing about a partial first one, which is
+the same rule the hook in `src/index.ts` applies before it persists anything.
+
+```sh
+node eval/harness.ts --score summary.md                   # offline: no credentials, no request
+node eval/harness.ts --arm 'provider/model@low' --arm ... # live: costs money, never in CI
+```
+
+The live mode is the only part that opens a socket, and it is unreachable without `--arm`. Its fixture
+is **synthetic** — a fictional session, never the owner's — and far smaller than the workload the
+section above reports on, so a run reproduces the shape of a comparison rather than those figures. A
+real session is read at run time from a path the operator passes (`--session`) and is never committed.
+
+**No arm of the live mode has been run in this repository.** Its recording has been exercised against
+a fake in-process provider; the scorers and the whole of `--score` are unit-tested and make no
+request. Every figure in this document is either what the store audit re-derived or what the owner
+recorded.
 
 ## Known limits
 
