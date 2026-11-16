@@ -1,0 +1,152 @@
+{
+  "session": "long-session.jsonl",
+  "previousSummary": "long-session.previous.md",
+  "keptWindowTokens": 2000,
+  "probes": [
+    {
+      "id": "commit",
+      "kind": "literal",
+      "value": "9f3c1ab7"
+    },
+    {
+      "id": "branch",
+      "kind": "literal",
+      "value": "release/0.9"
+    },
+    {
+      "id": "version",
+      "kind": "literal",
+      "value": "v0.9.3"
+    },
+    {
+      "id": "port",
+      "kind": "literal",
+      "value": "7717"
+    },
+    {
+      "id": "freeze-date",
+      "kind": "literal",
+      "value": "2026-03-14"
+    },
+    {
+      "id": "channel",
+      "kind": "literal",
+      "value": "#tessera-oncall"
+    },
+    {
+      "id": "constraint-format",
+      "kind": "literal",
+      "value": "do not change the on-disk format"
+    },
+    {
+      "id": "constraint-deps",
+      "kind": "literal",
+      "value": "no new runtime dependencies"
+    },
+    {
+      "id": "error-text",
+      "kind": "literal",
+      "value": "EEXIST: manifest already open"
+    },
+    {
+      "id": "mechanism",
+      "kind": "literal",
+      "value": "spill ledger"
+    },
+    {
+      "id": "lock",
+      "kind": "literal",
+      "value": "index_mutex"
+    },
+    {
+      "id": "file-manifest",
+      "kind": "literal",
+      "value": "src/index/manifest.ts"
+    },
+    {
+      "id": "file-spill",
+      "kind": "literal",
+      "value": "src/cache/spill.rs"
+    },
+    {
+      "id": "file-reopen",
+      "kind": "literal",
+      "value": "src/index/reopen.ts"
+    },
+    {
+      "id": "file-evict",
+      "kind": "literal",
+      "value": "src/cache/evict.rs"
+    },
+    {
+      "id": "env-cache-dir",
+      "kind": "literal",
+      "value": "TESSERA_CACHE_DIR"
+    },
+    {
+      "id": "env-spill-bytes",
+      "kind": "literal",
+      "value": "TESSERA_MAX_SPILL_BYTES"
+    },
+    {
+      "id": "decision-io",
+      "kind": "literal",
+      "value": "fsync over O_DIRECT"
+    },
+    {
+      "id": "decision-eviction",
+      "kind": "literal",
+      "value": "keep the LRU eviction order"
+    },
+    {
+      "id": "benchmark",
+      "kind": "literal",
+      "value": "spill-replay"
+    },
+    {
+      "id": "test-name",
+      "kind": "literal",
+      "value": "test_manifest_reopen_idempotent"
+    },
+    {
+      "id": "metric",
+      "kind": "literal",
+      "value": "eviction_rate"
+    },
+    {
+      "id": "rss",
+      "kind": "literal",
+      "value": "1.8 GB"
+    },
+    {
+      "id": "shards",
+      "kind": "literal",
+      "value": "3 shards"
+    },
+    {
+      "id": "p95-latency",
+      "kind": "regex",
+      "value": "412\\s*ms"
+    },
+    {
+      "id": "hit-rate",
+      "kind": "regex",
+      "value": "9[0-9](\\.[0-9])?\\s*%"
+    },
+    {
+      "id": "backoff",
+      "kind": "regex",
+      "value": "backoff of \\d+ ms"
+    },
+    {
+      "id": "file-supervisor",
+      "kind": "literal",
+      "value": "src/supervisor/restart.ts"
+    },
+    {
+      "id": "bad-commit",
+      "kind": "literal",
+      "value": "4c02be91"
+    }
+  ]
+}
