@@ -99,6 +99,20 @@ but reversible: put `null` back. Verify with one real compaction, then re-read `
 `/compaction`.
 
 
+## Steering one compaction
+
+`/compact <text>` is the host's command, and this package carries the text through. The host appends
+it to its own summarization instructions as an `Additional focus:` line, and the request it lands on
+is the one this package made — so `/compact focus on the failing test` steers the summarizer you
+configured rather than the conversation model.
+
+- It applies to **manual** compactions only. The host sets no custom instructions on the automatic
+  paths — the context threshold and overflow recovery — so there is nothing to carry there.
+- It steers, it does not replace: the host's section format still applies, and on a split turn both
+  summarization requests get the line.
+- It survives a handback. After a degradation the host compacts with the conversation model and
+  applies the same line to its own request.
+
 ## The one thing that is refused
 
 A **partial summary** is never persisted.

@@ -56,6 +56,85 @@ five TypeScript sources under `src/`, `README.md`, `LICENSE` and `package.json`.
 - The source reads no credentials, opens no socket and emits no telemetry. Its only imports are
   `node:fs`, `node:path` and `@earendil-works/pi-coding-agent`.
 
+## Measured on the owner's machine
+
+Everything here was re-derived from `~/.pi/agent/sessions`, read-only, with the host's own
+`estimateTokens`, `sessionEntryToContextMessages` and `buildSessionProjection` from
+`@earendil-works/pi-coding-agent` — 1.5.1 and 1.5.2, whose `compaction.js` and `session-manager.js`
+are byte-identical. The session it reads was still running, so the audit is bounded rather than
+open-ended: it covers every `compaction` entry with a timestamp at or before
+**2026-11-16T07:57:45.573Z**, which is where the store stood when the audit ran and is a boundary
+anyone can re-derive against. Later compactions in that session exist and are not counted. The
+configuration in force was `minimax-cn/MiniMax-M3.1-Flash` at `thinking: "low"` with a 16,000-token
+kept window.
+
+**What the store holds.** 22 `compaction` entries at or before that instant, across the 70 session
+files the store held, of which **16 are distinct**: a resumed session is copied into a second file, so
+six of them appear twice. De-duplicated on `(timestamp, tokensBefore, summary length)`, **10 went
+through this package's hook** and **6 are stock Pi**.
+
+**How each column is measured.** The token columns are what the next request carries: `summary` is
+the `compactionSummary` message of the entry, `kept` is every entry from `firstKeptEntryId` up to the
+compaction, and `summary + kept` is the two together — the projection after the compaction, minus the
+system message. Adding the prompt-and-tools constant to it gives the base context CONTEXT.md defines;
+that constant is reported separately below because it differs between the two groups. Every figure in
+the table is a **median**; the ranges are in the bullets. `wall` is inferred from the timestamp of the
+last `message` entry before the compaction, not from the entry immediately before it: in six of the
+nine that entry is a `goal-state` custom entry, and in the tenth it is a `session_info` written 175 s
+after the last message, which would have reported 63.5 s instead of 238.4 s. `output`, `reasoning`
+and `cost` are recorded on the entry, not inferred.
+
+| Group | n | summary | kept | summary + kept | wall | output | reasoning | cost |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| This package, `MiniMax-M3.1-Flash` + `low`, ordinals 2–4 of one `mafia-o/gpt-6-astra` chain | 3 | 4,955 | 15,321 | 20,791 | 36.5 s | 6,281 | 111–193 | $0.011 |
+| Stock Pi — the six stock compactions in the store | 6 | 1,533 | 18,280 | 19,741 | 84.4 s | 4,224 | 352–5,627 | $0.133 |
+
+**The second row is not a baseline for the first.** Those six are a different population: four on
+2026-11-05 with `mafia-o/gpt-6.1-sol` and two on 2026-11-09 with `mafia-o/gpt-6-astra`, all of them
+subagent sessions at ordinals 1–2, four of the six written under an older summarization prompt that
+does not produce the nine sections, and all six carrying a 12,203-token prompt-and-tools constant
+against 20,365–24,138 in the chain above. The rows differ in conversation model, date, session kind,
+ordinal and host prompt, so read the table as what one machine recorded, not as an A/B. What it does
+support is the absolute figure: nine compactions on a model chosen for the job, each finished in
+34.2–120.7 s for $0.0099–$0.0146. The price difference between the rows is the price of the two models
+on one gateway, not a property of this package.
+
+- **10 compactions through the hook, 0 degradation entries, 0 handbacks.** No
+  `pi-compaction-degradation` custom entry exists anywhere in the store, and every compaction recorded
+  while the package was enabled carries `fromHook: true`.
+- **Kept window 9,639–16,969 against the 16,000 cap.** The 9,639 outlier is a cut point whose
+  preceding entry is a single 10,069-token message: the target is a cap, not a goal.
+- **Stock Pi's kept window spans 13,019–27,920** against its 20,000 setting — visibly less stable.
+- **File lists 20–37 read and 2–9 modified, against the per-list cap of 40.** The cap has never been
+  reached.
+- **Summary growth +538 tokens per compaction** for this package — the mean step over the
+  nine-compactions chain, whose median step is +525 — against +2,148 and +1,647 for the one step each
+  of the two stock chains that has a second compaction. One step in the hook chain **shrank by 767**
+  tokens.
+- **10/10 summaries carried all nine sections, ended with a populated `## Critical Context`, and
+  named zero paths the summarised range does not support.** A path counted as supported when the
+  range or the previous summary contains it, any suffix of it, or both its parent directory and its
+  basename.
+- The whole chain, rather than the ordinal band: wall 34.2–120.7 s (median 41.8), cost
+  $0.0099–$0.0146 and $0.114 for all nine, output 4,387–11,097 tokens, reasoning 56–291, input
+  47,046–66,807, summary 3,274–7,581. The tenth hook compaction is a second session
+  (`mafia-o/gpt-6-sol`, ordinal 1): 238.4 s, $0.0099, 16,138 kept.
+
+**What these numbers are not.** One machine, one workload (`daodao`), and a small n. Wall time is
+inferred from entry timestamps rather than recorded, and cost is the host's own accounting against a
+proxy's pricing rather than an invoice.
+[#29](https://github.com/AllenYolk/pi-extensions/issues/29) is the reproducible version.
+
+**What could not be re-derived.** The stock baseline
+[#32](https://github.com/AllenYolk/pi-extensions/issues/32) records — six `mafia-o/gpt-6-astra`
+compactions at ordinals 2–4, 211 s, $1.42, 12,812 output tokens, a 7,426-token summary — is not in
+the store: no stock compaction here is at ordinal 3 or 4, and none falls after 2026-11-09. The same
+applies to its count of thirteen hook compactions and its kept-window maximum of 20,581. Main session
+files do go missing from this store — the `daodao` t3-worktree session directories are present but
+empty, and the 2026-11-03/05/08 `daodao` directories retain only their `tasks/` subagent sessions —
+so those figures are recorded as the owner's, not as re-derived here. Everything above is the
+re-derived set.
+
 ## Known limits
 
 These are properties of the design, documented in the package README, not defects to fix here:
@@ -70,15 +149,29 @@ These are properties of the design, documented in the package README, not defect
   "off"` is clamped to the model's lowest supported level on a model whose `thinkingLevelMap` marks
   `off` unsupported, and the model reasons anyway. The status view reports the level that ran, not the
   level that was asked for. The owner's own conversation model is such a model.
-- **Three `shortcut:` comments in the source carry their own upgrade conditions**:
-  `prepareCompaction` measures raw entries, so a pruned result would count at full size — moot now
-  that nothing is pruned, but the raw-versus-projected cut point remains; `curateFileOps` keeps the
-  file operations the host extracted, which cover the host's summarised range rather than this
-  package's, so paths touched only between the host's cut point and its own are not listed — extract
-  them from this package's own range when a summary's file index proves too thin; and
-  `hostRetryPolicy` repeats `SettingsManager.getRetrySettings()`'s four defaults, without which the
-  host's own `retryAssistantCall()` wrapper never retries at all — read the resolved policy from the
-  extension API when the host exposes one.
+- **Three `shortcut:` comments in the source carry their own upgrade conditions**, and none of the
+  three conditions has been met:
+  - `prepareCompaction` measures raw entries, so a pruned result would count at full size — moot now
+    that nothing is pruned, but the raw-versus-projected cut point remains. **Still accurate**: this
+    package calls the exported `findCutPoint()` on raw source entries while the host's own
+    preparation measures projected messages through a module-private `findProjectedCutPoint()`, which
+    neither 1.5.1 nor 1.5.2 exports, so correcting it still means reimplementing that search.
+    Measured: the nine-compactions chain carries **no `context_edit` entry at all** (97 exist
+    elsewhere in the store), and its raw and projected kept windows are identical for all nine — a
+    divergence of **0 tokens**.
+  - `curateFileOps` keeps the file operations the host extracted, which cover the host's summarised
+    range rather than this package's, so paths touched only between the host's cut point and its own
+    are not listed — extract them from this package's own range when a summary's file index proves
+    too thin. Measured: read lists of **20–37** and modified lists of **2–9** against the per-list cap
+    of 40, and 10/10 summaries named zero paths the summarised range does not support, so the index
+    has never proved too thin.
+  - `hostRetryPolicy` repeats `SettingsManager.getRetrySettings()`'s four defaults, without which the
+    host's own `retryAssistantCall()` wrapper never retries at all — read the resolved policy from
+    the extension API when the host exposes one. **Still accurate on 1.5.1 and 1.5.2**:
+    `getRetrySettings()` returns the same four values this package replicates (`true`, `3`, `2_000`,
+    `60_000`), the host still wraps summarization in `retryAssistantCall()`, and `ExtensionAPI`
+    exposes no resolved retry policy — `getSettings()` hands back a clone of the deep-merged global
+    and project settings, which is the merged-not-resolved object the comment describes.
 - **The degradation record is not rendered in the transcript.** Drawing it would mean registering a
   TUI component and adding an `@earendil-works/pi-tui` peer dependency, which this package
   deliberately does not have. The pinned widget carries the visible announcement and `/compaction`
@@ -227,22 +320,34 @@ stop were all removed. [ADR 0005](adr/0005-bound-by-not-bounding.md) records the
 What is left is what the owner asked for: pick the summarizer model, pick its thinking level, and never
 persist a summary that is not whole.
 
-The audits' open findings — no latency or cost measurement, no real outbound request body, no
-real-session replay — are unchanged and listed below.
+The audits' open findings — no controlled latency or cost comparison, no real outbound request body,
+no real-session replay — are unchanged and listed below. The owner's own machine has since recorded
+latency and cost for ten compactions; see [Measured on the owner's machine](#measured-on-the-owners-machine).
 
 ## Not established
 
-The honest gap list. None of these is claimed anywhere in the README or the changeset.
+The honest gap list. None of these is claimed anywhere in the README or the changeset; where something
+is now partly measured, the entry says what that establishes and what it does not.
 
-- **No measured latency, and no latency claim.** The package's whole value is speed, and **nothing
-  measures it.** The construction argument is that a cheaper model with less thinking produces the
-  same summary faster; that argument has not been tested. The specification's 289–490 s baseline is the
-  owner's measurement against the conversation model, not a comparison.
-- **No summary-quality comparison.** A weaker summarizer was accepted on the owner's judgement that it
-  is fine. No side-by-side comparison of a summary produced by the conversation model against one
-  produced by a cheaper model has been run, so how much detail a cheaper summarizer drops is unknown.
-- **No real-session replay.** The owner's 2,475-entry session is named in the spec as a one-time source
-  of measured evidence. It was not read.
+- **Latency is measured on one machine, and not controlled.** The package's whole value is speed.
+  [Measured on the owner's machine](#measured-on-the-owners-machine) records nine compactions in one
+  chain at 34.2–120.7 s (median 41.8 s) against six stock compactions at 52.5–202.3 s (median 84.4 s),
+  so the construction argument — a cheaper model with less thinking produces the same summary faster —
+  now has real compactions behind it. It is still not a comparison: the two groups differ in
+  conversation model, date, session kind, ordinal and host prompt, the wall time is inferred from
+  entry timestamps, and nothing here runs both summarizers over the same input. The specification's
+  289–490 s baseline remains the owner's measurement against the conversation model.
+  [#29](https://github.com/AllenYolk/pi-extensions/issues/29) is the reproducible version.
+- **No summary-quality comparison.** A weaker summarizer was accepted on the owner's judgement that
+  it is fine. What is now known is narrower and structural: 10/10 summaries carried all nine
+  sections, ended with a populated `## Critical Context`, and named zero paths the summarised range
+  does not support. No side-by-side comparison of a summary produced by the conversation model
+  against one produced by a cheaper model **on the same input** has been run, so how much detail a
+  cheaper summarizer drops is still unknown.
+- **No real-session replay.** The owner's 2,475-entry session is named in the spec as a one-time
+  source of measured evidence. Real sessions have since been read, read-only, for the aggregate
+  figures above; replaying one — re-running a compaction over a stored session — has not been done,
+  and no session content beyond those aggregates is recorded here.
 - **Linux is unverified locally.** Everything above is macOS arm64. `.github/workflows/check.yml` runs
   ubuntu-latest and macos-latest, but no run of this branch has been observed. Windows is not tested
   at all, by this candidate or by CI.
