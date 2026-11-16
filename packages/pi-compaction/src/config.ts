@@ -35,7 +35,15 @@ export interface Effective {
   keptWindowTokens: number;
 }
 
-const LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+/**
+ * The thinking levels this package accepts, in the order it clamps through them.
+ *
+ * The one list: the configuration rejects a level outside it, the summarizer clamps through it, and
+ * the evaluation harness refuses an arm naming anything else. A second copy would drift the other
+ * way — a level added here would become an exit-2 usage error in the harness.
+ */
+export const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
 const FIELDS = ['enabled', 'summarizerModel', 'thinking', 'keptWindowTokens'];
 const MAX_TOKENS = 1_000_000;
 
@@ -79,7 +87,9 @@ function parse(raw: unknown): Config {
     }
   }
   if ('thinking' in record) {
-    if (!LEVELS.includes(record.thinking as ThinkingLevel)) throw new Error(`thinking must be ${LEVELS.join(', ')}`);
+    if (!THINKING_LEVELS.includes(record.thinking as ThinkingLevel)) {
+      throw new Error(`thinking must be ${THINKING_LEVELS.join(', ')}`);
+    }
     config.thinking = record.thinking as ThinkingLevel;
   }
   if ('keptWindowTokens' in record) config.keptWindowTokens = integer(record.keptWindowTokens, 'keptWindowTokens', 0);

@@ -1,6 +1,6 @@
 import { compact, DEFAULT_COMPACTION_SETTINGS } from '@earendil-works/pi-coding-agent';
 import type { ExtensionContext, ModelRegistry } from '@earendil-works/pi-coding-agent';
-import type { ThinkingLevel, Tuple } from './config.ts';
+import { THINKING_LEVELS, type ThinkingLevel, type Tuple } from './config.ts';
 
 /**
  * Every type this module needs is derived from `compact()`'s own signature. That signature is one of
@@ -13,8 +13,6 @@ export type SummarizerStream = NonNullable<CompactArguments[7]>;
 export type SummarizationPreparation = CompactArguments[0];
 type StreamOptions = NonNullable<Parameters<SummarizerStream>[2]>;
 
-const LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-
 export function resolveSummarizerModel(tuple: Tuple, ctx: ExtensionContext): SummarizerModel | undefined {
   if (tuple.model === null) return ctx.model;
   const separator = tuple.model.indexOf('/');
@@ -25,13 +23,13 @@ export function resolveSummarizerModel(tuple: Tuple, ctx: ExtensionContext): Sum
 export function clampThinkingLevel(model: SummarizerModel, level: ThinkingLevel): ThinkingLevel {
   const available = supportedThinkingLevels(model);
   if (available.includes(level)) return level;
-  const requested = LEVELS.indexOf(level);
+  const requested = THINKING_LEVELS.indexOf(level);
   if (requested === -1) return available[0] ?? 'off';
-  for (let index = requested; index < LEVELS.length; index++) {
-    if (available.includes(LEVELS[index]!)) return LEVELS[index]!;
+  for (let index = requested; index < THINKING_LEVELS.length; index++) {
+    if (available.includes(THINKING_LEVELS[index]!)) return THINKING_LEVELS[index]!;
   }
   for (let index = requested - 1; index >= 0; index--) {
-    if (available.includes(LEVELS[index]!)) return LEVELS[index]!;
+    if (available.includes(THINKING_LEVELS[index]!)) return THINKING_LEVELS[index]!;
   }
   return available[0] ?? 'off';
 }
@@ -39,7 +37,7 @@ export function clampThinkingLevel(model: SummarizerModel, level: ThinkingLevel)
 function supportedThinkingLevels(model: SummarizerModel): ThinkingLevel[] {
   const map = (model as { reasoning?: boolean; thinkingLevelMap?: Record<string, unknown> });
   if (!map.reasoning) return ['off'];
-  return LEVELS.filter((level) => {
+  return THINKING_LEVELS.filter((level) => {
     const mapped = map.thinkingLevelMap?.[level];
     if (mapped === null) return false;
     return level === 'xhigh' || level === 'max' ? mapped !== undefined : true;
