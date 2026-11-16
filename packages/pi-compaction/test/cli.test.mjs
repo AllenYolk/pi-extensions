@@ -121,7 +121,12 @@ function screen(run, script = []) {
   const bare = (text) => text.replace(/\s+/g, '');
   let text = bare(run.plain.replace(/PI_DRIVE_[A-Z_]+/g, ''));
   for (const step of script) {
-    text = text.split(bare(step.send)).join('').split(bare(step.expect)).join('');
+    // A step may carry only `send` or only `expect` — a wait has nothing to type. Strip whichever
+    // it has, and nothing else: never a word of the program's own output.
+    for (const part of [step.send, step.expect]) {
+      if (typeof part !== 'string' || part === '') continue;
+      text = text.split(bare(part)).join('');
+    }
   }
   return text;
 }
@@ -1061,24 +1066,40 @@ test('a fallback recorded by an earlier session is reported, not reported as abs
       { summarizer: 'fallback/f (anthropic-messages)' },
     ],
   };
+  const script = [
+    { expect: READY, send: '/compaction\r' },
+    { expect: 'Host seam:', send: '/compaction-probe\r' },
+    { expect: 'Compacted from' },
+  ];
   const run = runCompaction({
     name: 'fallback-record-',
     // Inert, so the run adds no record of its own and the recorded one stays the most recent.
     config: { enabled: false },
     turns: 30,
     decorate: (session) => session.appendCustomEntry(FALLBACK_ENTRY, recorded),
-    script: [
-      { expect: READY, send: '/compaction\r' },
-      { expect: 'Host seam:', send: '/compaction-probe\r' },
-      { expect: 'Compacted from' },
-    ],
+    script,
   });
   assert.equal(run.report.error, undefined, run.report.error);
 
-  assert.match(run.plain, /Last compaction: the fallback summarizer fallback\/f \(anthropic-messages\) produced the summary/);
-  assert.match(run.plain, /primary\/m \(anthropic-messages\) — the summarizer reported an error \(503\)/);
-  assert.doesNotMatch(run.plain, /Last degradation: none in this session/, 'a recorded fallback is not reported as absent');
-  assert.doesNotMatch(run.plain, /Last degradation: summarizer undefined/, 'and never as an undefined one');
+  // Compared without whitespace and with the driver's own strings removed, for the reason `screen`
+  // documents: the record line is long enough that a terminal wrap can split it, and a raw
+  // `assert.match` over `run.plain` then fails for a reason that has nothing to do with this package.
+  // A record that stopped being reported still fails — none of these fragments is a string the driver
+  // sent — and the entry on disk is checked directly below.
+  assertSaid(run, script, [
+    'Last compaction: the fallback summarizer fallback/f (anthropic-messages) produced the summary',
+    'primary/m (anthropic-messages) — the summarizer reported an error (503)',
+  ]);
+  const shown = screen(run, script);
+  const bare = (text) => text.replace(/\s+/g, '');
+  assert.ok(
+    !shown.includes(bare('Last degradation: none in this session')),
+    'a recorded fallback is not reported as absent',
+  );
+  assert.ok(
+    !shown.includes(bare('Last degradation: summarizer undefined')),
+    'and never as an undefined one',
+  );
   // Reading it is a read: the entry is untouched on disk.
   const [entry] = customEntries(run, FALLBACK_ENTRY);
   assert.deepEqual(entry.data, recorded);
