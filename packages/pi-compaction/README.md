@@ -148,8 +148,10 @@ your back.
 ## Degrading to a fallback summarizer
 
 Handing compaction back to stock Pi is the most expensive outcome available: stock Pi summarises with
-the **conversation model at the session's thinking level**. On the machine this package was built on
-that is the difference between 36 s / $0.011 and 211 s / $1.42 for the same compaction.
+the **conversation model at the session's thinking level**. The owner recorded 36 s / $0.011 for the
+configured summarizer against 211 s / $1.42 for the handback, on the same conversation model and
+compaction ordinal ([issue #28](https://github.com/AllenYolk/pi-extensions/issues/28)). Those figures
+are the owner's own measurement — nothing in this repository reproduces them.
 
 `fallbackModel` puts one step in between. It is off by default, and `null` — or an absent field — is
 exactly the behaviour above.

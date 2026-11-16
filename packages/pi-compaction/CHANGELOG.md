@@ -7,9 +7,11 @@
 Degrade to a configured fallback summarizer before handing back to the conversation model.
 
 Every failure used to hand compaction straight back to stock Pi, which summarises with the
-**conversation model at the session's thinking level**. On the machine this package was built on that
-is 211 s and $1.42 against 36 s and $0.011 for the configured summarizer — the thing this package
-exists to avoid. One optional field puts a step in between.
+**conversation model at the session's thinking level**. The owner recorded that as 211 s and $1.42
+against 36 s and $0.011 for the configured summarizer, on the same conversation model and compaction
+ordinal ([issue #28](https://github.com/AllenYolk/pi-extensions/issues/28)) — the thing this package
+exists to avoid. Those figures are the owner's own measurement and are not reproduced by this
+repository. One optional field puts a step in between.
 
 - **`fallbackModel`** — `provider/model`, or `null` — the default — for no fallback, which is the
   behaviour of `0.2.1` exactly. `"conversation"` is accepted as a spelling of `null`; so is `none` from

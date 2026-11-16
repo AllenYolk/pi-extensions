@@ -48,22 +48,55 @@ resource filter. Compaction behaviour itself is **not** exercised on 0.99.1.
 
 ## The fallback summarizer
 
-[Issue #30](https://github.com/AllenYolk/pi-extensions/issues/30) added `fallbackModel`. What follows
-is what was verified for it, on the same machine and host as everything above.
+[Issue #30](https://github.com/AllenYolk/pi-extensions/issues/30) added `fallbackModel`. This section
+records only what that change is and what was verified for it; the gates table above is unchanged by
+it, and this branch's own run of both gates is noted at the end.
 
-### What is established
+### What it changes about the degradation record
 
-| Claim | How |
-| --- | --- |
-| `fallbackModel: null` and an absent field are `0.2.1`'s behaviour | A real-CLI run with the field set to `null` and a failing summarizer: one request of ours, then stock Pi's own, a host-originated compaction entry, the five-line announcement with no `Earlier:` line and no fallback wording, and a one-attempt record |
-| The four failures fall back, and the fallback's summary is persisted | One real-CLI run per class — model not offered, no configured credentials, a reported error, a partial response — each asserting the request order, `fromHook: true` on the persisted compaction, the recovery announcement and a two-attempt `pi-compaction-fallback` record |
-| Both attempts failing hands back and names both | A run whose primary is not offered and whose fallback has no credentials: the only summarization request is the host's own, and the record carries both attempts with both reasons |
-| The guarantee applies to the fallback | A run where both of our attempts return a partial response: three requests in order, a host-originated compaction, and the partial text nowhere in the session file or in any persisted summary |
-| A fallback is the same compaction with a different model | The two attempts' recorded prompts are byte-identical and both carry `reasoning: "low"`, which is the only way to show the cut point did not move between them |
-| A cancellation attempts nothing | A real-CLI run that cancels on the primary's response, plus a hook-level test — see below |
-| A host seam mismatch attempts no fallback | A hook-level test — see below |
-| A rejected configuration stays inert | `fallbackModel: "no-slash"` rejects the file whole in the config unit tests, and a hook-level run with a rejected file resolves no model and requests nothing |
-| `/compaction fallback` and the status view | A scripted real-CLI run: no value prints usage and changes nothing, an invalid id is refused by `validateConfig`, and the status view reports `none`, a model this host does not offer, a model with no configured credentials, and one it can run |
+The record is no longer a single summarizer and a single reason. It is **every attempt the compaction
+made, in order**, each with the model it was to run and — for the ones that failed — why. The last
+attempt ran unless it carries a reason, which is the one predicate that decides everything else:
+
+- a handback is still the `pi-compaction-degradation` custom entry, and a fallback that produced the
+  summary is the new `pi-compaction-fallback` one, because the entry type is what anything scanning
+  the session reads and a fallback that ran is not a degradation;
+- a handback announces `degraded — compaction handed back to stock Pi` and gains an `Earlier:` line
+  per attempt that failed before the last; a fallback announces `recovered — the fallback summarizer
+  produced the summary` and names the failed attempts in its `Why:` line instead;
+- `/compaction` reports `Last degradation: …` or `Last compaction: …` accordingly.
+
+**With one attempt nothing changes**: the announcement is the same five lines with no fallback
+wording, and the status line is the one `0.2.1` prints. An entry written by `0.2.1` — which has no
+`attempts` — is skipped by the status view rather than crashed on, so a session that outlives the
+version that compacted it still reads.
+
+### What was tested
+
+Every claim below is asserted against a real packaged-CLI run on a disposable profile and a synthetic
+session, resolving Pi 1.5.1 from this package's own workspace, unless it says otherwise.
+
+- `fallbackModel: null`, and an absent field, take the `0.2.1` path: one request of ours, then stock
+  Pi's own, a host-originated compaction entry, the unchanged announcement, and a one-attempt record.
+- Each of the four failures that fall back has its own run — the summarizer model is not offered by
+  this host, the host has no configured credentials for it, the summarizer reported an error, and a
+  partial response — asserting the request order, `fromHook: true` on the persisted compaction, the
+  recovery announcement, and a two-attempt `pi-compaction-fallback` record.
+- Both attempts failing hands back: the primary is not offered and the fallback has no credentials, so
+  the only summarization request is the host's own, and the record names both attempts and both
+  reasons.
+- The whole-summary guarantee applies to the fallback: with both of our attempts returning a partial
+  response there are three requests in order, the compaction that reaches the session is the host's,
+  and the partial text is in neither the session file nor any persisted summary.
+- A fallback is the same compaction with a different model: the two attempts' recorded prompts are
+  byte-identical and both carry `reasoning: "low"`, which is the only way to show the cut point did
+  not move between them.
+- A rejected configuration stays inert — `fallbackModel: "no-slash"` rejects the file whole, and a
+  hook-level run with a rejected file resolves no model and requests nothing.
+- `/compaction fallback` with no value prints usage and changes nothing, an invalid id is refused by
+  `validateConfig`, and the status view reports `none`, a model this host does not offer, a model with
+  no configured credentials, and one it can run.
+- A cancellation and a host seam mismatch each attempt nothing — see below.
 
 ### The two hook-level tests, and why they exist
 
@@ -100,12 +133,24 @@ the real run.
 
 ### Not established for the fallback
 
-- **No measurement of what a fallback saves.** The 211 s / $1.42 against 36 s / $0.011 figures are the
-  owner's, from issue #28; nothing here re-measures them, and nothing measures a fallback step.
+- **No measurement of what a fallback saves, and none is possible from this repository.** The owner
+  recorded 36 s / $0.011 for the configured summarizer against 211 s / $1.42 for the handback, on the
+  same conversation model and compaction ordinal, in
+  [issue #28](https://github.com/AllenYolk/pi-extensions/issues/28). Those figures are **owner-recorded
+  and not reproduced here**, and they are no longer re-derivable on this machine: the main-session
+  files that carried the native `gpt-6-astra` compactions at ordinals 2–4 have been deleted, and the
+  only native compactions still on disk are six inside `tasks/` subagent sessions from 2026-11-05 and
+  2026-11-09. Nothing here measures a fallback step either.
 - **Thirteen real compactions have produced zero degradations**, so no fallback has run on a real
   session. Every fallback path above is exercised against the fixture provider.
 - **A fallback has not been observed against a real second provider.** The fixtures are two in-process
   providers on different `api` identifiers.
+
+### This branch's own gates
+
+`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 65/65 pass (45 before this
+change). `npm run check` — 151/151 pass. `npm pack --json --ignore-scripts` still produces exactly the
+eight entries listed below.
 
 ## The packed artifact
 
