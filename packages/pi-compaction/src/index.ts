@@ -346,7 +346,7 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
         : `Fallback model: ${fallback.provider}/${fallback.id} (${fallback.api})`
           + (ctx.modelRegistry.hasConfiguredAuth(fallback) ? '' : ' — no configured credentials on this host'));
     lines.push(`Kept window: ${settings.keptWindowTokens} tokens`);
-    lines.push(redistillStatus(settings.redistill, tokenSeamResult()));
+    lines.push(redistillStatus(settings.redistill, tokenSeamResult(), settings.enabled));
     lines.push('Summary length: not bounded by this package — the host sends no output ceiling and neither do we');
     const checked = await seamResult();
     lines.push(`Host seam: ${checked.ok ? 'ok' : 'MISMATCH'} — ${checked.detail}`);

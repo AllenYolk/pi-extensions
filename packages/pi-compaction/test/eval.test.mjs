@@ -434,7 +434,11 @@ test('an arm may carry redistill thresholds, and a malformed pair is refused', (
   assert.match(unbounded.stderr, /must be <provider\/model>@<thinking>/);
 });
 
-test('an arm sends the instruction its thresholds ask for, or nothing', () => {
+test('an arm\'s thresholds decide the instruction the harness would ask for', () => {
+  // What this covers, precisely: `armInstructions` — the value `runLive` puts in `compact()`'s fifth
+  // argument and in the run record. It does not drive `runLive` itself, which needs credentials and is
+  // never run by a check, so a change that stopped passing this value to `compact()` would not be
+  // caught here. `runLive` computes it once and uses it for both the request and the record.
   const fixture = loadFixture(DEFAULT_FIXTURE);
   // The committed fixture's previous summary is 261 tokens, so #31's own 4,000-token threshold asks
   // for nothing here: an arm at that threshold is the control arm with a misleading name.
@@ -442,6 +446,12 @@ test('an arm sends the instruction its thresholds ask for, or nothing', () => {
   const asked = armInstructions(fixture, 'a/b@low+200:6000');
   assert.match(asked, /^The previous summary is 261 tokens and the merged summary should stay under 6000\./);
   assert.equal(armInstructions(fixture, 'a/b@low'), undefined, 'an arm without thresholds is the control');
+
+  // The hook's gate applies here too: an arm must not measure an instruction this host would refuse to
+  // send, and `eval/README.md` says the recorded text is what the package would ask for.
+  const broken = { ok: false, detail: 'estimateTokens() returned NaN' };
+  assert.equal(armInstructions(fixture, 'a/b@low+200:6000', broken), undefined, 'a failed token-seam probe asks for nothing');
+  assert.equal(armInstructions(fixture, 'a/b@low', broken), undefined);
 });
 
 test('the exit code is the arms\' own, and a clean arm list is zero', () => {

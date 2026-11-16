@@ -28,8 +28,9 @@ import type { SeamResult } from './summarizer.ts';
 const TEMPLATE = (previousTokens: number, targetTokens: number) =>
   `The previous summary is ${previousTokens} tokens and the merged summary should stay under ${targetTokens}. `
   + 'Keep every goal, constraint, decision with its rationale, blocker, open question and next step '
-  + 'that is still true. Drop an entry when a later entry supersedes it, and drop detail about work '
-  + 'that is finished and no longer referenced. Do not append a changelog and do not add a history section.';
+  + 'that is still true, and keep exact file paths, function names and error messages. Drop an entry '
+  + 'when a later entry supersedes it, and drop detail about work that is finished and no longer '
+  + 'referenced. Do not append a changelog and do not add a history section.';
 
 /** The previous summary's size, in the host's own estimate for a summary. */
 export function previousSummaryTokens(previousSummary: string): number {
@@ -46,9 +47,13 @@ const summaryMessage = (summary: string) =>
  * because it belongs to this module, and because its consequence is different — a mismatch turns
  * redistilling off rather than handing compaction back.
  *
- * Without it, a host that stopped recognising the shape would return 0 or NaN, every summary would
- * then be "below" `aboveTokens`, and redistilling would turn itself on for every compaction while the
- * instruction named a wrong number: silently the opposite of inert.
+ * Without it, a host whose estimator stopped returning a size would go unnoticed. A `0` keeps
+ * redistilling off — `0 < aboveTokens` is true — but a `NaN` opens the gate on every compaction,
+ * because every comparison against it is false, and the instruction would then name `NaN` as the
+ * previous summary's size: silently the opposite of inert. The probe rejects a non-finite or
+ * non-positive size for that reason, and `redistillInstructions` refuses one again where it is used,
+ * because two synthetic inputs at activation cannot rule out an estimator that misbehaves only on a
+ * real summary.
  */
 export function checkTokenSeam(estimate: typeof estimateTokens = estimateTokens): SeamResult {
   const of = (chars: number) => estimate(summaryMessage('x'.repeat(chars)));
@@ -89,15 +94,23 @@ export function redistillFor(redistill: Redistill | null, seam: SeamResult): Red
   return seam.ok ? redistill : null;
 }
 
-/** The `/compaction` line: what is asked for, and — when the host cannot be trusted for it — why not. */
-export function redistillStatus(redistill: Redistill | null, seam: SeamResult): string {
+/**
+ * The `/compaction` line: what is asked for, and — when the host cannot be trusted for it, or the
+ * package is not acting at all — why not.
+ *
+ * `enabled` is a parameter because a configured `redistill` on a disabled package asks for nothing,
+ * and reporting it as "on" beside `Enabled: no` would describe a request that is never made.
+ */
+export function redistillStatus(redistill: Redistill | null, seam: SeamResult, enabled: boolean): string {
   if (!seam.ok) {
     return `Redistilling: off — this host's token estimate did not check out, so nothing is asked for (${seam.detail})`;
   }
-  return redistill
-    ? `Redistilling: on — asks for a fixed point once the previous summary reaches ${redistill.aboveTokens} `
-      + `tokens, naming ${redistill.targetTokens} as the target (a request, not a ceiling)`
-    : 'Redistilling: off';
+  if (!redistill) return 'Redistilling: off';
+  const asks = `asks for a fixed point once the previous summary reaches ${redistill.aboveTokens} tokens, `
+    + `naming ${redistill.targetTokens} as the target (a request, not a ceiling)`;
+  return enabled
+    ? `Redistilling: on — ${asks}`
+    : `Redistilling: configured but inactive — the package is disabled, so it ${asks} only once enabled`;
 }
 
 /**
@@ -114,9 +127,16 @@ export function redistillInstructions(
   customInstructions: string | undefined,
   /** The host applies one value to both of a split turn's requests; see the note above. */
   isSplitTurn: boolean,
+  /** The size of the previous summary. Injectable so the guard below is testable against a host whose estimator is not a size. */
+  measure: (previousSummary: string) => number = previousSummaryTokens,
 ): string | undefined {
   if (!redistill || !previousSummary || isSplitTurn) return customInstructions;
-  const previousTokens = previousSummaryTokens(previousSummary);
+  const previousTokens = measure(previousSummary);
+  // The activation probe only ever sees two synthetic summaries, so it cannot rule out an estimator
+  // that is well-behaved on those and returns NaN or Infinity for a real one. A non-finite or
+  // non-positive size is not a size: asking on it would append an instruction naming it and open the
+  // threshold gate on every compaction, which is the silent-on direction this package must not take.
+  if (!Number.isFinite(previousTokens) || previousTokens <= 0) return customInstructions;
   if (previousTokens < redistill.aboveTokens) return customInstructions;
   const ours = TEMPLATE(previousTokens, redistill.targetTokens);
   return customInstructions ? `${customInstructions}\n\n${ours}` : ours;

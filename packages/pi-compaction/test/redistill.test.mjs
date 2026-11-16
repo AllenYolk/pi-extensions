@@ -38,8 +38,11 @@ test('a previous summary at aboveTokens asks for a fixed point, naming both numb
   // The two placeholders are the measured previous summary and the configured target.
   assert.match(instruction, /The previous summary is 4000 tokens/);
   assert.match(instruction, /merged summary should stay under 6000\b/);
-  // It names what may be dropped, rather than asking for brevity.
-  assert.match(instruction, /Keep every goal, constraint, decision with its rationale, blocker, open question and next step that is still true\./);
+  // It names what may be dropped, rather than asking for brevity, and the keep-list names what the
+  // host's own prompt demands be preserved — otherwise the priority between the two instructions is
+  // whatever the model decides, and the host says PRESERVE exact file paths, function names and
+  // error messages.
+  assert.match(instruction, /Keep every goal, constraint, decision with its rationale, blocker, open question and next step that is still true, and keep exact file paths, function names and error messages\./);
   assert.match(instruction, /Drop an entry when a later entry supersedes it/);
   assert.match(instruction, /drop detail about work that is finished and no longer referenced/);
   assert.match(instruction, /Do not append a changelog and do not add a history section\./);
@@ -95,19 +98,40 @@ test('a host whose token estimate did not check out gets no redistilling at all'
 test('/compaction reports redistilling, and says why when the host cannot be trusted for it', () => {
   const thresholds = { aboveTokens: 4_000, targetTokens: 6_000 };
   const ok = { ok: true, detail: 'estimateTokens() sized a compactionSummary message' };
-  const bad = { ok: false, detail: 'estimateTokens() returned 0 for a 56-character summary' };
-  assert.equal(redistillStatus(null, ok), 'Redistilling: off');
+  const bad = { ok: false, detail: 'estimateTokens() returned NaN for a compactionSummary message' };
+  assert.equal(redistillStatus(null, ok, true), 'Redistilling: off');
   assert.equal(
-    redistillStatus(thresholds, ok),
+    redistillStatus(thresholds, ok, true),
     'Redistilling: on — asks for a fixed point once the previous summary reaches 4000 tokens, '
     + 'naming 6000 as the target (a request, not a ceiling)',
   );
   // Configured but unusable: the line has to say which of the two it is.
-  const refused = redistillStatus(thresholds, bad);
+  const refused = redistillStatus(thresholds, bad, true);
   assert.match(refused, /^Redistilling: off/);
   assert.match(refused, /token estimate did not check out/);
   assert.ok(refused.includes(bad.detail), 'and quotes what the probe saw');
-  assert.equal(redistillStatus(null, bad), refused, 'the same line whether or not it was configured');
+  assert.equal(redistillStatus(null, bad, true), refused, 'the same line whether or not it was configured');
+
+  // Configured on a disabled package: it asks for nothing, and saying "on" beside `Enabled: no` would
+  // describe a request that is never made.
+  const inactive = redistillStatus(thresholds, ok, false);
+  assert.match(inactive, /^Redistilling: configured but inactive/);
+  assert.match(inactive, /the package is disabled/);
+  assert.doesNotMatch(inactive, /^Redistilling: on/);
+});
+
+test('an estimate that is not a size asks for nothing, whatever the probe said at activation', () => {
+  // The activation probe only sees two synthetic summaries, so it cannot rule out an estimator that
+  // is finite and monotone on those and returns NaN or Infinity for a real one. `NaN < aboveTokens`
+  // is false, so without this the gate would open on every compaction and the instruction would name
+  // the value — the silent-on direction.
+  for (const [estimate, why] of [[Number.NaN, 'NaN'], [Number.POSITIVE_INFINITY, 'Infinity'], [0, 'zero'], [-1, 'negative']]) {
+    const withEstimate = (summary) => redistillInstructions(BIG, THRESHOLDS, undefined, false, () => estimate);
+    assert.equal(withEstimate(BIG), undefined, why);
+    assert.equal(redistillInstructions(BIG, THRESHOLDS, 'user text', false, () => estimate), 'user text', `${why}: the caller's text is untouched`);
+  }
+  // A real size still asks, through the same path.
+  assert.match(redistillInstructions(BIG, THRESHOLDS, undefined, false, () => 4_000), /The previous summary is 4000 tokens/);
 });
 
 test('a split turn is left alone, and the caller\'s own text still reaches both requests', () => {

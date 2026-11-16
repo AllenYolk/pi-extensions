@@ -211,43 +211,31 @@ export function validateConfig(config: Config): string | undefined {
 /**
  * Write the configuration, or refuse, and return what was written.
  *
- * `redistill` is file-only: the command surface cannot set it, and the in-memory copy only refreshes
- * on `session_start`. The file is therefore where that field is edited and what a save has to respect,
- * which is three rules rather than one:
+ * A file this session could not load is *not* a reason to refuse: `/compaction <verb>` is how a broken
+ * file gets repaired, and the command writes a fresh one from what it knows. What a save must never do
+ * is lose a `redistill`, because that field is file-only — the command surface cannot set it, and the
+ * in-memory copy only refreshes on `session_start`. Two rules follow:
  *
  * - A pair the file carries is **kept**, so a threshold edited mid-session is not reverted by an
- *   unrelated `/compaction` change. The caller gets the configuration that was actually written, so the
- *   status view cannot go on reporting the stale pair.
- * - A pair that is incomplete or malformed is **refused**, with the advice that can help. A malformed
- *   object is never written back verbatim.
- * - A file this session could not load at all is **refused** too, whatever it carries: saving would
- *   replace it with this session's defaults, and the fault is somewhere else in it. The advice is to
- *   fix or remove the file and reload, not to complete a pair that is already complete.
+ *   unrelated change, and repairing a rejected file preserves the pair it carried. The caller gets the
+ *   configuration that was actually written, so the status view cannot report a stale pair.
+ * - A pair that is incomplete or malformed is **refused**, naming what is actually wrong with it. The
+ *   loader treats such a pair as off, because a missing counterpart means off; the saver refuses to
+ *   erase it, because nothing else can restore it. Those two answers disagree on purpose, and the
+ *   message says which one the user is looking at.
  */
 export function saveConfig(agentDir: string, config: Config): Config {
   const path = configPath(agentDir);
   const existing = readConfigFile(path);
   let redistill = config.redistill;
-  if (existing?.problem) {
-    throw refuse(path, `${existing.problem}, so saving would replace the file with this session's `
-      + 'defaults. Fix or remove the file, then /reload, and try again.');
+  const carried = existing?.raw === undefined ? { pair: null } : adoptable((existing.raw as { redistill?: unknown }).redistill);
+  if ('why' in carried) {
+    throw refuse(path, `it carries a redistill (${JSON.stringify((existing?.raw as { redistill?: unknown }).redistill)}) `
+      + `this configuration cannot adopt: ${carried.why}. redistill is off until the pair is complete, and it `
+      + 'cannot be set from /compaction, so complete it with both aboveTokens and targetTokens, or remove '
+      + 'it, and try again.');
   }
-  if (existing?.raw !== undefined) {
-    const carried = adoptable((existing.raw as { redistill?: unknown }).redistill);
-    if ('why' in carried) {
-      throw refuse(path, `it carries a redistill (${JSON.stringify((existing.raw as { redistill?: unknown }).redistill)}) `
-        + `this configuration cannot adopt: ${carried.why}. redistill cannot be set from /compaction, so `
-        + 'complete it with both aboveTokens and targetTokens, or remove it, and try again.');
-    }
-    if (carried.pair) redistill = carried.pair;
-    try {
-      parse(existing.raw);
-    } catch (error) {
-      throw refuse(path, `the configuration could not be loaded from it (${message(error)}), so saving `
-        + "would replace the file with this session's defaults. Fix or remove the file, then /reload, "
-        + 'and try again.');
-    }
-  }
+  if (carried.pair) redistill = carried.pair;
   const written: Config = { ...config, redistill };
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(toRaw(written), null, 2)}\n`);
@@ -257,25 +245,24 @@ export function saveConfig(agentDir: string, config: Config): Config {
 const refuse = (path: string, reason: string) => new Error(`refusing to rewrite ${path}: ${reason}`);
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-/** The file as it is on disk: its parsed body, why it could not be read, or undefined when there is none. */
-function readConfigFile(path: string): { raw?: unknown; problem?: string } | undefined {
+/**
+ * The file as it is on disk, or undefined when there is none or it cannot be read as JSON.
+ *
+ * A file that is not JSON, or not an object, is simply not consulted: the command repairs a broken
+ * file by writing a fresh one, and reading a field off `null` would throw a TypeError instead.
+ */
+function readConfigFile(path: string): { raw?: unknown } | undefined {
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    return { problem: `it could not be read (${message(error)})` };
+  } catch {
+    return undefined;
   }
   try {
     const raw: unknown = JSON.parse(text);
-    // A body that is not an object is a file this session could not have loaded, and reading a field
-    // off it would throw a TypeError instead of refusing with something the user can act on.
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return { problem: 'it is not a configuration object' };
-    }
-    return { raw };
-  } catch (error) {
-    return { problem: `it is not readable JSON (${message(error)})` };
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? { raw } : undefined;
+  } catch {
+    return undefined;
   }
 }
 

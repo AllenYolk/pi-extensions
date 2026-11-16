@@ -130,71 +130,41 @@ test('a half-configured redistill validates the field that is there', () => {
   }
 });
 
-test('a save refuses to erase a redistill the configuration does not adopt', () => {
-  // `redistill` is file-only, so a save that dropped a half-written value would destroy something the
-  // command surface cannot restore, with nothing said. The save is refused instead, and the advice is
-  // the one that can actually help: the pair is incomplete.
+test('a save refuses to erase a half-written redistill, and says what is wrong with it', () => {
+  // `redistill` is file-only, so a save that dropped the half-written value would destroy something
+  // the command surface cannot restore, with nothing said. The loader calls this pair off, because a
+  // missing counterpart means off; the saver refuses to erase it, and the message says so and names
+  // the field that is missing rather than guessing at a cause.
   const dir = agentDir();
   const file = join(dir, 'extensions', 'pi-compaction', 'config.json');
   write(dir, { enabled: true, thinking: 'off', redistill: { aboveTokens: 4_000 } });
   const before = readFileSync(file, 'utf8');
   const loaded = loadConfig(dir);
-  assert.equal(loaded.diagnostic, undefined);
-  assert.equal(loaded.config.redistill, null, 'half-configured is off');
+  assert.equal(loaded.diagnostic, undefined, 'the loader accepts it');
+  assert.equal(loaded.config.redistill, null, 'and reads it as off');
   assert.throws(
     () => saveConfig(dir, { ...loaded.config, thinking: 'high' }),
     (error) => {
       assert.match(error.message, /refusing to rewrite .*config\.json: it carries a redistill/);
-      assert.match(error.message, /cannot adopt: it is missing targetTokens/);
+      assert.match(error.message, /cannot adopt: it is missing targetTokens/, 'the actual reason');
+      assert.match(error.message, /redistill is off until the pair is complete/);
       assert.match(error.message, /complete it with both aboveTokens and targetTokens, or remove it/);
       return true;
     },
   );
   assert.equal(readFileSync(file, 'utf8'), before, 'the file is untouched');
-});
 
-test('a save names the right cause when the file cannot be adopted', () => {
-  // The whole file was rejected for an unrelated reason, so the in-memory configuration is the
-  // defaults and carries no redistill — but the pair on disk is complete, and "complete it" would be
-  // advice that cannot help. The message has to be about reloading, and the file must survive.
-  const dir = agentDir();
-  const file = join(dir, 'extensions', 'pi-compaction', 'config.json');
-  write(dir, { enabled: true, thinking: 'loud', redistill: { aboveTokens: 4_000, targetTokens: 6_000 } });
-  const before = readFileSync(file, 'utf8');
-  assert.equal(loadConfig(dir).config, undefined, 'the file is rejected whole');
-  assert.throws(
-    () => saveConfig(dir, { ...defaults(), enabled: true }),
-    (error) => {
-      assert.match(error.message, /the configuration could not be loaded from it \(.*thinking must be/);
-      assert.match(error.message, /then \/reload, and try again/);
-      assert.doesNotMatch(error.message, /complete it with both aboveTokens/, 'the wrong advice');
-      return true;
-    },
-  );
-  assert.equal(readFileSync(file, 'utf8'), before, 'a file this session could not load is not replaced with defaults');
-
-  // A malformed field inside the pair still gets the complete-it advice, naming the field.
+  // A malformed field is named too, rather than reported as a missing counterpart.
   const malformed = agentDir();
   write(malformed, { enabled: true, redistill: { aboveTokens: 'lots', targetTokens: 6_000 } });
   assert.throws(
     () => saveConfig(malformed, { ...defaults(), enabled: true }),
     (error) => {
       assert.match(error.message, /cannot adopt: redistill\.aboveTokens must be an integer/);
-      assert.match(error.message, /complete it with both aboveTokens and targetTokens, or remove it/);
+      assert.doesNotMatch(error.message, /it is missing/, 'and not as a missing field');
       return true;
     },
   );
-
-  // And a file that is not JSON at all, or not an object, is refused rather than overwritten — with a
-  // message rather than a TypeError from reading a field off `null`.
-  for (const [body, pattern] of [['{ not json', /it is not readable JSON/], ['null', /it is not a configuration object/], ['[]', /it is not a configuration object/]]) {
-    const broken = agentDir();
-    const brokenFile = join(broken, 'extensions', 'pi-compaction', 'config.json');
-    mkdirSync(dirname(brokenFile), { recursive: true });
-    writeFileSync(brokenFile, body);
-    assert.throws(() => saveConfig(broken, defaults()), pattern, body);
-    assert.equal(readFileSync(brokenFile, 'utf8'), body, 'and left as it was');
-  }
 });
 
 test('a save keeps the redistill the file carries instead of reverting an edit', () => {
@@ -227,22 +197,54 @@ test('a save keeps the redistill the file carries instead of reverting an edit',
   assert.deepEqual(JSON.parse(readFileSync(freshFile, 'utf8')).redistill, { aboveTokens: 1, targetTokens: 2 });
 });
 
-test('the file this version writes stays readable by 0.2.x', () => {
-  // 0.2.x rejects any key outside `enabled`, `summarizerModel`, `thinking` and `keptWindowTokens`,
-  // and it rejects the whole file rather than the key — so writing an inert `redistill: null` would
-  // take a returning user's summarizer model and thinking level with it.
-  const OLD_FIELDS = ['enabled', 'summarizerModel', 'thinking', 'keptWindowTokens'];
+test('repairing a rejected file keeps the redistill it carried', () => {
+  // A file the loader rejects whole is repaired from the command — that is how `/compaction <verb>`
+  // fixes a broken file — so the save must not be refused. It must also not lose the `redistill` that
+  // file carried: the fault was somewhere else in it, and that field is file-only.
+  const dir = agentDir();
+  const file = join(dir, 'extensions', 'pi-compaction', 'config.json');
+  write(dir, { enabled: true, thinking: 'turbo', redistill: { aboveTokens: 4_000, targetTokens: 6_000 } });
+  const loaded = loadConfig(dir);
+  assert.equal(loaded.config, undefined, 'the file is rejected whole');
+  assert.match(loaded.diagnostic, /thinking must be/);
+
+  const written = saveConfig(dir, { ...defaults(), fallbackModel: 'p/f' });
+  assert.deepEqual(written.redistill, { aboveTokens: 4_000, targetTokens: 6_000 }, 'the pair survives the repair');
+  const onDisk = JSON.parse(readFileSync(file, 'utf8'));
+  assert.deepEqual(onDisk.redistill, { aboveTokens: 4_000, targetTokens: 6_000 });
+  assert.equal(onDisk.fallbackModel, 'p/f', 'and the repair landed');
+  assert.equal(onDisk.thinking, 'medium', 'the rejected value is gone, as the repair intends');
+  // And the repaired file loads.
+  assert.equal(loadConfig(dir).diagnostic, undefined);
+
+  // A file that is not JSON at all is repaired the same way, with no redistill to preserve.
+  const broken = agentDir();
+  const brokenFile = join(broken, 'extensions', 'pi-compaction', 'config.json');
+  mkdirSync(dirname(brokenFile), { recursive: true });
+  writeFileSync(brokenFile, '{ not json');
+  const repaired = saveConfig(broken, { ...defaults(), enabled: true });
+  assert.equal(repaired.redistill, null);
+  assert.equal(JSON.parse(readFileSync(brokenFile, 'utf8')).enabled, true);
+});
+
+test('this version adds no configuration key of its own beyond redistill', () => {
+  // The invariant is not "0.2.x can read it" — `fallbackModel` is on main and 0.2.x rejects that too.
+  // It is that this branch does not add a key main does not have: an off `redistill` is an absent key
+  // rather than a null one, because a null would be written into every file the command touches and
+  // a reader that does not know the field rejects the whole file, not the key.
+  const MAIN_FIELDS = ['enabled', 'summarizerModel', 'fallbackModel', 'thinking', 'keptWindowTokens'];
   const dir = agentDir();
   saveConfig(dir, { ...defaults(), enabled: true, summarizerModel: 'p/m' });
   const written = JSON.parse(readFileSync(join(dir, 'extensions', 'pi-compaction', 'config.json'), 'utf8'));
-  assert.deepEqual(Object.keys(written).sort(), [...OLD_FIELDS].sort());
+  assert.deepEqual(Object.keys(written).sort(), [...MAIN_FIELDS].sort());
   assert.equal('redistill' in written, false, 'an off redistill is an absent key, not a null one');
-  // A configured one is written, and says so; 0.2.x would reject that file, which is the documented
-  // cost of configuring a field that did not exist then.
+
+  // A configured one is written, and is the only key outside main's set.
   saveConfig(dir, { ...defaults(), redistill: { aboveTokens: 4_000, targetTokens: 6_000 } });
   const configured = JSON.parse(readFileSync(join(dir, 'extensions', 'pi-compaction', 'config.json'), 'utf8'));
   assert.deepEqual(configured.redistill, { aboveTokens: 4_000, targetTokens: 6_000 });
-  assert.deepEqual(Object.keys(configured).filter((key) => !OLD_FIELDS.includes(key)), ['redistill']);
+  assert.deepEqual(Object.keys(configured).filter((key) => !MAIN_FIELDS.includes(key)), ['redistill']);
+
   // And an absent key reads back as off, which is what makes omitting it safe.
   const fresh = agentDir();
   write(fresh, { enabled: true });

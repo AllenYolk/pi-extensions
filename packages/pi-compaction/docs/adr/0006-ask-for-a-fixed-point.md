@@ -5,15 +5,17 @@ Nothing here bounds a summary, and the completeness guarantee it protects is unt
 
 ## The problem
 
-The summary is the one thing in a session that only ever grows. The host's update prompt tells the
+The summary is the one thing in a session that trends upwards. The host's update prompt tells the
 summarizer to `PRESERVE all existing information from the previous summary` and to `ADD` what is new,
-and hands it the previous summary in `<previous-summary>` tags. Each compaction is therefore a
-monotone union of the one before it: nothing is subtracted by construction.
+and hands it the previous summary in `<previous-summary>` tags, so each compaction is built as a union
+of the one before it. It is not a union by construction — the same prompt also says "if something is no
+longer relevant, you may remove it", and one measured step in the chain below **shrank by 767 tokens
+with no instruction at all** — but nothing asks for a fixed point, so growth is what the prompt's
+default produces.
 
 Measured on the owner's machine, this package's chain grew by a median of +525 tokens per compaction
-against +2,148 and +1,647 for the two stock chains — six times slower than stock Pi, and one step in
-the chain **shrank by 767 tokens with no instruction at all**, which is the observation this decision
-starts from. It is also a slow leak rather than an urgent one: seventeen compactions at that rate cost
+against +2,148 and +1,647 for the two stock chains: about 4.1× and 3.1× slower growth, from one machine
+and one workload. It is a slow leak rather than an urgent one: seventeen compactions at that rate cost
 roughly 8,000 tokens of a 240,000-token window.
 
 ## What this decides
@@ -46,10 +48,12 @@ unaffected and still reaches both requests.
 
 **The size the instruction names is itself a host seam**, the fourth this package depends on:
 `estimateTokens()` accepting a `compactionSummary` message. It is probed at activation alongside the
-other three, because a host that stopped recognising the shape would report 0 or `NaN`, every summary
-would then read as below `aboveTokens`, and redistilling would turn itself on for every compaction
-while naming a wrong number. A failed probe turns redistilling off and says so in `/compaction`;
-compaction itself is untouched.
+other three, because an estimator that stopped returning a size has to be caught: a `0` would keep
+redistilling off, but a `NaN` would open the gate on every compaction — every comparison against it is
+false — and the instruction would name `NaN` as the previous summary's size. A failed probe turns
+redistilling off and says so in `/compaction`, and the size is checked again where it is used, since
+two synthetic inputs at activation cannot rule out an estimator that misbehaves only on a real
+summary. Compaction itself is untouched.
 
 ## Why this is not the ceiling ADR 0005 removed
 
@@ -62,8 +66,10 @@ Every mechanism ADR 0005 rejected damaged the **current response**:
 | Truncation | Produced a summary that reads as complete when it is not |
 | An index-shaped fallback | A summary the model did not write |
 
-This one changes the **request**. A model that ignores the instruction produces exactly today's
-summary. A model that half-follows it produces a complete summary organised differently. No
+This one changes the **request**. A model that ignores the instruction produces the summary it would
+have produced anyway. A model that follows it in part produces a summary organised differently, which
+may be shorter and may have dropped something it should have kept — that is the risk this ADR accepts
+below, and it is why the field ships inert. No
 `max_output_tokens` is sent, nothing is truncated, no response is rewritten, and **the stop-reason
 check is untouched**: every response the attempt produced still has to have stopped with `stop`, and a
 partial response to a redistilled request is still never persisted. That check is the whole of this
@@ -80,9 +86,12 @@ The honest risk is the opposite of the one ADR 0005 guards against: a weak model
 superseded entries may over-drop. That is why the bar for ever enabling this by default is stated in
 probes, sections and fabricated paths rather than in tokens, and why the field ships inert.
 
-Two more limits are deliberate. It asks; it does not enforce, so a model that ignores it costs nothing
-and gains nothing. And it is one request, unchanged in count — the value of a compaction that finishes
-in 36 s is not spent on a second call.
+Two more limits are deliberate. It asks; it does not enforce, so a model that ignores it gains nothing
+— and it is not free either, since the instruction is input tokens on every compaction it applies to
+and a longer prompt can make a model think for longer. That cost is one of the things
+[the experiment](../docs/validation.md#the-redistilling-experiment) has to measure. And it is one
+request, unchanged in count — the value of a compaction that finishes in 36 s is not spent on a second
+call.
 
 The instruction is also **not durable across a handback**. The host applies only the caller's own
 `/compact <text>` on its own path, so a degraded compaction stops asking for it; the announcement says

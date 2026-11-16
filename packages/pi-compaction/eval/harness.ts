@@ -24,7 +24,13 @@ import {
   type Redistill,
   type ThinkingLevel,
 } from '../src/config.ts';
-import { previousSummaryTokens, redistillInstructions } from '../src/redistill.ts';
+import {
+  checkTokenSeam,
+  previousSummaryTokens,
+  redistillFor,
+  redistillInstructions,
+} from '../src/redistill.ts';
+import type { SeamResult } from '../src/summarizer.ts';
 
 /** What one arm produced. A summary scored offline has only a name and its text. */
 export interface ArmRecord {
@@ -134,12 +140,22 @@ export function parseArm(spec: string): Arm {
 }
 
 /**
- * The `customInstructions` this arm's request carries: the same instruction the hook sends, from the
- * same module, so an arm measures what the package would actually ask for.
+ * The `customInstructions` this arm's request carries: the same instruction, the same module and the
+ * same token-seam gate the hook uses, so an arm measures what the package would actually ask for on
+ * this host — and records nothing when it would ask for nothing.
  */
-export function armInstructions(fixture: Fixture, spec: string): string | undefined {
+export function armInstructions(
+  fixture: Fixture,
+  spec: string,
+  seam: SeamResult = checkTokenSeam(),
+): string | undefined {
   return redistillInstructions(
-    fixture.prepared.previousSummary, parseArm(spec).redistill, undefined, fixture.prepared.isSplitTurn,
+    fixture.prepared.previousSummary,
+    // The same gate the hook applies: an arm must not measure an instruction the package would refuse
+    // to send on this host.
+    redistillFor(parseArm(spec).redistill, seam),
+    undefined,
+    fixture.prepared.isSplitTurn,
   );
 }
 

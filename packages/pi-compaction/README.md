@@ -10,9 +10,11 @@ This package lets you choose both.
   own thinking level, chosen independently of the conversation model and the session's thinking level.
 - The **kept window** — the most recent entries a compaction retains verbatim — is the package's own
   token target rather than the host's recent-token setting, so the cut point is a number you control.
-- The summary is **never shortened, never truncated and never replaced**. This package sends no
-  output ceiling and does not touch tool results. A summary it cannot vouch for is refused rather
-  than persisted.
+- The summary is **never shortened, truncated or replaced by this package**. It sends no output
+  ceiling and does not touch tool results, and a summary it cannot vouch for is refused rather than
+  persisted. What the summarizer writes is the host's prompt and the model's own judgement — including
+  any shortening the model decides on, which the host's prompt permits and this package does not
+  prevent. [Redistilling](#asking-for-a-fixed-point) asks for more of that, and is off by default.
 
 The package ships **inert**. Installing it changes nothing until you enable it.
 
@@ -122,10 +124,12 @@ configured rather than the conversation model.
 
 ## Asking for a fixed point
 
-**Off by default, and unvalidated.** The host's update prompt makes every compaction a union of the
-previous summary, so the summary is the one thing in a session that only ever grows. `redistill` asks
-for a change of merge semantics — from union to fixed point — through the one lever that does not
-touch the response:
+**Off by default, and unvalidated.** The host's update prompt builds each compaction as a union of the
+previous summary, so the summary is the one thing in a session that trends upwards — not that only ever
+grows: the same prompt permits removing what is no longer relevant, and one measured compaction
+shrank by 767 tokens unprompted. `redistill` asks for that to be the rule rather than the exception, a
+change of merge semantics from union to fixed point, through the one lever that does not touch the
+response:
 
 ```json
 { "redistill": { "aboveTokens": 4000, "targetTokens": 6000 } }
@@ -139,6 +143,19 @@ touch the response:
 Absent, `null`, or either field on its own means **off**, and the package then behaves exactly as
 `0.2.x` does. An unknown or malformed `redistill` rejects the configuration whole, like every other
 field, and so does a malformed field inside a half-configured pair.
+
+**What is not checked.** Both numbers must be whole numbers from 1 to 1,000,000, and nothing else is
+enforced. `targetTokens` is *not* required to exceed `aboveTokens` — issue #31's own hard arm sets
+them equal — and a target far below the summary's real size is accepted: it asks for something the
+model probably cannot do, which is a request that gets ignored rather than a configuration error. That
+is deliberate. A target is a request, not a bound, the experiment needs to be able to ask for an
+aggressive one, and rejecting combinations would make this package the judge of a prompt it cannot
+enforce. If an arm asks for the impossible, that shows up in the measurement, not in a diagnostic.
+
+**When the loader and the saver disagree.** A half-written pair loads as *off* — a missing counterpart
+means off — but a `/compaction …` save that would drop it is *refused*, because the field is file-only
+and nothing else can restore it. Both answers are deliberate; the refusal says which one you are
+looking at and what to do.
 
 When it applies, one fixed instruction is appended to the host's `Additional focus:` line:
 
@@ -400,12 +417,14 @@ misbehave, and the status view reports it. The third is the one the package read
 reason through, which is how it refuses to persist a partial summary; losing it would not break
 compaction — summaries would still be produced, just unchecked — so it is probed rather than assumed.
 
-The fourth is narrower and is only used by [redistilling](#asking-for-a-fixed-point). A host that
-stopped recognising the shape would report 0 or `NaN`, every summary would then read as below
-`aboveTokens`, and redistilling would turn itself on for every compaction while naming a wrong number
-— silently the opposite of inert. So a failed probe turns redistilling **off** and says so in
-`/compaction`; compaction itself is unaffected, and a caller's own `/compact <text>` still reaches the
-request.
+The fourth is narrower and is only used by [redistilling](#asking-for-a-fixed-point). An estimator that
+stopped returning a size has to be caught: a `0` would keep redistilling off, since `0 < aboveTokens`
+holds, but a `NaN` would open the gate on **every** compaction — every comparison against it is false —
+and the instruction would name `NaN` as the previous summary's size. That is silently the opposite of
+inert, so a failed probe turns redistilling **off** and says so in `/compaction`, and the size is
+checked again where it is used, because two synthetic inputs at activation cannot rule out an
+estimator that misbehaves only on a real summary. Compaction itself is unaffected either way, and a
+caller's own `/compact <text>` still reaches the request.
 
 ## Install
 

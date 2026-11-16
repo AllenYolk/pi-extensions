@@ -190,8 +190,9 @@ const focusOf = (record) => {
 const instructionFor = (previousTokens, targetTokens) =>
   `The previous summary is ${previousTokens} tokens and the merged summary should stay under ${targetTokens}. `
   + 'Keep every goal, constraint, decision with its rationale, blocker, open question and next step '
-  + 'that is still true. Drop an entry when a later entry supersedes it, and drop detail about work '
-  + 'that is finished and no longer referenced. Do not append a changelog and do not add a history section.';
+  + 'that is still true, and keep exact file paths, function names and error messages. Drop an entry '
+  + 'when a later entry supersedes it, and drop detail about work that is finished and no longer '
+  + 'referenced. Do not append a changelog and do not add a history section.';
 
 test('redistill off, null or half-configured leaves the fifth argument exactly as it was', { timeout: 600_000 }, () => {
   // Above the sum of the four runs' own 120 s driveHost budgets: a run that hangs fails on
@@ -373,6 +374,26 @@ test('/compaction reports whether redistilling is on, and at what thresholds', {
   );
 });
 
+test('/compaction says redistilling is configured but inactive while the package is disabled', { timeout: 180_000 }, () => {
+  // A configured `redistill` on a disabled package asks for nothing. Reporting it as "on" beside
+  // `Enabled: no` would describe a request that is never made — the status view is where a reader
+  // decides what this package is doing, so it has to say which of the two states it is in.
+  const run = runCompaction({
+    name: 'redistill-inactive-',
+    config: { enabled: false, redistill: { aboveTokens: 4_000, targetTokens: 6_000 } },
+    turns: 30,
+    hold: true,
+    script: statusScript,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+  assert.match(run.plain, /Enabled: no/);
+  assert.match(run.plain, /Redistilling: configured but inactive — the package is disabled/);
+  assert.doesNotMatch(run.plain, /Redistilling: on/, 'never "on" while the package is inert');
+  // And nothing was asked for: the compaction that ran is stock Pi's, not this package's.
+  assert.equal(persistedCompactions(run.session.file)[0].fromHook ?? false, false);
+  assert.equal(summarizationRecords(run.records).length, 1);
+});
+
 test('/compaction refuses a change that would erase a half-written redistill', { timeout: 180_000 }, () => {
   // `redistill` is file-only, so a save that dropped the half-written value would destroy something
   // the command surface cannot restore. The refusal has to reach the user, not throw out of the
@@ -395,9 +416,12 @@ test('/compaction refuses a change that would erase a half-written redistill', {
 
   // Split into fragments on purpose: see `screen` above. Each one is a fact the refusal establishes,
   // and none of them is a string the driver echoes, so a refusal that disappeared fails all of them.
+  // The path is deliberately not one of them: it is absolute, so it is as long as the checkout is deep
+  // and the terminal hard-wraps it — in a copy at /tmp/pcreview.zQsq the screen carried `conf ig.json`.
+  // The file itself is identified by the assertions below, which read it from disk.
   assertSaid(run, script, [
     'refusing to rewrite',            // a refusal happened at all
-    'config.json: it carries a redistill', // and it is about this file's redistill
+    'it carries a redistill',         // and it is about a redistill
     'cannot be set from /compaction', // naming why the command cannot fix it
     'aboveTokens',                    // and both fields it tells the user to complete
     'targetTokens',
@@ -1024,6 +1048,40 @@ test('a degradation recorded by 0.2.1 is still reported after a resume', { timeo
   // The entry itself is untouched on disk: reading it is a read, not a rewrite.
   const [entry] = customEntries(run, DEGRADATION_ENTRY);
   assert.deepEqual(entry.data, legacy, 'the legacy entry is read as written');
+});
+
+test('a fallback recorded by an earlier session is reported, not reported as absent', { timeout: 180_000 }, () => {
+  // The reader has to cover both entry types, not only the handback one: a session whose compaction
+  // was recovered by the fallback carries `pi-compaction-fallback`, and reading only
+  // `pi-compaction-degradation` would report `none in this session` over a file that plainly records
+  // what happened.
+  const recorded = {
+    attempts: [
+      { summarizer: 'primary/m (anthropic-messages)', reason: 'the summarizer reported an error (503)' },
+      { summarizer: 'fallback/f (anthropic-messages)' },
+    ],
+  };
+  const run = runCompaction({
+    name: 'fallback-record-',
+    // Inert, so the run adds no record of its own and the recorded one stays the most recent.
+    config: { enabled: false },
+    turns: 30,
+    decorate: (session) => session.appendCustomEntry(FALLBACK_ENTRY, recorded),
+    script: [
+      { expect: READY, send: '/compaction\r' },
+      { expect: 'Host seam:', send: '/compaction-probe\r' },
+      { expect: 'Compacted from' },
+    ],
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  assert.match(run.plain, /Last compaction: the fallback summarizer fallback\/f \(anthropic-messages\) produced the summary/);
+  assert.match(run.plain, /primary\/m \(anthropic-messages\) — the summarizer reported an error \(503\)/);
+  assert.doesNotMatch(run.plain, /Last degradation: none in this session/, 'a recorded fallback is not reported as absent');
+  assert.doesNotMatch(run.plain, /Last degradation: summarizer undefined/, 'and never as an undefined one');
+  // Reading it is a read: the entry is untouched on disk.
+  const [entry] = customEntries(run, FALLBACK_ENTRY);
+  assert.deepEqual(entry.data, recorded);
 });
 
 test('a second compaction does not inherit the first one\'s file lists', { timeout: 180_000 }, () => {
