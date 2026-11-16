@@ -46,6 +46,155 @@ activates, deactivates on removal, stays inert when present and not enabled, coe
 two extensions across repeated reloads, and installs from the git collection with and without a
 resource filter. Compaction behaviour itself is **not** exercised on 0.99.1.
 
+## The fallback summarizer
+
+[Issue #30](https://github.com/AllenYolk/pi-extensions/issues/30) added `fallbackModel`. This section
+records only what that change is and what was verified for it. It restates nothing from
+[Measured on the owner's machine](#measured-on-the-owners-machine), which owns every figure; the
+gates table above is unchanged by this branch, and this branch's own run of both gates is noted at
+the end.
+
+### What it changes about the degradation record
+
+The record is no longer a single summarizer and a single reason. It is **every attempt the compaction
+made, in order**, each with the model it was to run and — for the ones that failed — why. The last
+attempt ran unless it carries a reason, which is the one predicate that decides everything else:
+
+- a handback is still the `pi-compaction-degradation` custom entry, and a fallback that produced the
+  summary is the new `pi-compaction-fallback` one, because the entry type is what anything scanning
+  the session reads and a fallback that ran is not a degradation;
+- a handback announces `degraded — compaction handed back to stock Pi` and gains an `Earlier:` line
+  per attempt that failed before the last; a fallback announces `recovered — the fallback summarizer
+  produced the summary` and names the failed attempts in its `Why:` line instead;
+- `/compaction` reports `Last degradation: …` or `Last compaction: …` accordingly.
+
+**With one attempt nothing changes**: the announcement is the same five lines with no `Earlier:`
+line and no recovery headline. An entry written by `0.2.1` — a single attempt as
+`{ summarizer, reason }`, with no `attempts` — is **normalised into the current shape when read**, not
+skipped: a session outlives the version that compacted it, and this entry is the half of the
+announcement that survives a restart, so a recorded handback has to stay readable. Skipping it would
+have reported `Last degradation: none in this session` over a file that plainly contains one. Reading
+it is a read; the entry on disk is untouched.
+
+### What was tested
+
+Every claim below is asserted against a real packaged-CLI run on a disposable profile and a synthetic
+session, resolving Pi 1.5.1 from this package's own workspace, unless it says otherwise.
+
+- `fallbackModel: null`, and an absent field, take the `0.2.1` path: one request of ours, then stock
+  Pi's own, a host-originated compaction entry, the unchanged announcement, and a one-attempt record.
+- Each of the four failures that fall back has its own run — the summarizer model is not offered by
+  this host, the host has no configured credentials for it, the summarizer reported an error, and a
+  partial response — asserting the request order, `fromHook: true` on the persisted compaction, the
+  recovery announcement, and a two-attempt `pi-compaction-fallback` record.
+- Both attempts failing hands back: the primary is not offered and the fallback has no credentials, so
+  the only summarization request is the host's own, and the record names both attempts and both
+  reasons.
+- The whole-summary guarantee applies to the fallback: with both of our attempts returning a partial
+  response there are three requests in order, the compaction that reaches the session is the host's,
+  and the partial text is in neither the session file nor any persisted summary.
+- A fallback is the same compaction with a different model: the two attempts' recorded prompts are
+  byte-identical, which is the only way to show the cut point did not move between them. The thinking
+  level is **not** shared — it is clamped per model — so a run whose fallback cannot honour the
+  configured `medium` reports `at thinking level high (clamped from medium; the level is clamped per
+  model)`, asserts the fallback request really carried `reasoning: "high"`, and records
+  `{ level: 'high', clampedFrom: 'medium' }` on the attempt.
+- A fallback that repeats the summarizer is refused at all three surfaces: the file is rejected
+  whole, `/compaction model` and `/compaction fallback` both refuse the pairing from either
+  direction, and the status view rendered against the rejected file offers `Fallback model: none`
+  rather than the summarizer as its own fallback.
+- A degradation recorded by `0.2.1` is still reported after a resume — see above.
+- A rejected configuration stays inert — `fallbackModel: "no-slash"` rejects the file whole, and a
+  hook-level run with a rejected file resolves no model and requests nothing. `null`, `"conversation"`
+  and `"none"` all load as no fallback, from the file and from the command, so the two entry points
+  spell it the same way; `summarizerModel` still rejects `none`, because its null is the conversation
+  model rather than the absence of one.
+- `/compaction fallback` with no value prints usage and changes nothing, an invalid id is refused by
+  `validateConfig`, and the status view reports `none`, a model this host does not offer, a model with
+  no configured credentials, and one it can run.
+- A cancellation and a host seam mismatch each attempt nothing — see below.
+
+### The two hook-level tests, and why they exist
+
+`test/index.test.mjs` drives the registered hook directly against a compact function the test
+supplies. Two properties cannot be decided by a real-host run:
+
+- **A host seam mismatch**, and **a cut point with nothing to summarise.** `checkHostSeam` probes the
+  host's own `compact()`, and Pi 1.5.1 passes, so the mismatch branch is unreachable from
+  `cli.test.mjs`; and a kept window larger than the whole session is the only way to reach the empty
+  cut point. The extension takes the compact function it probes *and* compacts with as a second
+  argument — the injection `checkHostSeam` already had — so the seam test hands it one with nine
+  parameters and the empty-cut-point test hands it one that records every compaction it was asked to
+  run. Both assert the same three facts before anything else: the fallback's stream function was
+  never called, no model beyond the primary was resolved, and no compaction was started.
+- **A cancellation reaching the fallback stream function.** The host will not start a request on an
+  aborted signal, so a real run cannot tell this package's own guard apart from the host's. The
+  test's compact function keeps calling whatever stream function it is handed, so only the package's
+  guard can keep the fallback from running. The real-CLI cancellation test is kept as the
+  end-to-end half: nothing persisted, no fallback request, no record.
+
+### Mutation checks
+
+Every property this branch added a test for was mutation-checked in the direction that matters, and
+each test went red. The two hook-level ones:
+
+- Removing the three `event.signal.aborted` reads in the attempt loop — before each attempt, in the
+  catch, and after `compact()` resolves — makes the cancellation test report
+  `['fixture/primary', 'fixture/fallback']` where one compaction was expected, and the fallback's
+  stream function is reached.
+- Letting a failed seam check fall through into the attempt loop instead of returning makes the seam
+  test fail on `the fallback stream function was never called`, with
+  `actual: ['streamSimple primary']` where `[]` was expected — the attempt the early return exists
+  to prevent.
+- Letting an empty cut point `continue` to the next candidate instead of returning makes its test
+  fail on the resolved models, with `actual: ['find fixture/primary', 'find fixture/fallback']`
+  where only the primary was expected. No request is made either way — the second attempt finds the
+  same empty range — which is why the assertion is on the fallback being *reached*, not on a request
+  being sent.
+
+The real-CLI cancellation test was also checked and is **not** sensitive to the first mutation on its
+own: with the same three guards removed it still passes, because the host refuses the second request
+before a provider sees it. That is why the hook-level test exists rather than a stronger assertion on
+the real run.
+
+The three from the review round:
+
+- Removing the `0.2.1` normalisation from `toRecord` makes the resume test report
+  `Last degradation: none in this session` over a session file that contains a degradation — the
+  exact failure the normalisation exists to prevent — and the unit test goes red with it.
+- Restoring the old `and at the same thinking level` clause in `fallbackCost` turns both the
+  unit test and the real-CLI clamp test red; the latter is the one that matters, because it asserts
+  the fallback request really carried `reasoning: "high"` while the announcement claimed otherwise.
+- Dropping the `fallbackModel === summarizerModel` check from `parse()` turns the config test and the
+  real-CLI test red, the latter by timing out on the command output that no longer appears.
+- Restoring the three non-null assertions in `handedBack`, `announcement` and `describeRecord` turns
+  all three empty-record tests red with `TypeError: Cannot read properties of undefined (reading
+  'reason')`. The read path is closed — `toRecord` never returns an empty record — but the three are
+  exported, and they serve the two surfaces that must never crash: the status view and the handback
+  announcement. An empty record now answers in words rather than guessing a headline: `handedBack`
+  is `false` because nothing in it failed, and the two renderers say the record names no attempt and
+  that neither the model that ran nor a failure can be read from it.
+
+### Not established for the fallback
+
+- **No fallback has ever run, so nothing measures what one saves.** The store holds zero
+  `pi-compaction-degradation` entries and every compaction recorded while the package was enabled
+  carries `fromHook: true` — see
+  [Measured on the owner's machine](#measured-on-the-owners-machine), which owns that count and every
+  figure derived from it. A fallback step itself is unmeasured: no second model has ever been reached
+  on a real session.
+- **Every fallback path above is exercised against the fixture provider**, not against a real second
+  provider. The fixtures are two in-process providers on different `api` identifiers.
+- **Whether a fallback summarizer produces an acceptable summary is unknown**, in the same way it is
+  for the primary: no summary-quality comparison has been run on either.
+
+### This branch's own gates
+
+`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 110/110 pass on top of #33,
+#34 and #38, of which 31 are this branch's. `npm run check` — 196/196 pass. `npm pack --json --ignore-scripts`
+still produces exactly the eight entries listed below. The gates table above is #34's and is left as
+it stands; the maintainer corrects it after the merge.
+
 ## The packed artifact
 
 `npm pack --json --ignore-scripts` in `packages/pi-compaction` produces exactly eight entries: the

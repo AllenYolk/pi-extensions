@@ -24,6 +24,8 @@ export interface Config {
   enabled: boolean;
   /** `null` — the default — is the conversation model. */
   summarizerModel: string | null;
+  /** `null` — the default — is no fallback at all, which is the behaviour before this field existed. */
+  fallbackModel: string | null;
   thinking: ThinkingLevel;
   keptWindowTokens: number;
 }
@@ -32,6 +34,7 @@ export interface Config {
 export interface Effective {
   enabled: boolean;
   tuple: Tuple;
+  fallbackModel: string | null;
   keptWindowTokens: number;
 }
 
@@ -44,18 +47,34 @@ export interface Effective {
  */
 export const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-const FIELDS = ['enabled', 'summarizerModel', 'thinking', 'keptWindowTokens'];
+const FIELDS = ['enabled', 'summarizerModel', 'fallbackModel', 'thinking', 'keptWindowTokens'];
 const MAX_TOKENS = 1_000_000;
 
 export const defaults = (): Config => ({
   enabled: false,
   summarizerModel: null,
+  fallbackModel: null,
   thinking: DEFAULT_THINKING,
   keptWindowTokens: DEFAULT_KEPT_WINDOW_TOKENS,
 });
 
 export function configPath(agentDir: string): string {
   return join(agentDir, 'extensions', 'pi-compaction', 'config.json');
+}
+
+/**
+ * A `provider/model` id, or `null` — which is the conversation model for `summarizerModel`, and no
+ * fallback at all for `fallbackModel`. `spellings` are the extra words a field accepts for `null`;
+ * `fallbackModel` takes `none` because the command offers it, and two entry points that spell the
+ * same value differently is a trap.
+ */
+function modelId(value: unknown, label: string, spellings: string[] = []): string | null {
+  const accepted = [CONVERSATION_MODEL, ...spellings];
+  if (typeof value === 'string' && accepted.includes(value)) return null;
+  if (typeof value !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(value)) {
+    throw new Error(`${label} must be "provider/model", ${accepted.map((word) => `"${word}"`).join(', ')} or null`);
+  }
+  return value;
 }
 
 function integer(value: unknown, label: string, min: number): number {
@@ -77,14 +96,10 @@ function parse(raw: unknown): Config {
     config.enabled = record.enabled;
   }
   if ('summarizerModel' in record && record.summarizerModel !== null) {
-    const model = record.summarizerModel;
-    if (model === CONVERSATION_MODEL) {
-      config.summarizerModel = null;
-    } else if (typeof model !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(model)) {
-      throw new Error(`summarizerModel must be "provider/model", "${CONVERSATION_MODEL}" or null`);
-    } else {
-      config.summarizerModel = model;
-    }
+    config.summarizerModel = modelId(record.summarizerModel, 'summarizerModel');
+  }
+  if ('fallbackModel' in record && record.fallbackModel !== null) {
+    config.fallbackModel = modelId(record.fallbackModel, 'fallbackModel', ['none']);
   }
   if ('thinking' in record) {
     if (!THINKING_LEVELS.includes(record.thinking as ThinkingLevel)) {
@@ -93,6 +108,13 @@ function parse(raw: unknown): Config {
     config.thinking = record.thinking as ThinkingLevel;
   }
   if ('keptWindowTokens' in record) config.keptWindowTokens = integer(record.keptWindowTokens, 'keptWindowTokens', 0);
+  // The same model cannot be its own fallback. The second attempt would fail the same way, and on
+  // the one path where it succeeded the announcement would say the configured summarizer did not
+  // run and that the chosen model did not write the summary — both false. Rejecting the pairing is
+  // the whole-file rule the rest of this parser already follows.
+  if (config.fallbackModel !== null && config.fallbackModel === config.summarizerModel) {
+    throw new Error('fallbackModel must be a different model from summarizerModel; the same model cannot be its own fallback');
+  }
   return config;
 }
 
@@ -121,6 +143,7 @@ function toRaw(config: Config): Record<string, unknown> {
   return {
     enabled: config.enabled,
     summarizerModel: config.summarizerModel ?? null,
+    fallbackModel: config.fallbackModel ?? null,
     thinking: config.thinking,
     keptWindowTokens: config.keptWindowTokens,
   };
@@ -147,5 +170,6 @@ export function effective(config: Config): Effective {
     enabled: config.enabled,
     keptWindowTokens: config.keptWindowTokens,
     tuple: { model: config.summarizerModel, thinking: config.thinking },
+    fallbackModel: config.fallbackModel,
   };
 }

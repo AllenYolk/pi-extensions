@@ -47,6 +47,7 @@ export function runCompaction({
   script,
   hold = false,
   timeoutSeconds = 120,
+  decorate,
 } = {}) {
   const box = workspace(`${name}-`);
   const agent = profile(`${name}-agent-`);
@@ -58,6 +59,9 @@ export function runCompaction({
     writeFileSync(join(dir, 'config.json'), JSON.stringify(config, null, 2));
   }
   const session = longSession(SessionManager, { cwd: proj, sessionDir: sessions, turns, turnTokens });
+  // Entries the caller needs the resumed session to already carry, written through the host's own
+  // session manager rather than by hand.
+  decorate?.(session.session);
   const recordFile = join(box, 'requests.jsonl');
   const resultFile = join(box, 'report.json');
 

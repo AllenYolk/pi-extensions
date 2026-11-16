@@ -19,32 +19,44 @@ import {
   DEGRADATION_ENTRY,
   DEGRADATION_WIDGET,
   describeFailure,
+  describeRecord,
+  FALLBACK_ENTRY,
+  handedBack,
+  toRecord,
   UNOBSERVED_RESPONSE,
-  type Degradation,
+  type Attempt,
+  type CompactionRecord,
 } from './degradation.ts';
 import {
   checkHostSeam,
   hostRetryPolicy,
   observingStream,
-  resolveSummarizerModel,
+  resolveModel,
   summarizerThinkingLevel,
   type AttemptOutcome,
   type SeamResult,
+  type SummarizationPreparation,
 } from './summarizer.ts';
 
-export default function piCompaction(pi: ExtensionAPI): void {
+/**
+ * `compactFn` is the host function this package probes at activation *and* compacts with. It exists
+ * so a test can hand the extension a host whose `compact()` has another shape — unreachable from a
+ * real run, because the host this package is developed against passes — and prove what a mismatch
+ * and a cancellation each attempt.
+ */
+export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact = compact): void {
   let config: Config = defaults();
   let diagnostic: string | undefined;
   let seam: Promise<SeamResult> | undefined;
-  /** The degradation raised inside a compaction, waiting for the compaction to settle. */
-  let pending: Degradation | undefined;
+  /** What the compaction did when its summarizer did not produce the summary, waiting for it to settle. */
+  let pending: CompactionRecord | undefined;
 
   const reload = () => {
     const loaded = loadConfig(getAgentDir());
     config = loaded.config ?? defaults();
     diagnostic = loaded.diagnostic;
   };
-  const seamResult = () => (seam ??= checkHostSeam());
+  const seamResult = () => (seam ??= checkHostSeam(compactFn));
   const report = (ctx: ExtensionContext, message: string, type: 'info' | 'warning' | 'error' = 'warning') => {
     const line = `pi-compaction: ${message}`;
     if (ctx.hasUI) ctx.ui.notify(line, type);
@@ -63,15 +75,15 @@ export default function piCompaction(pi: ExtensionAPI): void {
    * restart. `/compaction` reads that entry back, which is the part that stays visible afterwards.
    */
   const settle = (ctx: ExtensionContext) => {
-    const degradation = pending;
+    const record = pending;
     pending = undefined;
-    if (!degradation) {
+    if (!record) {
       // A compaction that completed resolves whatever an earlier one degraded into.
       if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, undefined);
       return;
     }
-    pi.appendEntry(DEGRADATION_ENTRY, degradation);
-    if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, announcement(degradation));
+    pi.appendEntry(handedBack(record) ? DEGRADATION_ENTRY : FALLBACK_ENTRY, record);
+    if (ctx.hasUI) ctx.ui.setWidget(DEGRADATION_WIDGET, announcement(record));
   };
 
   pi.on('session_start', (_event, ctx) => {
@@ -105,80 +117,125 @@ export default function piCompaction(pi: ExtensionAPI): void {
      * it. A cancellation is answered first: handing back would start a fresh compaction behind the
      * user, which is the one thing a cancellation must never do.
      */
-    const handBack = (summarizer: string, reason: string): SessionBeforeCompactResult | void => {
+    const handBack = (attempts: Attempt[]): SessionBeforeCompactResult | void => {
       if (event.signal.aborted) return { cancel: true };
-      pending = { summarizer, reason };
+      pending = { attempts };
       report(ctx, announcement(pending).join('\n'), 'error');
       return undefined;
     };
 
     const checked = await seamResult();
-    if (!checked.ok) return handBack('none — the seam was never reached', `host seam mismatch (${checked.detail})`);
-
-    const model = resolveSummarizerModel(tuple, ctx);
-    if (!model) {
-      const wanted = tuple.model === null ? 'the conversation model' : `summarizer model ${tuple.model}`;
-      return handBack(tuple.model ?? CONVERSATION_MODEL, `this host does not offer ${wanted}`);
+    // Nothing about a second model fixes a seam the first one cannot use, and two failed attempts
+    // would only make the announcement worse.
+    if (!checked.ok) {
+      return handBack([{ summarizer: 'none — the seam was never reached', reason: `host seam mismatch (${checked.detail})` }]);
     }
-    const named = `${model.provider}/${model.id} (${model.api})`;
-    if (!ctx.modelRegistry.hasConfiguredAuth(model)) return handBack(named, 'the host has no configured credentials for it');
-
-    const prepared = prepareCompaction(event.branchEntries, event.preparation, settings.keptWindowTokens);
-    if (!prepared) {
-      return handBack(
-        named,
-        'the cut point leaves no history to summarise, so the host would carry the previous summary '
-        + 'forward and this package could not choose what produced it',
-      );
-    }
-
-    // One request. The model and its thinking level are two of the three things this package changes;
-    // the summary is otherwise the host's, at whatever length the host's prompt and the model produce.
-    //
-    // Responses are grouped by the context they came from. The host's retry policy calls the stream
-    // function again with the same context after a transient failure, and only the response it
-    // finally returns is the one `compact()` acted on — so a later response replaces an earlier one,
-    // and a failure that was retried away must not be read as this attempt's outcome. A split turn
-    // summarises two ranges through two contexts, and both of those have to be clean.
-    const outcomes = new Map<object, AttemptOutcome>();
-    let result;
-    try {
-      result = await compact(
-        prepared,
-        model,
-        undefined,
-        undefined,
-        event.customInstructions,
-        event.signal,
-        summarizerThinkingLevel(model, tuple) as never,
-        observingStream(ctx.modelRegistry, (group, seen) => { outcomes.set(group, seen); }),
-        undefined,
-        hostRetryPolicy(pi.getSettings()),
-        undefined,
-        ctx.sessionManager.getSessionId(),
-      );
-    } catch (error) {
-      if (event.signal.aborted) return { cancel: true };
-      return handBack(named, describeFailure([...outcomes.values()].at(-1), error));
-    }
-    if (event.signal.aborted) return { cancel: true };
 
     /**
-     * The whole of this package's quality guarantee: a summary it cannot vouch for is never
-     * persisted. The host throws on an error and on a tool call, so those never reach here; it
-     * returns a partially written summary **unchanged** for any other stop reason, which is what this
-     * check exists to refuse.
-     *
-     * Every response the attempt kept is checked, not only the last one — see the grouping above —
-     * and a response with no stop reason this package recognises is refused too, because an
-     * unrecognised response is not a proven-complete one.
+     * The resolution order: the configured summarizer, then the configured fallback, then the host.
+     * Only a failed attempt falls through — a cancellation, a seam mismatch and a cut point with
+     * nothing to summarise all end the compaction here, because none of them is a request a second
+     * model could make.
      */
-    const responses = [...outcomes.values()];
-    const unclean = responses.find((seen) => seen.stopReason !== 'stop');
-    if (responses.length === 0 || unclean) {
-      return handBack(named, unclean ? describeFailure(unclean, undefined) : UNOBSERVED_RESPONSE);
+    const candidates = settings.fallbackModel === null ? [tuple.model] : [tuple.model, settings.fallbackModel];
+    const attempts: Attempt[] = [];
+    // The same range for every attempt: a fallback is a different model, not a different compaction.
+    let prepared: SummarizationPreparation | undefined;
+
+    for (const wanted of candidates) {
+      // A cancellation that started a fresh request behind the user's back is the one thing the
+      // handback path is careful about, so the signal is read before each attempt, not only after.
+      if (event.signal.aborted) return { cancel: true };
+
+      const model = resolveModel(wanted, ctx);
+      if (!model) {
+        const described = wanted === null ? 'the conversation model' : `summarizer model ${wanted}`;
+        attempts.push({ summarizer: wanted ?? CONVERSATION_MODEL, reason: `this host does not offer ${described}` });
+        continue;
+      }
+      const named = `${model.provider}/${model.id} (${model.api})`;
+      if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+        attempts.push({ summarizer: named, reason: 'the host has no configured credentials for it' });
+        continue;
+      }
+
+      prepared ??= prepareCompaction(event.branchEntries, event.preparation, settings.keptWindowTokens);
+      if (!prepared) {
+        // There is no request to make, so there is nothing a different model could do about it.
+        attempts.push({
+          summarizer: named,
+          reason: 'the cut point leaves no history to summarise, so the host would carry the previous summary '
+            + 'forward and this package could not choose what produced it',
+        });
+        return handBack(attempts);
+      }
+
+      // One request. The model and its thinking level are two of the three things this package changes;
+      // the summary is otherwise the host's, at whatever length the host's prompt and the model produce.
+      //
+      // The level is clamped against **this** model, so it is computed per attempt: a fallback that
+      // cannot honour the configured level runs at a different one, and the announcement names the
+      // level that ran rather than the one that was asked for.
+      //
+      // Responses are grouped by the context they came from. The host's retry policy calls the stream
+      // function again with the same context after a transient failure, and only the response it
+      // finally returns is the one `compact()` acted on — so a later response replaces an earlier one,
+      // and a failure that was retried away must not be read as this attempt's outcome. A split turn
+      // summarises two ranges through two contexts, and both of those have to be clean.
+      const level = summarizerThinkingLevel(model, tuple);
+      const outcomes = new Map<object, AttemptOutcome>();
+      let result;
+      try {
+        result = await compactFn(
+          prepared,
+          model,
+          undefined,
+          undefined,
+          event.customInstructions,
+          event.signal,
+          level as never,
+          observingStream(ctx.modelRegistry, (group, seen) => { outcomes.set(group, seen); }),
+          undefined,
+          hostRetryPolicy(pi.getSettings()),
+          undefined,
+          ctx.sessionManager.getSessionId(),
+        );
+      } catch (error) {
+        if (event.signal.aborted) return { cancel: true };
+        attempts.push({ summarizer: named, reason: describeFailure([...outcomes.values()].at(-1), error) });
+        continue;
+      }
+      if (event.signal.aborted) return { cancel: true };
+
+      /**
+       * The whole of this package's quality guarantee: a summary it cannot vouch for is never
+       * persisted, whichever model wrote it. The host throws on an error and on a tool call, so those
+       * never reach here; it returns a partially written summary **unchanged** for any other stop
+       * reason, which is what this check exists to refuse.
+       *
+       * Every response the attempt kept is checked, not only the last one — see the grouping above —
+       * and a response with no stop reason this package recognises is refused too, because an
+       * unrecognised response is not a proven-complete one.
+       */
+      const responses = [...outcomes.values()];
+      const unclean = responses.find((seen) => seen.stopReason !== 'stop');
+      if (responses.length === 0 || unclean) {
+        attempts.push({ summarizer: named, reason: unclean ? describeFailure(unclean, undefined) : UNOBSERVED_RESPONSE });
+        continue;
+      }
+
+      if (attempts.length === 0) return { compaction: result };
+      // The fallback wrote a summary this package can vouch for. Recording it is the point: the
+      // operator configured the primary for a reason, and a handback announcement here would be a lie.
+      attempts.push({
+        summarizer: named,
+        thinking: level === tuple.thinking ? { level } : { level, clampedFrom: tuple.thinking },
+      });
+      pending = { attempts };
+      report(ctx, announcement(pending).join('\n'), 'warning');
+      return { compaction: result };
     }
-    return { compaction: result };
+    return handBack(attempts);
   });
 
   pi.registerCommand('compaction', {
@@ -197,6 +254,15 @@ export default function piCompaction(pi: ExtensionAPI): void {
           if (!value) return void ctx.ui.notify(`usage: /compaction model provider/model | ${CONVERSATION_MODEL}`, 'error');
           next.summarizerModel = value === CONVERSATION_MODEL ? null : value;
           break;
+        case 'fallback':
+          if (!value) {
+            return void ctx.ui.notify(`usage: /compaction fallback provider/model | ${CONVERSATION_MODEL} | none`, 'error');
+          }
+          // `none` is the command's own spelling for the same thing `conversation` means here: not a
+          // second model. Neither ever means the conversation model as a fallback — the host handback
+          // already is that, and saying it twice would hide which one happened.
+          next.fallbackModel = value === CONVERSATION_MODEL || value === 'none' ? null : value;
+          break;
         case 'thinking':
           if (!value) return void ctx.ui.notify('usage: /compaction thinking off|minimal|low|medium|high|xhigh|max', 'error');
           next.thinking = value as ThinkingLevel;
@@ -206,7 +272,7 @@ export default function piCompaction(pi: ExtensionAPI): void {
           next.keptWindowTokens = Number(value);
           break;
         default:
-          ctx.ui.notify('unknown setting; try model, thinking, window, enable, disable', 'error');
+          ctx.ui.notify('unknown setting; try model, fallback, thinking, window, enable, disable', 'error');
           return;
       }
       const invalid = validateConfig(next);
@@ -225,7 +291,7 @@ export default function piCompaction(pi: ExtensionAPI): void {
     const lines = [diagnostic ? `Config rejected: ${diagnostic}` : `Config: ${configPath(getAgentDir())}`];
     lines.push(`Enabled: ${settings.enabled ? 'yes' : 'no'}`);
     const tuple = settings.tuple;
-    const model = resolveSummarizerModel(tuple, ctx);
+    const model = resolveModel(tuple.model, ctx);
     const wanted = tuple.model === null ? `${CONVERSATION_MODEL} model` : tuple.model;
     const described = model ? `${model.provider}/${model.id} (${model.api})` : `${wanted} — not available on this host`;
     lines.push(`Summarizer model: ${described}`);
@@ -241,23 +307,35 @@ export default function piCompaction(pi: ExtensionAPI): void {
     } else {
       lines.push(`Thinking: ${tuple.thinking}`);
     }
+    // A fallback that this host cannot run is worth saying now rather than at the next compaction.
+    const fallback = settings.fallbackModel === null ? undefined : resolveModel(settings.fallbackModel, ctx);
+    lines.push(settings.fallbackModel === null
+      ? 'Fallback model: none'
+      : fallback === undefined
+        ? `Fallback model: ${settings.fallbackModel} — not available on this host`
+        : `Fallback model: ${fallback.provider}/${fallback.id} (${fallback.api})`
+          + (ctx.modelRegistry.hasConfiguredAuth(fallback) ? '' : ' — no configured credentials on this host'));
     lines.push(`Kept window: ${settings.keptWindowTokens} tokens`);
     lines.push('Summary length: not bounded by this package — the host sends no output ceiling and neither do we');
     const checked = await seamResult();
     lines.push(`Host seam: ${checked.ok ? 'ok' : 'MISMATCH'} — ${checked.detail}`);
-    const degraded = lastDegradation(ctx);
-    lines.push(degraded
-      ? `Last degradation: summarizer ${degraded.summarizer} — ${degraded.reason}`
-      : 'Last degradation: none in this session');
+    const recorded = lastRecord(ctx);
+    lines.push(recorded ? describeRecord(recorded) : 'Last degradation: none in this session');
     return lines.join('\n');
   }
 
-  /** The most recent degradation this package recorded in the session, if there is one. */
-  function lastDegradation(ctx: ExtensionCommandContext): Degradation | undefined {
+  /** The most recent outcome this package recorded in the session, if there is one. */
+  function lastRecord(ctx: ExtensionCommandContext): CompactionRecord | undefined {
     const branch = ctx.sessionManager.getBranch();
     for (let index = branch.length - 1; index >= 0; index--) {
       const entry = branch[index];
-      if (entry.type === 'custom' && entry.customType === DEGRADATION_ENTRY) return entry.data as Degradation;
+      if (entry.type !== 'custom') continue;
+      if (entry.customType !== DEGRADATION_ENTRY && entry.customType !== FALLBACK_ENTRY) continue;
+      // A record written by 0.2.1 carries the single-attempt shape; `toRecord` reads it rather than
+      // skipping it, because a session outlives the version that compacted it and this entry is the
+      // half of the announcement that survives a restart.
+      const record = toRecord(entry.data);
+      if (record) return record;
     }
     return undefined;
   }
