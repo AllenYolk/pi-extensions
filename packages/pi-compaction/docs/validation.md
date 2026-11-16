@@ -68,10 +68,13 @@ attempt ran unless it carries a reason, which is the one predicate that decides 
   produced the summary` and names the failed attempts in its `Why:` line instead;
 - `/compaction` reports `Last degradation: …` or `Last compaction: …` accordingly.
 
-**With one attempt nothing changes**: the announcement is the same five lines with no fallback
-wording, and the status line is the one `0.2.1` prints. An entry written by `0.2.1` — which has no
-`attempts` — is skipped by the status view rather than crashed on, so a session that outlives the
-version that compacted it still reads.
+**With one attempt nothing changes**: the announcement is the same five lines with no `Earlier:`
+line and no recovery headline. An entry written by `0.2.1` — a single attempt as
+`{ summarizer, reason }`, with no `attempts` — is **normalised into the current shape when read**, not
+skipped: a session outlives the version that compacted it, and this entry is the half of the
+announcement that survives a restart, so a recorded handback has to stay readable. Skipping it would
+have reported `Last degradation: none in this session` over a file that plainly contains one. Reading
+it is a read; the entry on disk is untouched.
 
 ### What was tested
 
@@ -91,8 +94,16 @@ session, resolving Pi 1.5.1 from this package's own workspace, unless it says ot
   response there are three requests in order, the compaction that reaches the session is the host's,
   and the partial text is in neither the session file nor any persisted summary.
 - A fallback is the same compaction with a different model: the two attempts' recorded prompts are
-  byte-identical and both carry `reasoning: "low"`, which is the only way to show the cut point did
-  not move between them.
+  byte-identical, which is the only way to show the cut point did not move between them. The thinking
+  level is **not** shared — it is clamped per model — so a run whose fallback cannot honour the
+  configured `medium` reports `at thinking level high (clamped from medium; the level is clamped per
+  model)`, asserts the fallback request really carried `reasoning: "high"`, and records
+  `{ level: 'high', clampedFrom: 'medium' }` on the attempt.
+- A fallback that repeats the summarizer is refused at all three surfaces: the file is rejected
+  whole, `/compaction model` and `/compaction fallback` both refuse the pairing from either
+  direction, and the status view rendered against the rejected file offers `Fallback model: none`
+  rather than the summarizer as its own fallback.
+- A degradation recorded by `0.2.1` is still reported after a resume — see above.
 - A rejected configuration stays inert — `fallbackModel: "no-slash"` rejects the file whole, and a
   hook-level run with a rejected file resolves no model and requests nothing. `null`, `"conversation"`
   and `"none"` all load as no fallback, from the file and from the command, so the two entry points
@@ -120,8 +131,8 @@ supplies. Two properties cannot be decided by a real-host run:
 
 ### Mutation checks
 
-Both hook-level properties were mutation-checked in the direction that matters, and both tests went
-red:
+Every property this branch added a test for was mutation-checked in the direction that matters, and
+each test went red. The two hook-level ones:
 
 - Removing the three `event.signal.aborted` reads in the attempt loop — before each attempt, in the
   catch, and after `compact()` resolves — makes the cancellation test report
@@ -135,6 +146,17 @@ The real-CLI cancellation test was also checked and is **not** sensitive to the 
 own: with the same three guards removed it still passes, because the host refuses the second request
 before a provider sees it. That is why the hook-level test exists rather than a stronger assertion on
 the real run.
+
+The three from the review round:
+
+- Removing the `0.2.1` normalisation from `toRecord` makes the resume test report
+  `Last degradation: none in this session` over a session file that contains a degradation — the
+  exact failure the normalisation exists to prevent — and the unit test goes red with it.
+- Restoring the old `and at the same thinking level` clause in `fallbackCost` turns both the
+  unit test and the real-CLI clamp test red; the latter is the one that matters, because it asserts
+  the fallback request really carried `reasoning: "high"` while the announcement claimed otherwise.
+- Dropping the `fallbackModel === summarizerModel` check from `parse()` turns the config test and the
+  real-CLI test red, the latter by timing out on the command output that no longer appears.
 
 ### Not established for the fallback
 
@@ -151,8 +173,8 @@ the real run.
 
 ### This branch's own gates
 
-`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 92/92 pass on top of #33 and
-#34, of which 21 are this branch's. `npm run check` — 178/178 pass. `npm pack --json --ignore-scripts`
+`npm --workspace @allenyolk/pi-compaction run check` — typecheck clean, 98/98 pass on top of #33 and
+#34, of which 27 are this branch's. `npm run check` — 184/184 pass. `npm pack --json --ignore-scripts`
 still produces exactly the eight entries listed below. The gates table above is #34's and is left as
 it stands; the maintainer corrects it after the merge.
 

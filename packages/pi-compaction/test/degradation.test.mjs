@@ -6,6 +6,7 @@ import {
   describeRecord,
   FALLBACK_ENTRY,
   handedBack,
+  toRecord,
   UNOBSERVED_RESPONSE,
 } from '../src/degradation.ts';
 
@@ -115,8 +116,7 @@ test('a handback after two attempts names both of them', () => {
   assert.match(lines[5], /^Next: /);
 });
 
-test('a fallback that produced the summary is not announced as a handback', () => {
-  // The record must not lie. A handback announcement after a *successful* fallback would say stock
+test('a fallback that produced the summary is not announced as a handback', () => {  // The record must not lie. A handback announcement after a *successful* fallback would say stock
   // Pi compacted the session when this package's own fallback wrote the summary.
   const record = {
     attempts: [
@@ -133,8 +133,37 @@ test('a fallback that produced the summary is not announced as a handback', () =
   assert.match(lines[2], /the fallback ran and its summary was complete/);
   assert.match(lines[3], /^Now: /);
   assert.doesNotMatch(lines[3], /stock Pi compacts with the conversation model/);
-  assert.match(lines[3], /same thinking level and the same cut point/);
+  // The cut point is shared; the thinking level is not, because it is clamped per model. Claiming
+  // both here is the sentence this announcement used to get wrong.
+  assert.match(lines[3], /over the same kept window/);
+  assert.doesNotMatch(lines[3], /same thinking level/);
   assert.equal(lines.filter((line) => line.startsWith('Earlier:')).length, 0, 'Why: already names the failed attempt');
+});
+
+test('a fallback names the thinking level it actually ran at', () => {
+  // The level is clamped **per model**: `clampThinkingLevel` falls back to a model's lowest
+  // supported level, and to `off` for one that cannot reason at all. So a fallback need not run at
+  // the level the primary would have, and an announcement claiming it did would be the exact lie the
+  // rest of this file is built to avoid. This is the sentence a reader trusts most.
+  const clamped = announcement({
+    attempts: [
+      attempt('primary/m (api)', 'the summarizer reported an error (503)'),
+      { summarizer: 'fallback/f (api)', thinking: { level: 'high', clampedFrom: 'medium' } },
+    ],
+  });
+  assert.match(clamped[3], /at thinking level high \(clamped from medium; the level is clamped per model\)/);
+  assert.doesNotMatch(clamped.join('\n'), /same thinking level/, 'and never claims the level was unchanged');
+
+  // An unclamped fallback still says which level ran, without a clamp note.
+  const clean = announcement({
+    attempts: [attempt('p/m (api)', 'x'), { summarizer: 'f/f (api)', thinking: { level: 'medium' } }],
+  });
+  assert.match(clean[3], /at thinking level medium/);
+  assert.doesNotMatch(clean[3], /clamped/);
+
+  // A record written before the level was carried makes no claim about it rather than a false one.
+  const unknown = announcement({ attempts: [attempt('p/m (api)', 'x'), { summarizer: 'f/f (api)' }] });
+  assert.doesNotMatch(unknown[3], /thinking level/);
 });
 
 test('the status line reports a handback and a fallback differently', () => {
@@ -156,4 +185,26 @@ test('a successful fallback is recorded under its own entry type', () => {
   // The entry type is read back by anything scanning the session, so it has to say which happened.
   assert.equal(FALLBACK_ENTRY, 'pi-compaction-fallback');
   assert.notEqual(FALLBACK_ENTRY, 'pi-compaction-degradation');
+});
+
+test('a record written by 0.2.1 is normalised, not skipped', () => {
+  // 0.2.1 recorded one attempt as `{ summarizer, reason }`. A session outlives the version that
+  // compacted it, and the custom entry is the half of the announcement that survives a restart — so
+  // a handback that was recorded has to stay readable, not merely not crash the reader.
+  const legacy = toRecord({ summarizer: 'p/m (api)', reason: 'the summarizer reported an error (503)' });
+  assert.deepEqual(legacy, { attempts: [{ summarizer: 'p/m (api)', reason: 'the summarizer reported an error (503)' }] });
+  assert.equal(handedBack(legacy), true, 'a legacy record is a handback');
+  assert.equal(describeRecord(legacy), 'Last degradation: summarizer p/m (api) — the summarizer reported an error (503)');
+  assert.equal(announcement(legacy)[0], 'degraded — compaction handed back to stock Pi');
+
+  // The current shape passes through untouched.
+  const current = { attempts: [{ summarizer: 'a', reason: 'x' }, { summarizer: 'b' }] };
+  assert.deepEqual(toRecord(current), current);
+
+  // And nothing that is not a record is invented into one.
+  assert.equal(toRecord(undefined), undefined);
+  assert.equal(toRecord({ attempts: [] }), undefined, 'an empty attempt list is not a record');
+  assert.equal(toRecord({ summarizer: 'p/m' }), undefined, 'half a legacy record is not a record');
+  assert.equal(toRecord({ reason: 'x' }), undefined);
+  assert.equal(toRecord('pi-compaction-degradation'), undefined);
 });

@@ -22,6 +22,7 @@ import {
   describeRecord,
   FALLBACK_ENTRY,
   handedBack,
+  toRecord,
   UNOBSERVED_RESPONSE,
   type Attempt,
   type CompactionRecord,
@@ -172,11 +173,16 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
       // One request. The model and its thinking level are two of the three things this package changes;
       // the summary is otherwise the host's, at whatever length the host's prompt and the model produce.
       //
+      // The level is clamped against **this** model, so it is computed per attempt: a fallback that
+      // cannot honour the configured level runs at a different one, and the announcement names the
+      // level that ran rather than the one that was asked for.
+      //
       // Responses are grouped by the context they came from. The host's retry policy calls the stream
       // function again with the same context after a transient failure, and only the response it
       // finally returns is the one `compact()` acted on — so a later response replaces an earlier one,
       // and a failure that was retried away must not be read as this attempt's outcome. A split turn
       // summarises two ranges through two contexts, and both of those have to be clean.
+      const level = summarizerThinkingLevel(model, tuple);
       const outcomes = new Map<object, AttemptOutcome>();
       let result;
       try {
@@ -187,7 +193,7 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
           undefined,
           event.customInstructions,
           event.signal,
-          summarizerThinkingLevel(model, tuple) as never,
+          level as never,
           observingStream(ctx.modelRegistry, (group, seen) => { outcomes.set(group, seen); }),
           undefined,
           hostRetryPolicy(pi.getSettings()),
@@ -221,7 +227,10 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
       if (attempts.length === 0) return { compaction: result };
       // The fallback wrote a summary this package can vouch for. Recording it is the point: the
       // operator configured the primary for a reason, and a handback announcement here would be a lie.
-      attempts.push({ summarizer: named });
+      attempts.push({
+        summarizer: named,
+        thinking: level === tuple.thinking ? { level } : { level, clampedFrom: tuple.thinking },
+      });
       pending = { attempts };
       report(ctx, announcement(pending).join('\n'), 'warning');
       return { compaction: result };
@@ -322,10 +331,11 @@ export default function piCompaction(pi: ExtensionAPI, compactFn: typeof compact
       const entry = branch[index];
       if (entry.type !== 'custom') continue;
       if (entry.customType !== DEGRADATION_ENTRY && entry.customType !== FALLBACK_ENTRY) continue;
-      // Entries written before the record carried its attempts are skipped rather than crashed on:
-      // a session outlives the version that compacted it.
-      const data = entry.data as CompactionRecord | undefined;
-      if (Array.isArray(data?.attempts) && data.attempts.length > 0) return data;
+      // A record written by 0.2.1 carries the single-attempt shape; `toRecord` reads it rather than
+      // skipping it, because a session outlives the version that compacted it and this entry is the
+      // half of the announcement that survives a restart.
+      const record = toRecord(entry.data);
+      if (record) return record;
     }
     return undefined;
   }

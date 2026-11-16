@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from './config.ts';
 import type { AttemptOutcome } from './summarizer.ts';
 
 /**
@@ -70,6 +71,15 @@ export interface Attempt {
   summarizer: string;
   /** Why it failed. Absent on the attempt that produced the summary. */
   reason?: string;
+  /**
+   * The thinking level this attempt actually ran at, and the level that was asked for when they
+   * differ. Absent on an attempt that never made a request, and on a record written before the
+   * level was carried.
+   *
+   * The level is clamped **per model**, so it is a property of the attempt rather than of the
+   * compaction: the same configured level gives two models two different answers.
+   */
+  thinking?: { level: ThinkingLevel; clampedFrom?: ThinkingLevel };
 }
 
 /**
@@ -89,6 +99,28 @@ export const handedBack = (record: CompactionRecord): boolean =>
   record.attempts[record.attempts.length - 1]!.reason !== undefined;
 
 /**
+ * A record as it was written, whichever version wrote it.
+ *
+ * `0.2.1` recorded a single attempt as `{ summarizer, reason }`. A session outlives the version that
+ * compacted it, and the custom entry is the half of the announcement that survives a restart — so
+ * that shape is normalised into the current one rather than skipped. Not crashing on it is not the
+ * bar; a handback that was recorded stays readable.
+ *
+ * Anything that is neither shape is not a record, and is left alone rather than invented into one.
+ */
+export function toRecord(data: unknown): CompactionRecord | undefined {
+  if (!data || typeof data !== 'object') return undefined;
+  const written = data as { attempts?: unknown; summarizer?: unknown; reason?: unknown };
+  if (Array.isArray(written.attempts)) {
+    return written.attempts.length > 0 ? { attempts: written.attempts as Attempt[] } : undefined;
+  }
+  if (typeof written.summarizer === 'string' && typeof written.reason === 'string') {
+    return { attempts: [{ summarizer: written.summarizer, reason: written.reason }] };
+  }
+  return undefined;
+}
+
+/**
  * What a handback costs. It is not a change in summary length: this package sends no output ceiling
  * and neither does stock Pi, so both produce a summary as long as the host's prompt and the model
  * make it. What a handback gives up is the three things this package controls — the model, the
@@ -101,13 +133,22 @@ const HANDBACK_COST =
   + 'package controls, so a handback gives all of them up.';
 
 /**
- * What a fallback costs. The compaction itself is unchanged — the same thinking level, the same cut
- * point, the same summary guarantee — so what it gives up is the model the operator chose.
+ * What a fallback costs. The cut point and the whole-summary guarantee are unchanged, but the
+ * thinking level is clamped per model — so a fallback that cannot honour the configured level runs
+ * at a different one, and the level it did run at is named rather than assumed. This is the rule
+ * `/compaction` already follows for the summarizer: report the level that ran, not the one asked for.
  */
-const FALLBACK_COST =
-  'the summarizer configured here did not run. This summary is the fallback\'s, at the same thinking '
-  + 'level and the same cut point, so nothing else about the compaction changed — but the model you '
-  + 'chose is not the one that wrote it.';
+function fallbackCost(thinking: Attempt['thinking']): string {
+  const level = thinking === undefined
+    ? ''
+    : ` and at thinking level ${thinking.level}`
+      + (thinking.clampedFrom === undefined
+        ? ''
+        : ` (clamped from ${thinking.clampedFrom}; the level is clamped per model)`);
+  return 'the summarizer configured here did not run. This summary is the fallback\'s, over the same '
+    + `kept window${level}, so the cut point and the whole-summary guarantee are unchanged — but the `
+    + 'model you chose is not the one that wrote it.';
+}
 
 const NEXT =
   'Next: /compaction fallback provider/model to try a second summarizer before the host takes over, '
@@ -139,7 +180,7 @@ export function announcement(record: CompactionRecord): string[] {
   // A handback names every attempt that failed before the last one; a recovery already names them in
   // `Why:`, which is the only place a fallback's own reason can be reported.
   if (handback) for (const failed of earlier) lines.push(`Earlier: ${failed.summarizer} — ${failed.reason}`);
-  lines.push(`Now: ${handback ? HANDBACK_COST : FALLBACK_COST}`, NEXT);
+  lines.push(`Now: ${handback ? HANDBACK_COST : fallbackCost(last.thinking)}`, NEXT);
   return lines;
 }
 

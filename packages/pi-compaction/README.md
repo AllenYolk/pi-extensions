@@ -53,7 +53,7 @@ project-level overrides, and `/reload` picks up a change without restarting.
 | --- | --- |
 | `enabled` | Whether the package acts at all. Defaults to `false`. |
 | `summarizerModel` | `provider/model`, or `null` — the default — for the conversation model. `"conversation"` is accepted as a spelling of `null`. |
-| `fallbackModel` | `provider/model`, or `null` — the default — for no fallback at all. `"conversation"` and `"none"` are both accepted as spellings of `null`, in the file and from the command. |
+| `fallbackModel` | `provider/model`, or `null` — the default — for no fallback at all. `"conversation"` and `"none"` are both accepted as spellings of `null`, in the file and from the command. Must differ from `summarizerModel`: the same model cannot be its own fallback, and a file that pairs them is rejected whole. |
 | `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Defaults to `medium`, and is clamped to what the chosen model supports. |
 | `keptWindowTokens` | Token target for the kept window. Defaults to `16000`. |
 
@@ -160,8 +160,19 @@ exactly the behaviour above.
 `summarizerModel` → `fallbackModel` → hand back to the host. One fallback, never a list: a chain is a
 policy nobody can reason about, and the step after it is the host anyway.
 
-The fallback attempt gets the **same thinking level** and the **same kept window** as the primary. It
-is a different model, not a different compaction.
+The fallback attempt gets the **same kept window** as the primary — it is a different model, not a
+different compaction.
+
+It does **not** necessarily get the same thinking level. The level is clamped against the model that
+runs, so a fallback whose `thinkingLevelMap` cannot honour the configured level runs at a different
+one, and the announcement names the level that actually ran rather than the one you asked for:
+
+```text
+Now: the summarizer configured here did not run. This summary is the fallback's, over the same kept
+  window and at thinking level high (clamped from medium; the level is clamped per model), so the cut
+  point and the whole-summary guarantee are unchanged — but the model you chose is not the one that
+  wrote it.
+```
 
 ### Which failures fall back
 

@@ -108,6 +108,13 @@ function parse(raw: unknown): Config {
     config.thinking = record.thinking as ThinkingLevel;
   }
   if ('keptWindowTokens' in record) config.keptWindowTokens = integer(record.keptWindowTokens, 'keptWindowTokens', 0);
+  // The same model cannot be its own fallback. The second attempt would fail the same way, and on
+  // the one path where it succeeded the announcement would say the configured summarizer did not
+  // run and that the chosen model did not write the summary — both false. Rejecting the pairing is
+  // the whole-file rule the rest of this parser already follows.
+  if (config.fallbackModel !== null && config.fallbackModel === config.summarizerModel) {
+    throw new Error('fallbackModel must be a different model from summarizerModel; the same model cannot be its own fallback');
+  }
   return config;
 }
 

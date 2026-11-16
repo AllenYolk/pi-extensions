@@ -582,10 +582,12 @@ test('a cancellation never reaches the fallback stream function', { timeout: 180
   assertNoPartialPersisted(run);
 });
 
-test('the fallback attempt is the same compaction with a different model', { timeout: 180_000 }, () => {
-  // Same thinking level, same kept window: a fallback is a different model, not a different
-  // compaction. The two requests summarise byte-identical input, which is the only way to prove the
-  // cut point did not move between them.
+test('the fallback attempt summarises the same range as the primary', { timeout: 180_000 }, () => {
+  // Same kept window, and — because both of these models support the configured level — the same
+  // thinking level too. A fallback is a different model, not a different compaction: the two requests
+  // summarise byte-identical input, which is the only way to prove the cut point did not move
+  // between them. The level is clamped per model, so it is *not* guaranteed to match; the clamp case
+  // has its own test below.
   const run = runCompaction({
     name: 'fallback-same-',
     config: { enabled: true, summarizerModel: PRIMARY, fallbackModel: FALLBACK, thinking: 'low' },
@@ -598,10 +600,122 @@ test('the fallback attempt is the same compaction with a different model', { tim
   assert.equal(second.model, FALLBACK);
   assert.equal(first.prompt, second.prompt, 'both attempts summarise the same range');
   assert.equal(first.options.reasoning, 'low');
-  assert.equal(second.options.reasoning, 'low', 'the fallback gets the primary\'s thinking level');
+  assert.equal(second.options.reasoning, 'low', 'both models support the configured level here');
   assert.equal(second.options.maxTokens, undefined, 'and no output ceiling either');
   assert.equal(persistedCompactions(run.session.file)[0].fromHook, true);
   assertNothingLost(run);
+});
+
+test('a fallback identical to the summarizer is refused, and never offered', { timeout: 180_000 }, () => {
+  // Refusing the pairing is a whole-file rejection, so all three surfaces have to refuse it: the
+  // file, the command, and the status view — which must not present the summarizer as an available
+  // fallback for itself.
+  const run = runCompaction({
+    name: 'self-fallback-',
+    config: { enabled: true, summarizerModel: PRIMARY, fallbackModel: PRIMARY },
+    turns: 30,
+    script: [
+      { expect: READY, send: '/compaction\r' },
+      { expect: 'Host seam:', send: `/compaction fallback ${PRIMARY}\r` },
+      { expect: 'Fallback model:', send: `/compaction model ${PRIMARY}\r` },
+      { expect: 'nothing changed; fallbackModel must be a different model', send: `/compaction fallback ${FALLBACK}\r` },
+      { expect: 'openai-responses', send: '/compaction-probe\r' },
+      { expect: 'Compacted from' },
+    ],
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  // The file as written is rejected whole, so the package reports the diagnostic and stays inert
+  // rather than offering the summarizer as its own fallback.
+  assert.match(run.plain, /Config rejected: .*fallbackModel must be a different model from summarizerModel/);
+  assert.match(run.plain, /compaction stays stock Pi/);
+  // The first status view the user sees — the one rendered against the rejected file — must not
+  // offer the summarizer as its own fallback. Later views legitimately show an accepted value.
+  const firstFallbackLine = run.plain.indexOf('Fallback model:');
+  assert.ok(firstFallbackLine >= 0, 'the status view reports a fallback');
+  assert.match(
+    run.plain.slice(firstFallbackLine, firstFallbackLine + 40),
+    /^Fallback model: none/,
+    'a self-fallback is never offered as available',
+  );
+
+  // The command refuses the pairing too, from either verb: `fallback` cannot be set to the current
+  // summarizer, and `model` cannot be set to the current fallback.
+  assert.match(run.plain, /Error: pi-compaction: nothing changed; fallbackModel must be a different model from summarizerModel/);
+  const persisted = JSON.parse(readFileSync(join(run.agent, 'extensions/pi-compaction/config.json'), 'utf8'));
+  assert.deepEqual(persisted, {
+    enabled: false,
+    summarizerModel: null,
+    fallbackModel: FALLBACK,
+    thinking: 'medium',
+    keptWindowTokens: 16_000,
+  }, 'the refused step changed nothing; the accepted one wrote the file');
+});
+
+test('a fallback that cannot honour the configured thinking level is reported honestly', { timeout: 180_000 }, () => {
+  // The level is clamped against the model that runs, so the fallback here gets a different answer
+  // than the primary would have. An announcement claiming "the same thinking level" would be the
+  // opposite of what happened, on the one line a reader trusts most.
+  const run = runCompaction({
+    name: 'fallback-clamp-',
+    config: {
+      enabled: true,
+      summarizerModel: PRIMARY,
+      // `medium` is unsupported on this model, so the host's clamp prefers a higher one.
+      fallbackModel: 'minimax-cn/minimax-M3.1-Flash-no-medium',
+      thinking: 'medium',
+    },
+    fixture: { MODE: 'error', FAIL_FIRST: 1 },
+    turns: 30,
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  const [first, second] = summarizationRecords(run.records);
+  assert.equal(first.options.reasoning, 'medium', 'the primary would have run at the configured level');
+  assert.equal(second.options.reasoning, 'high', 'the fallback really did run at a different one');
+
+  assert.match(run.plain, /at thinking level high \(clamped from medium; the level is clamped per model\)/);
+  assert.doesNotMatch(run.plain, /same thinking level/, 'and the announcement never claims otherwise');
+
+  // The record carries the fact, not just the prose.
+  const [record] = customEntries(run, FALLBACK_ENTRY);
+  assert.deepEqual(record.data.attempts[1].thinking, { level: 'high', clampedFrom: 'medium' });
+  assert.equal(record.data.attempts[0].thinking, undefined, 'an attempt that never ran has no level');
+  assert.equal(persistedCompactions(run.session.file)[0].fromHook, true);
+});
+
+test('a degradation recorded by 0.2.1 is still reported after a resume', { timeout: 180_000 }, () => {
+  // 0.2.1 recorded one attempt as `{ summarizer, reason }`. A session outlives the version that
+  // compacted it, and the custom entry is the half of the announcement that survives a restart — so
+  // resuming a session that carries one has to keep reporting the handback it recorded. Skipping the
+  // entry would report `none in this session` over a file that plainly contains a degradation.
+  const legacy = {
+    summarizer: 'legacy-provider/legacy-summarizer (anthropic-messages)',
+    reason: 'the summarizer reported an error (503 model_unavailable)',
+  };
+  const run = runCompaction({
+    name: 'legacy-record-',
+    // Inert, so the run adds no record of its own and the legacy entry stays the most recent one.
+    config: { enabled: false },
+    turns: 30,
+    decorate: (session) => session.appendCustomEntry(DEGRADATION_ENTRY, legacy),
+    script: [
+      { expect: READY, send: '/compaction\r' },
+      { expect: 'Host seam:', send: '/compaction-probe\r' },
+      { expect: 'Compacted from' },
+    ],
+  });
+  assert.equal(run.report.error, undefined, run.report.error);
+
+  assert.match(
+    run.plain,
+    /Last degradation: summarizer legacy-provider\/legacy-summarizer \(anthropic-messages\) — the summarizer reported an error \(503 model_unavailable\)/,
+  );
+  assert.doesNotMatch(run.plain, /Last degradation: none in this session/, 'the recorded handback is not reported as absent');
+
+  // The entry itself is untouched on disk: reading it is a read, not a rewrite.
+  const [entry] = customEntries(run, DEGRADATION_ENTRY);
+  assert.deepEqual(entry.data, legacy, 'the legacy entry is read as written');
 });
 
 test('a second compaction does not inherit the first one\'s file lists', { timeout: 180_000 }, () => {
