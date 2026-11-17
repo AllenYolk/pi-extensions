@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { test } from 'node:test';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { sandbox } from '../../../test/sandbox.mjs';
 import { piCli } from './pi-host.mjs';
 
 for (const mode of ['regular', 'fullscreen']) for (const scenario of ['fresh', 'resume']) {
   test(`${mode} ${scenario} shows minimal before any command or key input`, { timeout: 30000 }, () => {
-    mkdirSync('work', { recursive: true });
-    const profile = resolve(mkdtempSync('work/first-paint-'));
+    const profile = sandbox('first-paint-');
     writeFileSync(join(profile, 'settings.json'), JSON.stringify({ theme: 'dark', quietStartup: true, showCacheMissNotices: false }));
     const names = ['bash', 'edit', 'grep', 'readSeek_edit', 'readSeek_grep', 'ordinary_fixture'];
     const message = { role: 'assistant', api: 'anthropic-messages', provider: 'fixture', model: 'fixture', content: names.map(name => ({ type: 'toolCall', id: name, name, arguments: { command: 'printf fixture', path: join(profile, 'fixture.txt') } })), stopReason: 'toolUse', timestamp: 1, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };

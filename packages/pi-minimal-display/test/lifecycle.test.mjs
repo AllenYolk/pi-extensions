@@ -3,17 +3,15 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { Container } from '@earendil-works/pi-tui';
 import minimalDisplay from '../dist/index.js';
-import { mkdtempSync, mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { SessionManager, initTheme } from '@earendil-works/pi-coding-agent';
+import { sandbox } from '../../../test/sandbox.mjs';
 import { theme } from './pi-host.mjs';
 
 initTheme('dark');
 
 test('session entry defaults to minimal, reload preserves global expansion, and status never enables it', async () => {
-  mkdirSync('work', { recursive: true });
   const previous = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = resolve(mkdtempSync('work/lifecycle-'));
+  process.env.PI_CODING_AGENT_DIR = sandbox('lifecycle-');
   const events = new Map();
   const commands = new Map();
   let expanded = true;

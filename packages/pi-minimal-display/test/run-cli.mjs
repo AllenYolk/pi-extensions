@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { sandbox } from '../../../test/sandbox.mjs';
 import { piCli } from './pi-host.mjs';
 
 export function runCliProbe(entry, reloads = 0, profile) {
-  mkdirSync('work', { recursive: true });
-  profile ??= resolve(mkdtempSync('work/cli-'));
+  profile ??= sandbox('cli-');
   const resultFile = join(profile, 'result.json');
   const command = [process.execPath, piCli, '--offline', '--no-session', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-extensions', '-e', entry, '-e', resolve('test/fixtures/cli-probe.ts'), '/display-probe'];
   const result = spawnSync('uv', ['run', '--no-project', '--python', '3.12', 'python', resolve('test/pty.py'), ...command], {
