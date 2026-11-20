@@ -1,5 +1,11 @@
 # @allenyolk/pi-minimal-display
 
+## 0.2.6
+
+### Patch Changes
+
+- Accept Pi 1.6.0's presentation methods so compact tool cards and model-request folding activate on that host instead of failing closed to native display.
+
 ## 0.2.5
 
 ### Patch Changes
