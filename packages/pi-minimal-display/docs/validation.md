@@ -1,6 +1,80 @@
 # Validation
 
-Version: `0.2.5`. Questionnaire cards default to compact; the actual `@juicesharp/rpiv-ask-user-question@2.13.8` answer/cancel and collapse/reopen paths were checked on Linux x64 with Node 24.19.0 and Pi 1.2.0. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds completed-failure cards with local failure counts and render-time model-request event folding. The Pi 1.5.1 compatibility update pins that development host for CI. The earlier Pi 1.2.0 change also passed the package check on Pi 0.99.1 and 1.1.0 before its host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+Version: `0.2.6`. Questionnaire cards default to compact; the actual `@juicesharp/rpiv-ask-user-question@2.13.8` answer/cancel and collapse/reopen paths were checked on Linux x64 with Node 24.19.0 and Pi 1.2.0. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds completed-failure cards with local failure counts and render-time model-request event folding. The Pi 1.6.0 compatibility update pins that development host for CI. The earlier Pi 1.2.0 change also passed the package check on Pi 0.99.1 and 1.1.0 before its host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+
+## Pi 1.6.0 host
+
+[Issue #44](https://github.com/AllenYolk/pi-extensions/issues/44) adds two presentation signatures and no event-handler signatures, without changing the adapter's rendering, grouping, lifecycle or configuration logic. Pi 1.5.2 was measured in the same pass: its SDK and bundled-CLI signatures are byte-identical to the allowlisted Pi 1.5.1 entries, so 1.5.2 already activated before this change and needed none of its own.
+
+Every hash below was measured on this machine (macOS arm64, Node 24.18.0), the SDK ones from the package's own 1.6.0 development host and the CLI ones from inside the real 1.6.0 `dist/bundle` with no display extension loaded, so nothing was patched when they were taken. Both 1.6.0 columns reproduce the values recorded in issue #44 exactly.
+
+| Method | Pi 1.5.1 SDK | Pi 1.6.0 SDK | Pi 1.5.1 CLI | Pi 1.6.0 CLI |
+| --- | --- | --- | --- | --- |
+| `Container.render` | `3f8010cd…` | `f7a85113…` | `1bd938ca…` | `74e886d0…` |
+| `Container.handleMouse` | `702b6e2d…` | `8c793e06…` | `9316e9de…` | `2240e3f3…` |
+| `AssistantMessageComponent.updateContent` | `459e3519…` | unchanged | `1360563a…` | unchanged |
+| `AssistantMessageComponent.render` | `b32d71cf…` | `569f936d…` | `706329ba…` | `c3e31d85…` |
+| `InteractiveMode.setToolsExpanded` | `e8f44ff2…` | unchanged | `90657218…` | unchanged |
+| `InteractiveMode.showStatus` | `0974240c…` | unchanged | `ac16eeb7…` | unchanged |
+| `InteractiveMode.toggleThinkingBlockVisibility` | `8bb49631…` | unchanged | `ceb99f44…` | unchanged |
+| `InteractiveMode.handleEvent` | `bbd5aa0d…` | unchanged | `083d0f1e…` | unchanged |
+| `AgentSession.abortRetry` | `bb861a58…` | unchanged | `c4d7c104…` | unchanged |
+
+Exactly three methods changed, all consequences of one pi-tui 1.6.0 change. `handleEvent` and `abortRetry` still hash to the allowlisted Pi 1.5.1 entries, so the model-event and retry allowlists gained no entries and retry-chain classification is unaffected. `Container`, `Text`, `Box`, `Spacer`, `MouseRegion`, `truncateToWidth`, `parseColor`, `backgroundAnsi`, `foregroundAnsi`, `AssistantMessageComponent`, `InteractiveMode`, `ToolExecutionComponent`, `keyText` and `AgentSession` are all still exported by the 1.6.0 SDK and by the bundle.
+
+### What changed in pi-tui 1.6.0
+
+`Container` now caches its rendered child lines across frames instead of rebuilding them every frame:
+
+```js
+render(width) { this.childLines = renderChildLines(this.children, width, this.childLines); return this.childLines.lines; }
+handleMouse(event) { /* uses this.childLines instead of this.mouseLayout */ }
+```
+
+`renderChildLines(children, width, previous)` always calls `child.render(width)` for every child; it returns `previous` unchanged only when the width matches, the children are element-wise identical *and* every part is element-wise equal. `mouseLayout` no longer exists anywhere in pi-tui or pi-coding-agent 1.6.0. `Box` uses the same layout object, and `AssistantMessageComponent.render` now copies the shared array once per change (`this.zoneLines`, keyed on `source !== lines`) instead of mutating it in place, because container output is shared across frames. The exported contract states that callers must treat returned lines as read-only.
+
+### Why the adapter's assumptions still hold
+
+Each point below was re-read in the installed 1.6.0 source before either signature was allowlisted.
+
+- **Render projection.** The adapter assigns `this.children = projected`, calls the original `render`, then restores `this.children = source`. Because `renderChildLines` renders every child unconditionally, the projection is rendered fresh on every frame and the cached layout describes the projection; the next frame compares `source` against it, misses, and rebuilds. Nothing stale is reused. `this.childLines` is read only by `Container.render`/`handleMouse` and by `Box`'s own copies — no other host code reads it — so leaving it pointed at the projection after the call is the same ownership situation as `mouseLayout` in 1.5.x.
+- **Mouse dispatch.** The adapter's `handleMouse` wrapper re-renders at `event.width` before delegating, so the cached layout always matches the projected children at that width. `dispatchMouseToChildLines` derives child heights from the same parts array, so behavior is equivalent to 1.5.x.
+- **Read-only output.** The adapter never mutates a lines array returned by a host render; it only reads `.length` and builds its own arrays, and the main-screen renderer already copies (`this.render(width).map(...)`) before applying resets. The 1.6.0 read-only contract is satisfied. This is now also expressed in the type: the patched `render` declares `ReturnType<Container['render']>` so it matches whichever host is installed — `readonly string[]` on 1.6.0, `string[]` on 1.5.x. That is a type-level change only; the emitted JavaScript is unchanged and the previously certified hosts still typecheck.
+- **Private state.** `tool-execution.js` changed only by replacing `lines.push(...contentLines)` with a loop; the fields the adapter reads (`toolName`, `toolCallId`, `args`, `expanded`, `isPartial`, `result`, `ui`) are unchanged. `bash-execution.js` is byte-identical. `InteractiveMode`'s `setToolsExpanded`, `showStatus`, `toggleThinkingBlockVisibility`, `handleEvent` and `AgentSession.abortRetry` are unchanged, so action-scoped status routing and retry-chain classification are unaffected.
+
+### Checks on the 1.6.0 host
+
+Before the change, on the 1.6.0 host, the adapter failed closed exactly as the owner reported. A direct activation probe recorded:
+
+```text
+pi 1.6.0 | dispose: undefined
+diagnostics: ["Pi 1.6.0 presentation methods are incompatible; using native display"]
+```
+
+The focused activation regression `summary cards use native padding, theme and separate count/status lines` failed with `TypeError: dispose is not a function` at its `finally { dispose(); }`, the fail-closed symptom. Moving only this package's development host to Pi/Tui 1.6.0 also broke `npm run typecheck` with four `TS4104` errors, because pi-tui 1.6.0 narrowed `Component.render` to `readonly string[]`; that is the read-only contract above and is fixed by the return-type change, not by a behavior change.
+
+After adding the two verified signatures, `npm --workspace @allenyolk/pi-minimal-display run check` passes 52/52 with a clean typecheck and exit 0, and no compatibility diagnostic appears anywhere in the output. Per file: `cli` 1/1, `config` 4/4, `first-paint` 4/4, `host` 2/2, `lifecycle` 4/4, `model-errors` 8/8, `package` 1/1, `presentation` 28/28. That covers the real bundled CLI with ten reloads, regular and fullscreen first paint, replay/branch/stream/image behavior, native keyboard and mouse expansion, retry success/failure/cancellation, and the packed tarball loading without installed peers. No test fixture needed changing. The root `npm run check` passes all 229 checks (143 compaction, 16 delete, 52 display, 18 repository integration).
+
+### Rendering measurement against the Pi 1.5.1 baseline
+
+The same synthetic 320-call workload renders 320/5,560 compact and 3,640/5,560 native collapsed/expanded lines on Pi 1.6.0, identical to Pi 1.5.1 and to the recorded baseline, so rendered output is unchanged. Medians below are over eight `npm run benchmark` runs per host, alternated on this machine in one session; the per-run figure is itself a median of seven measured renders.
+
+| View | Pi 1.5.1 native | Pi 1.6.0 native | Pi 1.5.1 compact | Pi 1.6.0 compact |
+| --- | ---: | ---: | ---: | ---: |
+| Collapsed | 0.367 ms | 0.179 ms | 0.403 ms | 0.409 ms |
+| Expanded | 0.215 ms | 0.170 ms | 0.442 ms | 0.519 ms |
+
+pi-tui 1.6.0's cross-frame line caching makes the **native** path substantially faster on the same workload: native collapsed halves (0.367 → 0.179 ms) and native expanded drops about a fifth (0.215 → 0.170 ms). The adapter's compact path gets none of that benefit, which is the expected consequence of rebuilding the projection every frame — the projected `children` array and its group components are new objects each frame, so `renderChildLines` never hits its identity cache. The result is a measurable regression in the adapter's own hot path relative to Pi 1.5.1:
+
+- compact collapsed is flat within noise (0.403 → 0.409 ms, +1.5%);
+- **compact expanded regresses 0.442 → 0.519 ms, about +17%**;
+- the compact-to-native ratio on the same host widens from 2.1× to 3.1× expanded and from 1.1× to 2.3× collapsed.
+
+So the answer to the question issue #44 asked is yes: the per-frame projection rebuild does show up as a regression against 1.6.0's cross-frame line caching. The absolute cost remains sub-millisecond on this synthetic workload, and these figures describe that workload only. Projection caching is an explicit non-goal of #44 and was not implemented; the numbers above are the evidence for a follow-up.
+
+### Not covered
+
+These checks covered macOS arm64 and Node 24.18.0 only. Linux, Windows and other Node versions were not rerun locally, no provider-backed or model-account run was made, the extension was not activated in the daily profile, and publication is not part of this verification. Git-collection fixtures serve committed `HEAD`, so the 18 repository-integration checks must be rerun against the committed candidate. CI re-verifies on its own matrix in `.github/workflows/check.yml`.
 
 ## Pi 1.5.1 host
 
@@ -164,4 +238,4 @@ npm run benchmark -- work/upstream-large-session.jsonl
 
 ## Certification limits
 
-Pi 0.85.0, 0.85.1, 0.99.1, 1.1.0, 1.2.0 and 1.5.0 are historically tested hosts; the current development host that CI re-verifies is 1.5.1. A future Pi version is accepted only while its presentation seam matches an allowlisted tested signature; matching is compatibility evidence, not full release certification. The historical four-job CI matrix (retired-repository run 33959587401) passed on Linux/macOS with Node 22.19.0/24.12.0 at commit `bc3c8b2`; the Pi 0.99.1 release evidence is recorded in issue pi-minimal-display#26. Windows and alternative Pi runtimes are not tested by this candidate.
+Pi 0.85.0, 0.85.1, 0.99.1, 1.1.0, 1.2.0, 1.5.0 and 1.5.1 are historically tested hosts; Pi 1.5.2 activates on the allowlisted 1.5.1 signatures without an entry of its own, and the current development host that CI re-verifies is 1.6.0. A future Pi version is accepted only while its presentation seam matches an allowlisted tested signature; matching is compatibility evidence, not full release certification. The historical four-job CI matrix (retired-repository run 33959587401) passed on Linux/macOS with Node 22.19.0/24.12.0 at commit `bc3c8b2`; the Pi 0.99.1 release evidence is recorded in issue pi-minimal-display#26. Windows and alternative Pi runtimes are not tested by this candidate. The adapter's per-frame projection rebuild gives up pi-tui 1.6.0's cross-frame line caching and costs about 17% on compact expanded rendering; see the Pi 1.6.0 host section for the measured numbers.
