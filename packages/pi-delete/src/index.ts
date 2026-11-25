@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import * as Pi from "@earendil-works/pi-coding-agent";
 import { collectDescendants, type DescendantEntry, withTaskSessions } from "./descendants.ts";
 import { deleteSessionFiles } from "./delete-sessions.ts";
-import { installSelectorCascade } from "./selector-patch.ts";
+import { installSelectorPatch } from "./selector-patch.ts";
 
 /** One line per session: indented by depth, identified the way Pi's own picker
  *  does it — by name or opening message, not by UUID filename. */
@@ -14,20 +14,20 @@ function describe({ session, depth }: DescendantEntry): string {
 }
 
 export default function sessionDelete(pi: Pi.ExtensionAPI): void {
-  let disposeCascade: (() => void) | undefined;
+  let disposePicker: (() => void) | undefined;
 
   pi.on("session_start", (_event, ctx) => {
-    disposeCascade?.();
-    disposeCascade = undefined;
+    disposePicker?.();
+    disposePicker = undefined;
     if (ctx.mode !== "tui" || !ctx.hasUI) return;
-    disposeCascade = installSelectorCascade((message) =>
+    disposePicker = installSelectorPatch(ctx.ui.theme, (message) =>
       ctx.ui.notify(`pi-delete: ${message}`, "warning"),
     );
   });
 
   pi.on("session_shutdown", () => {
-    disposeCascade?.();
-    disposeCascade = undefined;
+    disposePicker?.();
+    disposePicker = undefined;
   });
 
   pi.registerCommand("delete", {
