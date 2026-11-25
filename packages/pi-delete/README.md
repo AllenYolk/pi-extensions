@@ -77,8 +77,9 @@ Press **`/`** to edit the search. Use fuzzy terms, a `"quoted phrase"`, or a cas
 **Tab** switches between Current Folder and All Folders, **`n`** cycles All/Unnamed/Named,
 **`o`** cycles Any age/older than 7 days/older than 30 days, and **`m`** limits the list to
 sessions with at most two messages. **`s`** cycles Threaded/Recent/Fuzzy and **`p`** toggles paths.
-The controls compose. Marks survive every filter and scope change; the heading counts any marked
-sessions hidden from the list.
+With an active search, Recent keeps matches newest-first; Fuzzy and Threaded rank them by match
+score, breaking ties by recency. The controls compose. Marks survive every filter and scope
+change; the heading counts any marked sessions hidden from the list.
 
 Press **`d`** or **Enter** to review the selection. The review counts listed sessions and hidden
 `<session>/tasks/` transcripts separately and highlights named sessions at the top. Each marked

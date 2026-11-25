@@ -54,13 +54,15 @@ function scoreQuery(query: string): (session: SessionInfo) => number | undefined
   };
 }
 
-function searchRows(sessions: readonly SessionInfo[], query: string): BatchRow[] {
+function searchRows(sessions: readonly SessionInfo[], query: string, sortMode: BatchFilters["sortMode"]): BatchRow[] {
   const score = scoreQuery(query);
   const matches = sessions.flatMap((session) => {
     const rank = score(session);
     return rank === undefined ? [] : [{ session, rank }];
   });
-  matches.sort((a, b) => a.rank - b.rank || byRecent(a.session, b.session));
+  matches.sort(sortMode === "recent"
+    ? (a, b) => byRecent(a.session, b.session)
+    : (a, b) => a.rank - b.rank || byRecent(a.session, b.session));
   return matches.map(({ session }) => ({ session, depth: 0, isLast: true, ancestorContinues: [] }));
 }
 
@@ -142,6 +144,6 @@ export function projectBatchRows(sessions: readonly SessionInfo[], filters: Batc
     } else filtered.push(session);
   }
   const trimmed = query.trim();
-  const rows = sortMode === "threaded" && !trimmed ? threadedRows(filtered) : searchRows(filtered, trimmed);
+  const rows = sortMode === "threaded" && !trimmed ? threadedRows(filtered) : searchRows(filtered, trimmed, sortMode);
   return { rows, validUntil };
 }

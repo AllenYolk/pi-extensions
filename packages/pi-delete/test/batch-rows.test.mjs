@@ -28,6 +28,23 @@ test("search supports fuzzy tokens, normalized phrases, regex, and relevance wit
   assert.deepEqual(search("  "), ["d", "b", "a", "c"]);
 });
 
+for (const [kind, query] of [["fuzzy", "cch trm"], ["phrase", '"cache trim"'], ["regex", "re:cache\\s+trim"]]) {
+  test(`Recent keeps matches newest-first under ${kind} search while Fuzzy and Threaded rank them`, () => {
+    const sessions = [
+      session("a", { days: 3, text: "cache trim" }),
+      session("b", { days: 1, text: "notes from earlier: cache trim" }),
+      session("c", { days: 2, text: "cache trim" }),
+      session("d", { text: "unrelated" }),
+    ];
+    const search = (sortMode) => paths(batchRows(sessions, {
+      nameFilter: "all", sortMode, olderThanDays: 0, shortOnly: false,
+    }, query, now));
+    assert.deepEqual(search("relevance"), ["c", "a", "b"]);
+    assert.deepEqual(search("threaded"), ["c", "a", "b"]);
+    assert.deepEqual(search("recent"), ["b", "c", "a"]);
+  });
+}
+
 test("cleanup filters compose, with strict age cutoffs and a clock independent of the system date", () => {
   const sessions = [
     session("older", { days: 31, name: "  ", text: "needle" }),
