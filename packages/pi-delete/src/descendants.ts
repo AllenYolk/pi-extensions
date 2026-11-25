@@ -25,7 +25,8 @@ export function canonicalize(path: string): string {
  * Collect every descendant of `rootPath`, depth-first. Cycles in
  * `parentSessionPath` terminate instead of recursing forever.
  */
-export function collectDescendants(sessions: SessionInfo[], rootPath: string): DescendantEntry[] {  const childrenByParent = new Map<string, SessionInfo[]>();
+export function collectDescendants(sessions: SessionInfo[], rootPath: string): DescendantEntry[] {
+  const childrenByParent = new Map<string, SessionInfo[]>();
   for (const session of sessions) {
     if (!session.parentSessionPath) continue;
     const parent = canonicalize(session.parentSessionPath);
@@ -70,25 +71,65 @@ export async function withTaskSessions(
   listDir: (dir: string) => Promise<SessionInfo[]>,
   isHeld: (path: string) => boolean = () => false,
 ): Promise<SessionInfo[]> {
-  const pool = [...sessions];
   const owners = [rootPath, ...collectDescendants(sessions, rootPath).map((d) => d.session.path)];
-  // Grows while it is walked, so tasks of tasks are scanned too; each accepted
-  // task is one directory deeper than its owner, so the walk ends.
-  for (let i = 0; i < owners.length; i++) {
-    const owner = owners[i]!;
+  return [...sessions, ...(await collectOwnedTaskSessions(owners, listDir, isHeld))];
+}
+
+async function collectOwnedTaskSessions(
+  roots: string[],
+  listDir: (dir: string) => Promise<SessionInfo[]>,
+  isHeld: (path: string) => boolean,
+): Promise<SessionInfo[]> {
+  const owners = [...roots];
+  const seen = new Set(roots.map(canonicalize));
+  const hidden: SessionInfo[] = [];
+  for (const owner of owners) {
     if (isHeld(owner)) continue;
     const dir = taskDir(owner);
     const realDir = canonicalize(dir);
+    // Another owner's tasks (including the active session's) are not ours through a symlink.
+    if (realDir !== dir && realDir !== taskDir(join(canonicalize(dirname(owner)), basename(owner)))) continue;
     for (const task of await listDir(dir)) {
-      // Only files directly in `dir`: a host that listed more would turn
-      // unrelated sessions into deletion targets.
-      if (canonicalize(dirname(task.path)) !== realDir) continue;
-      pool.push({ ...task, parentSessionPath: owner });
-      owners.push(task.path);
+      const path = canonicalize(task.path);
+      if (canonicalize(dirname(task.path)) !== realDir || dirname(path) !== realDir) continue;
+      if (seen.has(path) || isHeld(task.path)) continue;
+      seen.add(path);
+      hidden.push({ ...task, path, parentSessionPath: owner });
+      owners.push(path);
     }
   }
-  return pool;
+  return hidden;
 }
+
+export async function planBatchDeletion(
+  listed: SessionInfo[],
+  selected: ReadonlySet<string>,
+  listDir: (dir: string) => Promise<SessionInfo[]>,
+  isCurrent: (path: string) => boolean,
+) {
+  const marked = new Map<string, SessionInfo>();
+  for (const session of listed) {
+    const id = canonicalize(session.path);
+    // Prefer the real file when both it and a symlink to it are listed.
+    if (selected.has(id) && (!marked.has(id) || session.path === id) && !isCurrent(session.path)) {
+      marked.set(id, session);
+    }
+  }
+  const visible = [...marked.values()];
+  const namedSessions = visible.filter((s) => s.name?.trim());
+  const roots = visible.map((s) => s.path);
+  const hiddenSessions = await collectOwnedTaskSessions(roots, listDir, isCurrent);
+  return {
+    targets: [...roots, ...hiddenSessions.map((s) => s.path)],
+    visibleSessions: [...namedSessions, ...visible.filter((s) => !s.name?.trim())],
+    hiddenSessions,
+    visibleCount: visible.length,
+    hiddenCount: hiddenSessions.length,
+    namedSessions,
+  };
+}
+
+export type BatchPlan = Awaited<ReturnType<typeof planBatchDeletion>>;
 
 /**
  * The paths a cascade from `selected` may remove, selected node first. The

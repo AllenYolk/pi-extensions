@@ -58,13 +58,29 @@ Delete session? enter confirm · escape/ctrl+c cancel · t subtree
 
 `ctrl+d` then `enter` still removes exactly one session; `ctrl+d` then `t` removes the subtree. The list updates in place, so there is no need to close and reopen the picker.
 
-No new top-level keybinding is introduced, and `t` is unambiguous because the picker ignores every other key while its confirmation is up — outside that state `t` goes to the search box as usual. It also needs no kitty keyboard protocol, so it behaves the same in every terminal.
+The cascade adds no top-level keybinding: `t` answers the native delete confirmation. In the native picker outside that confirmation, `t` goes to the search box as usual.
 
 The subtree is already drawn in the list, so the prompt does not repeat the names.
 
 The active session is never deleted — not when the cursor is on it, and not when it sits somewhere below the node being cascaded; in that case it is held back and the rest still go.
 
-This is not available in the picker that `pi --resume` opens at startup. That picker runs and returns before extensions are loaded (`createSessionManager` precedes `createAgentSessionServices` in Pi's startup), so no extension can reach it. Resume into a session first, then use `/resume`.
+### Batch mode
+
+Press **`ctrl+x`** in `/resume` to mark several sessions. Batch mode starts with the picker's
+scope, sort, name filter, search query, and cursor. Use **↑/↓** or **PgUp/PgDn** to move,
+**Space** to toggle one row, and **`t`** to toggle that row and its visible descendants.
+If any selectable row in the subtree is unmarked, `t` marks them all; otherwise it clears them.
+The active session cannot be marked.
+
+Press **`d`** or **Enter** to review the selection. The review counts listed sessions and hidden
+`<session>/tasks/` transcripts separately and highlights named sessions at the top. Each marked
+row brings only its own tasks (including nested tasks), not those of an unmarked fork.
+Use **↑/↓** or **PgUp/PgDn** to scroll the review. **Esc** returns to the list without clearing marks.
+**Enter** deletes, refreshes in place, and keeps any listed sessions that failed to delete marked.
+**Esc** from the Batch list returns to the native picker.
+
+Neither picker extension is available in the picker that `pi --resume` opens at startup.
+That picker returns before Pi loads extensions, so resume into a session first, then use `/resume`.
 
 ## Install
 
@@ -99,11 +115,14 @@ Deleting only the current session leaves its children pointing at a file that is
 
 `/delete` reports and does nothing for an ephemeral session (`--no-session`) or outside interactive mode.
 
-## How the picker key is added
+## How the picker keys are added
 
 Pi's picker consumes its own keys and offers no hook, and extension shortcuts registered with `registerShortcut` only reach the editor. So the binding is installed by wrapping `handleInput` on `SessionSelectorComponent`, which Pi exports from its package entry, plus the header's `render` to show the hint.
 
-That class is public; the fields the patch drives (`sessionList`, `currentSessions`, `header`, and the rest) are not. Every one is verified before the patch acts on a keystroke. If any is missing or the wrong shape, the patch reports once and forwards every key to Pi untouched, so a Pi upgrade that moves these internals costs the cascade binding and nothing else. The hint is skipped silently when the confirmation line no longer matches or the row is full. Both patches are removed on shutdown and reload.
+That class is public; the fields the patch drives are not. If the required picker members
+have changed, the patch reports once and forwards the key to Pi. Hints are skipped when
+the expected header line is missing or has no room. The patches are removed on shutdown
+and reload. Batch mode uses the [same layout swap as Pi's rename view](docs/adr/0001-batch-mode-inside-session-selector.md).
 
 ## Development
 
@@ -116,7 +135,7 @@ npm --workspace @allenyolk/pi-delete run check
 
 Tests cover descendant collection (including cycles in `parentSessionPath`), the rule that keeps the active session out of a cascade, and the trash/unlink/report path. The repository's `test/` checks drive `/delete`, the cascade, cancellation and the picker's active-session rule through a real TUI in a PTY, with `@allenyolk/pi-minimal-display` loaded alongside.
 
-`npm --workspace @allenyolk/pi-delete run sandbox` builds a throwaway profile with a four-session tree and prints the commands to open Pi against it, so the interactive flow can be exercised by hand without touching real sessions. Both surfaces were verified this way against Pi 0.87.1 by driving a real TUI in a PTY: `/delete` (cascade, current-only, cancel, leaf, ephemeral) and the picker key (cascade, native single delete still intact, cancel, leaf, active-session refusal, active-session-as-descendant, and `t` still reaching the search box outside the confirmation).
+`npm --workspace @allenyolk/pi-delete run sandbox` builds a throwaway profile with a four-session tree and prints the commands to open Pi against it, so the interactive flow can be exercised by hand without touching real sessions. The repository PTY checks also exercise Batch mode with the collection host, the package's pinned host, and Pi 1.6.0.
 
 `test/keyprobe.py` prints what a terminal actually sends for a key, which is how keybinding questions get settled rather than guessed.
 

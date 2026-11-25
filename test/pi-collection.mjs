@@ -96,7 +96,7 @@ export function sessionTree(root) {
     make(readSessionId(parent), text, join(parent.slice(0, -'.jsonl'.length), 'tasks'));
   const mainTask = taskOf(main, 'hidden subagent of root');
   const childATask = taskOf(childA, 'hidden subagent of child A');
-  return { proj, sessions, main, childA, childB, grandchild, mainTask, childATask };
+  return { proj, sessions, main, childA, childB, grandchild, mainTask, childATask, make, taskOf };
 }
 
 /** Run the real CLI under the PTY driver with the given expect/send script. */

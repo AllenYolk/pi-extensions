@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { findPackageJSON } from 'node:module';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import {
-  compactionEntry, compactionFixtures, deleteEntry, displayEntry, drivePi, longSession, profile, repoRoot, sessionTree, workspace,
+  compactionEntry, compactionFixtures, deleteEntry, displayEntry, driveHost, drivePi, longSession, profile, repoRoot, sessionTree, workspace,
 } from './pi-collection.mjs';
 
 /** All three extensions loaded from source, in the order a collection install uses. */
@@ -14,14 +16,16 @@ const isolation = ['--offline', '--no-context-files', '--no-skills', '--no-promp
 const surviving = (dir) => readdirSync(dir).filter(name => name.endsWith('.jsonl')).length;
 
 /** Open one session of a fresh synthetic tree and replay a key script against it. */
-function driveTree(name, active, script, { args = [], env = {} } = {}) {
+function driveTree(name, active, script, { args = [], env = {}, timeoutSeconds = 60, prepare, cli } = {}) {
   const agent = profile(`${name}-`);
   const tree = sessionTree(join(agent, 'tree'));
-  const result = drivePi(
-    [...entries, ...args, ...isolation, '--session', tree[active], '--session-dir', tree.sessions],
+  prepare?.(tree);
+  const launch = cli ? driveHost.bind(undefined, cli) : drivePi;
+  const result = launch(
+    [...(cli ? ['-e', deleteEntry] : entries), ...args, ...isolation, '--session', tree[active], '--session-dir', tree.sessions],
     script,
     { PI_CODING_AGENT_DIR: agent, ...(typeof env === 'function' ? env(tree) : env) },
-    60,
+    timeoutSeconds,
     tree.proj,
   );
   assert.equal(result.error, undefined, result.error?.message);
@@ -93,6 +97,20 @@ test('the picker refuses ctrl+d on the active session', { timeout: 120000 }, () 
   assert.equal(surviving(tree.sessions), 4);
 });
 
+test('ctrl+x does not take over native single-delete confirmation', { timeout: 30000 }, () => {
+  const { tree, output } = driveTree('native-single-delete', 'childA', [
+    { expect: loaded, send: '/resume\r' },
+    { expect: 'synthetic grandchild', send: '\u0004' },
+    { expect: 'Delete session?', send: '\u0018\r' },
+    { expect: 're:<pattern>', send: '\u001b' },
+    exitPi,
+  ], { timeoutSeconds: 12 });
+  assert.match(output, /Session (moved to trash|deleted)/);
+  assert.doesNotMatch(output, /Batch Delete/);
+  assert.equal(existsSync(tree.main), false);
+  assert.ok([tree.mainTask, tree.childA, tree.childB, tree.grandchild].every(existsSync));
+});
+
 test('a picker subtree cascade holds back the active session', { timeout: 120000 }, () => {
   // Cursor on the root, which is not active, but its subtree contains the open session.
   const { tree, output } = driveTree('picker-cascade', 'childA', [
@@ -110,6 +128,85 @@ test('a picker subtree cascade holds back the active session', { timeout: 120000
     'everything but the active session goes; the active session and its own subagents are held back',
   );
 });
+
+test('Batch mode inherits /resume scope, sort, name filter, query and cursor', { timeout: 30000 }, () => {
+  const { output } = driveTree('batch-entry', 'main', [
+    { expect: loaded, send: '/resume\r' },
+    { expect: 'synthetic child B', send: '\t' },
+    { expect: 'Resume Session (All)', send: '\u0013\u000e"Batch target"\u001b[6~\u0018' },
+    { expect: '› [ ] [named] Batch target A', send: '\u001b' },
+    { expect: 'Resume Session (All)', send: '\u001b' },
+    exitPi,
+  ], {
+    timeoutSeconds: 12,
+    prepare: (tree) => {
+      SessionManager.open(tree.childA).appendSessionInfo('Batch target A');
+      const newer = SessionManager.open(tree.grandchild);
+      newer.appendSessionInfo('Batch target B');
+      newer.appendMessage({ role: 'user', content: 'ensure B sorts first', timestamp: Date.now() + 1000 });
+    },
+  });
+  assert.match(output, /scope[^\r\n]+re:<pattern>[^\r\n]+ctrl\+x[^\r\n]+select/);
+  assert.match(output, /All Folders · Recent · Named · Search: "Batch target"/);
+});
+
+const workspaceCli = (entry) =>
+  join(dirname(findPackageJSON('@earendil-works/pi-coding-agent', pathToFileURL(entry))), 'dist/bundle/cli.js');
+
+for (const [host, cli] of [
+  ['collection', undefined],
+  ['pi-delete pinned Pi', workspaceCli(deleteEntry)],
+  ['Pi 1.6.0', workspaceCli(displayEntry)],
+]) {
+  test(`Batch mode reviews and deletes marked rows and their tasks without taking unmarked forks (${host})`, { timeout: 35000 }, () => {
+    const up = '\u001b[A';
+    const down = '\u001b[B';
+    const escape = '\u001b';
+    const { tree, output } = driveTree('batch-delete', 'childB', [
+      { expect: loaded, send: '/resume\r' },
+      { expect: 'synthetic grandchild', send: '\u0018' },
+      { expect: '0 selected', send: down + down },
+      { expect: '› [-]', send: ' ' },
+      { expect: 'Cannot select the currently active session', send: up + up + ' ' },
+      { expect: '1 selected', send: '\u001b[6~' + up + 't' },
+      { expect: '3 selected', send: 'd' },
+      { expect: 'Delete 6 sessions (3 hidden)?', send: escape },
+      { expect: '3 selected', send: '\r' },
+      { expect: 'Delete 6 sessions (3 hidden)?', send: '\r' },
+      { expect: 'Deleted 6 sessions (3 hidden)', send: escape },
+      { expect: 're:<pattern>', send: escape },
+      // Wait for the editor repaint; fullscreen Pi has no (auto) footer.
+      { expect: '\u001b[?2026l', send: '\u0004' },
+    ], {
+      cli,
+      timeoutSeconds: 20,
+      env: { COLORTERM: 'truecolor' },
+      prepare: (tree) => {
+        const newest = Date.now() + 5000;
+        tree.keptFork = tree.make(tree.main, 'unmarked fork');
+        SessionManager.open(tree.keptFork).appendMessage({ role: 'user', content: 'newest fork', timestamp: newest });
+        SessionManager.open(tree.childB).appendMessage({ role: 'user', content: 'next newest fork', timestamp: newest - 1000 });
+        SessionManager.open(tree.childA).appendSessionInfo('Deliberate batch target');
+        tree.keptTask = tree.taskOf(tree.keptFork, 'unmarked fork task');
+        tree.activeTask = tree.taskOf(tree.childB, 'active session task');
+        tree.nestedTask = tree.taskOf(tree.childATask, 'nested hidden task');
+      },
+    });
+    assert.match(output, /Warning: named sessions/);
+    const color = /\x1b\[38;2;(\d+);(\d+);(\d+)m[^\r\n\x1b]*\[named\] Deliberate batch target/.exec(
+      output.slice(output.indexOf('Delete 6 sessions (3 hidden)?')),
+    );
+    assert.ok(color && Number(color[1]) > Math.max(Number(color[2]), Number(color[3])), 'the confirmation names deliberate work in red');
+    const afterConfirm = output.slice(output.lastIndexOf('PI_DRIVE_MATCHED Delete 6 sessions (3 hidden)?'));
+    assert.match(afterConfirm, /Batch Delete · 0 selected/, 'deletion refreshes Batch mode with the marks cleared');
+    for (const key of ['main', 'childA', 'grandchild', 'mainTask', 'childATask', 'nestedTask']) {
+      assert.equal(existsSync(tree[key]), false, `${key} must be deleted`);
+    }
+    for (const key of ['childB', 'keptFork', 'keptTask', 'activeTask']) {
+      assert.equal(existsSync(tree[key]), true, `${key} must survive`);
+    }
+  });
+}
 
 test('all three extensions install, group, expand and restore across repeated reloads', { timeout: 240000 }, () => {
   const agent = profile('coexistence-');
