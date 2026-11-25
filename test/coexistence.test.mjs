@@ -49,19 +49,6 @@ test('cancelling /delete keeps every session in the tree', { timeout: 120000 }, 
   assert.deepEqual([tree.main, tree.mainTask, tree.childATask].map(existsSync), [true, true, true]);
 });
 
-test('/delete removes only the current session by default', { timeout: 120000 }, () => {
-  const { tree } = driveTree('current', 'main', [
-    { expect: loaded, send: '/delete\r' },
-    { expect: cascadeOffered, send: '\r' },
-  ]);
-  assert.equal(existsSync(tree.main), false, 'the current session must be gone after exit');
-  assert.deepEqual(
-    [tree.childA, tree.childB, tree.grandchild, tree.mainTask, tree.childATask].map(existsSync),
-    [true, true, true, true, true],
-    'descendants survive a current-only delete',
-  );
-});
-
 test('/delete cascades the whole descendant subtree when chosen', { timeout: 120000 }, () => {
   const { tree } = driveTree('cascade', 'main', [
     { expect: loaded, send: '/delete\r' },
@@ -98,37 +85,61 @@ test('the picker refuses ctrl+d on the active session', { timeout: 120000 }, () 
   assert.equal(surviving(tree.sessions), 4);
 });
 
-test('ctrl+x does not take over native single-delete confirmation', { timeout: 30000 }, () => {
-  const { tree, output } = driveTree('native-single-delete', 'childA', [
-    { expect: loaded, send: '/resume\r' },
-    { expect: 'synthetic grandchild', send: '\u0004' },
-    { expect: 'Delete session?', send: '\u0018\r' },
-    { expect: 're:<pattern>', send: '\u001b' },
-    exitPi,
-  ], { timeoutSeconds: 12 });
-  assert.match(output, /Session (moved to trash|deleted)/);
-  assert.doesNotMatch(output, /Batch Delete/);
-  assert.equal(existsSync(tree.main), false);
-  assert.ok([tree.mainTask, tree.childA, tree.childB, tree.grandchild].every(existsSync));
-});
+const workspaceCli = (entry) =>
+  join(dirname(findPackageJSON('@earendil-works/pi-coding-agent', pathToFileURL(entry))), 'dist/bundle/cli.js');
 
-test('a picker subtree cascade holds back the active session', { timeout: 120000 }, () => {
-  // Cursor on the root, which is not active, but its subtree contains the open session.
-  const { tree, output } = driveTree('picker-cascade', 'childA', [
-    { expect: loaded, send: '/resume\r' },
-    { expect: 'synthetic grandchild', send: '\u0004', settle: 1 },
-    { expect: 'Delete session?', send: 't', settle: 1 },
-    { expect: 'Deleted 4 sessions (1 hidden)', send: '\u001b' },
-    exitPi,
-  ]);
-  // The key and its label are separate colour spans, so only the label is matchable.
-  assert.match(output, /subtree/, 'pi-delete must add its hint to Pi\'s own confirmation line');
-  assert.deepEqual(
-    Object.fromEntries(['main', 'childA', 'childB', 'grandchild', 'mainTask', 'childATask'].map(k => [k, existsSync(tree[k])])),
-    { main: false, childA: true, childB: false, grandchild: false, mainTask: false, childATask: true },
-    'everything but the active session goes; the active session and its own subagents are held back',
-  );
-});
+const hosts = [
+  ['collection', undefined],
+  ['pi-delete pinned Pi', workspaceCli(deleteEntry)],
+  ['Pi 1.6.0', workspaceCli(displayEntry)],
+];
+
+for (const [host, cli] of hosts) {
+  test(`/delete removes only the current session by default (${host})`, { timeout: 120000 }, () => {
+    const { tree } = driveTree('current', 'main', [
+      { expect: loaded, send: '/delete\r' },
+      { expect: cascadeOffered, send: '\r' },
+    ], { cli });
+    assert.equal(existsSync(tree.main), false, 'the current session must be gone after exit');
+    assert.deepEqual(
+      [tree.childA, tree.childB, tree.grandchild, tree.mainTask, tree.childATask].map(existsSync),
+      [true, true, true, true, true],
+      'descendants survive a current-only delete',
+    );
+  });
+
+  test(`ctrl+x does not take over native single-delete confirmation (${host})`, { timeout: 30000 }, () => {
+    const { tree, output } = driveTree('native-single-delete', 'childA', [
+      { expect: loaded, send: '/resume\r' },
+      { expect: 'synthetic grandchild', send: '\u0004' },
+      { expect: 'Delete session?', send: '\u0018\r' },
+      { expect: 're:<pattern>', send: '\u001b' },
+      { expect: '\u001b[?2026l', send: '\u0004' },
+    ], { cli, timeoutSeconds: 12 });
+    assert.match(output, /Session (moved to trash|deleted)/);
+    assert.doesNotMatch(output, /Batch Delete/);
+    assert.equal(existsSync(tree.main), false);
+    assert.ok([tree.mainTask, tree.childA, tree.childB, tree.grandchild].every(existsSync));
+  });
+
+  test(`a picker subtree cascade holds back the active session (${host})`, { timeout: 120000 }, () => {
+    // Cursor on the root, which is not active, but its subtree contains the open session.
+    const { tree, output } = driveTree('picker-cascade', 'childA', [
+      { expect: loaded, send: '/resume\r' },
+      { expect: 'synthetic grandchild', send: '\u0004', settle: 1 },
+      { expect: 'Delete session?', send: 't', settle: 1 },
+      { expect: 'Deleted 4 sessions (1 hidden)', send: '\u001b' },
+      { expect: '\u001b[?2026l', send: '\u0004' },
+    ], { cli });
+    // The key and its label are separate colour spans, so only the label is matchable.
+    assert.match(output, /subtree/, 'pi-delete must add its hint to Pi\'s own confirmation line');
+    assert.deepEqual(
+      Object.fromEntries(['main', 'childA', 'childB', 'grandchild', 'mainTask', 'childATask'].map(k => [k, existsSync(tree[k])])),
+      { main: false, childA: true, childB: false, grandchild: false, mainTask: false, childATask: true },
+      'everything but the active session goes; the active session and its own subagents are held back',
+    );
+  });
+}
 
 // Match markers can land inside a word or escape sequence at a PTY read boundary.
 const withoutMatchMarkers = (output) => output.replace(/\nPI_DRIVE_MATCHED [^\r\n]*\n/g, '');
@@ -156,14 +167,7 @@ test('Batch mode inherits /resume scope, sort, name filter, query and cursor', {
   assert.match(screen, /Search: "Batch target"/);
 });
 
-const workspaceCli = (entry) =>
-  join(dirname(findPackageJSON('@earendil-works/pi-coding-agent', pathToFileURL(entry))), 'dist/bundle/cli.js');
-
-for (const [host, cli] of [
-  ['collection', undefined],
-  ['pi-delete pinned Pi', workspaceCli(deleteEntry)],
-  ['Pi 1.6.0', workspaceCli(displayEntry)],
-]) {
+for (const [host, cli] of hosts) {
   test(`Batch mode reviews and deletes marked rows and their tasks without taking unmarked forks (${host})`, { timeout: 35000 }, () => {
     const up = '\u001b[A';
     const down = '\u001b[B';
@@ -212,6 +216,45 @@ for (const [host, cli] of [
     for (const key of ['childB', 'keptFork', 'keptTask', 'activeTask']) {
       assert.equal(existsSync(tree[key]), true, `${key} must survive`);
     }
+  });
+
+  test(`Batch previews ranges, then filters and bulk-marks only visible rows (${host})`, { timeout: 35000 }, () => {
+    const escape = '\u001b';
+    const first = 'coexistence root session';
+    const lastPreview = '›│ [ ]    └─ synthetic grandchild';
+    const { tree, output } = driveTree('batch-range', 'childB', [
+      { expect: loaded, send: '/resume\r' },
+      { expect: 'synthetic grandchild', send: '\u0018' },
+      { expect: '0 selected', send: 'gv' },
+      { expect: 'Range anchor', send: 'G' },
+      { expect: lastPreview, send: 'g' },
+      { expect: `›│ [ ] ${first}`, send: escape },
+      { expect: `› [ ] ${first}`, send: 'vG' },
+      { expect: lastPreview, send: ' ' },
+      { expect: '3 selected', send: '/"synthetic"\r' },
+      { expect: '3 selected (1 hidden)', send: 'a' },
+      { expect: '1 selected (1 hidden)', send: 'i' },
+      { expect: '3 selected (1 hidden)', send: 'c' },
+      { expect: '0 selected', send: 'a' },
+      { expect: '2 selected', send: 'd' },
+      { expect: 'Delete 3 sessions (1 hidden)?', send: '\r' },
+      { expect: 'Deleted 3 sessions (1 hidden)', send: escape },
+      { expect: 're:<pattern>', send: escape },
+      { expect: '\u001b[?2026l', send: '\u0004' },
+    ], {
+      cli,
+      timeoutSeconds: 20,
+      prepare: (tree) => {
+        SessionManager.open(tree.childB).appendMessage({ role: 'user', content: 'newest child', timestamp: Date.now() + 5000 });
+        tree.activeTask = tree.taskOf(tree.childB, 'active session task');
+      },
+    });
+    const screen = withoutMatchMarkers(output);
+    assert.match(screen, /│ \[-\].*synthetic child B/);
+    const beforeCommit = withoutMatchMarkers(output.slice(0, output.lastIndexOf(`\nPI_DRIVE_MATCHED ${lastPreview}\n`)));
+    assert.doesNotMatch(beforeCommit, /\[x\]/, 'preview and cancellation must not mark anything');
+    for (const key of ['childA', 'grandchild', 'childATask']) assert.equal(existsSync(tree[key]), false, key);
+    for (const key of ['main', 'mainTask', 'childB', 'activeTask']) assert.equal(existsSync(tree[key]), true, key);
   });
 
   test(`Batch filters, marks and deletes across folders, then restores native search (${host})`, { timeout: 40000 }, () => {

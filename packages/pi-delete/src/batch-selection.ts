@@ -12,6 +12,7 @@ export class BatchSelection {
   readonly #selected = new Map<string, SessionInfo>();
   #visiblePaths?: Set<string>;
   #rows: readonly BatchRow[];
+  #anchor?: number;
   cursor: number;
   readonly isCurrent: (path: string) => boolean;
 
@@ -50,6 +51,10 @@ export class BatchSelection {
     this.#selected.delete(id);
   }
 
+  clear(): void {
+    this.#selected.clear();
+  }
+
   get rows(): readonly BatchRow[] {
     return this.#rows;
   }
@@ -60,6 +65,7 @@ export class BatchSelection {
 
   replaceRows(rows: readonly BatchRow[]): void {
     if (rows === this.rows) return;
+    this.cancelRange();
     const previous = this.cursorRow?.session.path;
     this.#rows = rows;
     this.#visiblePaths = undefined;
@@ -78,6 +84,36 @@ export class BatchSelection {
     this.cursor = Math.max(0, Math.min(this.rows.length - 1, this.cursor + delta));
   }
 
+  get range(): readonly [number, number] | undefined {
+    if (this.#anchor === undefined) return;
+    return [Math.min(this.#anchor, this.cursor), Math.max(this.#anchor, this.cursor)];
+  }
+
+  startRange(): void {
+    if (this.rows.length) this.#anchor = this.cursor;
+  }
+
+  cancelRange(): void {
+    this.#anchor = undefined;
+  }
+
+  markRange(): "active" | undefined {
+    const range = this.range;
+    if (!range) return;
+    this.cancelRange();
+    const sessions = this.#selectable(this.rows.slice(range[0], range[1] + 1));
+    if (!sessions.size) return "active";
+    for (const [id, session] of sessions) {
+      if (!this.#selected.has(id)) this.#selected.set(id, session);
+    }
+  }
+
+  toggleVisible(invert = false): "active" | undefined {
+    const sessions = this.#selectable(this.rows);
+    if (this.rows.length && !sessions.size) return "active";
+    this.#toggleMarks(sessions, invert);
+  }
+
   toggle(subtree: boolean, listed: SessionInfo[]): "active" | undefined {
     const root = this.cursorRow?.session;
     if (!root) return;
@@ -93,10 +129,25 @@ export class BatchSelection {
         }
       }
     }
-    const unmark = [...sessions.keys()].every((id) => this.#selected.has(id));
+    this.#toggleMarks(sessions);
+  }
+
+  #selectable(rows: readonly BatchRow[]): Map<string, SessionInfo> {
+    const sessions = new Map<string, SessionInfo>();
+    for (const { session } of rows) {
+      if (this.isCurrent(session.path)) continue;
+      const id = canonicalize(session.path);
+      if (!sessions.has(id) || session.path === id) sessions.set(id, session);
+    }
+    return sessions;
+  }
+
+  #toggleMarks(sessions: Map<string, SessionInfo>, invert = false): void {
+    const unmarkAll = !invert && [...sessions.keys()].every((id) => this.#selected.has(id));
     for (const [id, session] of sessions) {
-      if (unmark) this.#selected.delete(id);
+      if (unmarkAll) this.#selected.delete(id);
       else if (!this.#selected.has(id)) this.#selected.set(id, session);
+      else if (invert) this.#selected.delete(id);
     }
   }
 }

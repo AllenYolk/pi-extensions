@@ -67,10 +67,19 @@ The active session is never deleted — not when the cursor is on it, and not wh
 ### Batch mode
 
 Press **`ctrl+x`** in `/resume` to mark several sessions. Batch mode starts with the picker's
-scope, sort, name filter, search query, and cursor. Use **↑/↓** or **PgUp/PgDn** to move,
-**Space** to toggle one row, and **`t`** to toggle that row and its visible descendants.
-If any selectable row in the subtree is unmarked, `t` marks them all; otherwise it clears them.
-The active session cannot be marked.
+scope, sort, name filter, search query, and cursor.
+
+- **↑/↓** and **PgUp/PgDn** move the cursor; **`g`/`G`** jump to the first/last visible row.
+- **Space** toggles one row. **`t`** toggles that row and its visible descendants: if any
+  selectable row in the subtree is unmarked, `t` marks them all; otherwise it unmarks them.
+- **`v`** starts a range at the cursor. Move with the same navigation keys to preview it.
+  **Space** or **`v`** adds the range to the selection without clearing existing marks.
+  **Esc** cancels the preview and stays in Batch mode. A list refresh also cancels the preview.
+- **`a`** marks all visible selectable rows, or unmarks them if they're all marked.
+  **`i`** inverts the visible marks. Neither touches hidden marks. **`c`** clears every mark,
+  even those hidden by a search, filter, or folder scope.
+
+The active session is never marked or deleted by Batch mode, and its tasks stay on disk.
 
 Press **`/`** to edit the search. Use fuzzy terms, a `"quoted phrase"`, or a case-insensitive
 `re:<pattern>`. **Enter** or **Esc** returns to the list and keeps the edited query. In the list,
@@ -82,9 +91,10 @@ score, breaking ties by recency. The controls compose. Marks survive every filte
 change; the heading counts any marked sessions hidden from the list.
 
 Press **`d`** or **Enter** to review the selection. The review counts listed sessions and hidden
-`<session>/tasks/` transcripts separately and highlights named sessions at the top. Each marked
-session brings only its own tasks (including nested tasks), not those of an unmarked fork.
-The review and deletion include every mark, even from another folder or hidden by a filter.
+`<session>/tasks/` transcripts separately and puts red **`[named]`** warnings at the top. Each
+marked session brings only its own tasks (including nested tasks). Unmarked forks and their
+files stay untouched. Review and deletion include every mark, even from another folder or hidden
+by a filter.
 Use **↑/↓** or **PgUp/PgDn** to scroll the review. **Esc** returns to the list without clearing marks.
 **Enter** deletes, refreshes in place, and keeps any listed sessions that failed to delete marked.
 **Esc** from the Batch list returns to the native picker in the last-used scope with the
@@ -116,9 +126,9 @@ Pick one route. Installing from both npm and the collection loads this extension
 
 ## Behavior
 
-Deletion happens when the Pi process exits, after Pi and every extension have finished shutting down, so nothing recreates the files on the way out — including a subagent transcript that pi-subagents writes while aborting a running child. Files go to the `trash` CLI when it exists and are unlinked otherwise. A file that resists both is reported to stderr after exit; the remaining files are still deleted.
+`/delete` removes files when Pi exits, after all extensions finish shutting down, so nothing recreates them on the way out — including a transcript that pi-subagents writes while aborting a running child. Picker deletion runs in place. The extension uses `trash` when available and falls back to unlinking. If neither works, it reports the failure and continues with the other files.
 
-Cascade covers the whole descendant subtree at any depth, but only within the current project's session directory. A session forked into a different project keeps its own files — that separation is deliberate, so a cascade never reaches across projects.
+The `/delete` cascade covers the whole descendant subtree at any depth, but only within the current project's session directory. A session forked into a different project keeps its own files.
 
 It also covers subagent sessions that [`@gotgenes/pi-subagents`](https://www.npmjs.com/package/@gotgenes/pi-subagents) stores beside their parent in `<session>/tasks/`. Pi's picker never lists that directory, and their headers record the parent's ID rather than its path, so the directory is how they are found: for the selected session, every listed descendant, and each subagent session in turn. `/delete` lists them with the rest; the picker does not draw them, so its status line counts them separately (`Deleted 4 sessions (1 hidden)`): the total minus the hidden ones matches the subtree you see. Once a directory is empty it is removed too; anything else left inside keeps it. The active session's own subagent sessions are held back with it, since its subagents may still be writing them. Deleting only one session — `Delete current session`, or `ctrl+d` then `enter` — leaves its subagent sessions on disk.
 

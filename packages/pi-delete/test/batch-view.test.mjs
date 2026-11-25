@@ -15,8 +15,8 @@ const row = (path, firstMessage, name) => ({
   ancestorContinues: [],
 });
 
-function batch(rows, { query = "", mark = true, allRows = rows, showPath = false } = {}) {
-  const state = new BatchSelection(rows, 0, () => false);
+function batch(rows, { query = "", mark = true, allRows = rows, showPath = false, active } = {}) {
+  const state = new BatchSelection(rows, 0, (path) => path === active);
   let current = rows.map(({ session }) => session);
   let all = allRows.map(({ session }) => session);
   let observe = () => {};
@@ -44,6 +44,96 @@ function batch(rows, { query = "", mark = true, allRows = rows, showPath = false
   }
   return { view, waitFor, reloadAll: (sessions) => { all = sessions; } };
 }
+
+const rangeRows = [row("/first.jsonl", "first row"), row("/live.jsonl", "live row"), row("/last.jsonl", "last row")];
+for (const [i, { session }] of rangeRows.entries()) session.modified = new Date(3 - i);
+
+test("g and G jump to the visible endpoints with plain and Kitty input", () => {
+  for (const visible of [rangeRows, rangeRows.slice(0, 1), []]) {
+    const { view } = batch(visible, { mark: false });
+    for (const [key, label] of [["G", "last"], ["g", "first"], ["\x1b[103:71;2u", "last"], ["\x1b[103u", "first"],
+      ["\x1b[103;2u", "last"], ["\x1b[71u", "last"], ["g", "first"]]) {
+      view.handleInput(key);
+      const frame = stripTerminalSequences(view.render(80).join("\n"));
+      if (!visible.length) assert.match(frame, /No matching sessions/);
+      else assert.match(frame, new RegExp(`› \\[ \\] ${visible.length === 1 ? "first" : label} row`));
+    }
+  }
+});
+
+test("range keys preview forward and backward without marking until Space or v", () => {
+  const { view } = batch(rangeRows, { mark: false, active: "/live.jsonl" });
+  const frame = () => stripTerminalSequences(view.render(80).join("\n"));
+  view.handleInput("v");
+  assert.match(frame(), /Range anchor.*Space\/v mark.*Esc cancel/);
+  assert.match(frame(), /›│ \[ \] first row/);
+  assert.doesNotMatch(frame(), /│ \[-\] live row/);
+  view.handleInput("\x1b[B");
+  assert.match(frame(), /›│ \[-\] live row/);
+  view.handleInput("\x1b[A");
+  assert.match(frame(), /›│ \[ \] first row/);
+  for (const key of ["\x1b[6~", "\x1b[103:71;2u"]) {
+    view.handleInput(key);
+    assert.match(frame(), /│ \[ \] first row[^\n]*\n │ \[-\] live row[^\n]*\n›│ \[ \] last row/);
+    assert.match(frame(), /0 selected/);
+    view.handleInput("\x1b[5~");
+    assert.match(frame(), /›│ \[ \] first row/);
+  }
+  view.handleInput("G");
+  view.handleInput(" ");
+  assert.match(frame(), /2 selected/);
+  assert.match(frame(), /\[x\] first row[^\n]*\n  \[-\] live row[^\n]*\n› \[x\] last row/);
+  assert.doesNotMatch(frame(), /Range anchor/);
+  view.handleInput("v");
+  view.handleInput("\x1b[103u");
+  assert.match(frame(), /›│ \[x\] first row[^\n]*\n │ \[-\] live row[^\n]*\n │ \[x\] last row/);
+  view.handleInput("v");
+  assert.match(frame(), /2 selected/);
+  assert.match(frame(), /› \[x\] first row/);
+  assert.doesNotMatch(frame(), /Range anchor/);
+});
+
+test("an anchored preview ignores list shortcuts and Esc keeps existing marks in Batch mode", () => {
+  const { view } = batch(rangeRows, { mark: false });
+  const frame = () => stripTerminalSequences(view.render(80).join("\n"));
+  for (const key of [" ", "\x1b[B", "v", "G", "/", "\t", "n", "o", "m", "s", "p", "d", "\r", "t", "a", "i", "c"]) view.handleInput(key);
+  assert.match(frame(), /Range anchor/);
+  assert.match(frame(), /Current Folder · Recent · All Names · Any age · Any length · Paths off/);
+  assert.match(frame(), /  \[x\] first row[^\n]*\n │ \[ \] live row[^\n]*\n›│ \[ \] last row/);
+  view.handleInput("\x1b");
+  assert.match(frame(), /Batch Delete · 1 selected/);
+  assert.match(frame(), /› \[ \] last row/);
+  assert.doesNotMatch(frame(), /Range anchor|│/);
+  assert.match(frame(), /PgUp\/PgDn\/g\/G move.*v range\n.*a toggle all · i invert · c clear all.*Esc back/);
+});
+
+test("range jumps on empty and one-row lists are safe and cannot mark the active session", () => {
+  const { view } = batch([rangeRows[1]], { active: "/live.jsonl", mark: false });
+  for (const key of ["v", "G", "g"]) view.handleInput(key);
+  assert.match(view.render(80).join("\n"), /›│ \[-\] live row/);
+  view.handleInput(" ");
+  const frame = view.render(80).join("\n");
+  assert.match(frame, /Cannot select the currently active session/);
+  assert.match(frame, /0 selected/);
+  assert.doesNotMatch(frame, /Range anchor/);
+  const empty = batch([], { mark: false }).view;
+  for (const key of ["v", "G", "g"]) empty.handleInput(key);
+  const emptyFrame = empty.render(80).join("\n");
+  assert.match(emptyFrame, /No matching sessions/);
+  assert.doesNotMatch(emptyFrame, /Range anchor/);
+});
+
+test("an incoming scope refresh cancels an anchor before a stale commit key can mark another row", () => {
+  const { view, reloadAll } = batch(rangeRows, { mark: false });
+  for (const key of ["\t", "G", "v", "g"]) view.handleInput(key);
+  assert.match(view.render(80).join("\n"), /Range anchor/);
+  reloadAll([row("/replacement.jsonl", "replacement").session]);
+  view.handleInput(" ");
+  const frame = view.render(80).join("\n");
+  assert.match(frame, /Batch Delete · 0 selected/);
+  assert.match(frame, /› \[ \] replacement/);
+  assert.doesNotMatch(frame, /Range anchor/);
+});
 
 test("search edits the inherited query without invoking Batch actions and keeps marks on Enter or Esc", () => {
   const { view } = batch([row("/one.jsonl", "cleanup one"), row("/two.jsonl", "cleanup two")], { query: "cleanup", mark: false });

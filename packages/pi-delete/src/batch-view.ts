@@ -27,6 +27,8 @@ interface BatchPicker {
 type Phase = { kind: "list" | "search" | "planning" | "deleting" | "closed" }
   | { kind: "confirm"; plan: BatchPlan; offset: number };
 
+const activeSelectionError = { text: "Cannot select the currently active session", error: true };
+
 function clean(text: string): string {
   return stripTerminalSequences(text).replace(/[\x00-\x1f\x7f-\x9f]/g, " ").trim();
 }
@@ -73,7 +75,7 @@ function rowMetadata(session: SessionInfo, width: number, showPath: boolean, sho
 
 // Leave room for the picker borders, badges, status and key hints.
 function pageSize(): number {
-  return Math.max(1, Math.min(10, (process.stdout.rows ?? 24) - 13));
+  return Math.max(1, Math.min(10, (process.stdout.rows ?? 24) - 14));
 }
 
 export class BatchView implements Component {
@@ -165,13 +167,15 @@ export class BatchView implements Component {
         lines.push(theme.fg("muted", `Loading sessions…${progress ? ` ${progress.loaded}/${progress.total}` : ""}`));
       } else if (this.#picker.loadError) lines.push(theme.fg("error", clean(this.#picker.loadError)));
       else if (!state.rows.length) lines.push(theme.fg("muted", "No matching sessions"));
+      const range = state.range;
       const start = Math.max(0, Math.min(state.cursor - Math.floor(page / 2), state.rows.length - page));
       for (let i = start; i < Math.min(start + page, state.rows.length); i++) {
         const { session, depth, isLast, ancestorContinues } = state.rows[i]!;
         const live = state.isCurrent(session.path);
         const mark = live ? "[-]" : state.selected.has(canonicalize(session.path)) ? "[x]" : "[ ]";
         const tree = depth ? ancestorContinues.slice(1).map((continues) => continues ? "│  " : "   ").join("") + (isLast ? "└─ " : "├─ ") : "";
-        const left = `${i === state.cursor ? "› " : "  "}${mark} ${tree}${label(session)}`;
+        const preview = range && i >= range[0] && i <= range[1] ? "│ " : " ";
+        const left = `${i === state.cursor ? "›" : " "}${preview}${mark} ${tree}${label(session)}`;
         const meta = rowMetadata(session, width, this.#showPath, scope === "all");
         const maxLeft = width - visibleWidth(meta) - 1;
         const text = truncateToWidth(left, maxLeft > 4 ? maxLeft : width, "…");
@@ -180,9 +184,11 @@ export class BatchView implements Component {
       }
       if (state.rows.length > page) lines.push(theme.fg("muted", `${state.cursor + 1} / ${state.rows.length}`));
       if (phase.kind === "search") lines.push(theme.fg("muted", "Enter/Esc back to list"));
+      else if (range) lines.push(theme.fg("accent", "Range anchor · │ preview · Space/v mark · Esc cancel"));
       else {
         lines.push(theme.fg("muted", "/ search · Tab scope · n name · o age · m length · s sort · p paths"));
-        lines.push(theme.fg("muted", "↑↓ move · Space toggle · t subtree · d/Enter delete · Esc back"));
+        lines.push(theme.fg("muted", "↑↓/PgUp/PgDn/g/G move · Space toggle · t subtree · v range"));
+        lines.push(theme.fg("muted", "a toggle all · i invert · c clear all · d/Enter review · Esc back"));
       }
     }
     return lines.map((line) => truncateToWidth(line, width, "…"));
@@ -216,11 +222,25 @@ export class BatchView implements Component {
       else return;
     } else {
       const state = this.#selection;
+      const anchored = state.range !== undefined;
       this.#updateRows();
-      if (escape) return this.#picker.close();
+      // Don't apply a key meant for a preview that a refresh just canceled.
+      if (anchored && !state.range) return this.#picker.requestRender();
       const letter = decodeKittyPrintable(key) ?? key;
+      const space = matchesKey(key, "space");
+      const movement = letter === "G" || (letter === "g" && matchesKey(key, "shift+g")) ? state.rows.length
+        : letter === "g" ? -state.rows.length : delta;
       const filters = this.#filters;
-      if (letter === "/") this.#phase = { kind: "search" };
+      if (movement) state.move(movement);
+      else if (anchored) {
+        if (escape) state.cancelRange();
+        else if (space || letter === "v") this.#status = state.markRange() === "active" ? activeSelectionError : undefined;
+        else return;
+      } else if (escape) return this.#picker.close();
+      else if (letter === "v") {
+        state.startRange();
+        this.#status = undefined;
+      } else if (letter === "/") this.#phase = { kind: "search" };
       else if (matchesKey(key, "tab")) return this.#picker.toggleScope();
       else if (letter === "n") this.#filters = {
         ...filters, nameFilter: filters.nameFilter === "all" ? "unnamed" : filters.nameFilter === "unnamed" ? "named" : "all",
@@ -233,10 +253,13 @@ export class BatchView implements Component {
         ...filters, sortMode: filters.sortMode === "threaded" ? "recent" : filters.sortMode === "recent" ? "relevance" : "threaded",
       };
       else if (letter === "p") this.#showPath = !this.#showPath;
-      else if (delta) state.move(delta);
-      else if (matchesKey(key, "space") || letter === "t") {
-        this.#status = state.toggle(letter === "t", this.#picker.listed()) === "active"
-          ? { text: "Cannot select the currently active session", error: true } : undefined;
+      else if (space || letter === "t") {
+        this.#status = state.toggle(letter === "t", this.#picker.listed()) === "active" ? activeSelectionError : undefined;
+      } else if (letter === "a" || letter === "i") {
+        this.#status = state.toggleVisible(letter === "i") === "active" ? activeSelectionError : undefined;
+      } else if (letter === "c") {
+        state.clear();
+        this.#status = undefined;
       } else if (letter === "d" || enter) {
         if (state.selected.size) void this.#confirm();
         else this.#status = { text: "Select a session first (Space or t)", error: false };
