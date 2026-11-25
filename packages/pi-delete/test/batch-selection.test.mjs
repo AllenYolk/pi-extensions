@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { BatchSelection } from "../src/batch-selection.ts";
 
@@ -23,16 +26,38 @@ for (const [mode, rows] of [
   test(`Space is per-row and t toggles only visible selectable descendants (${mode})`, () => {
     const state = new BatchSelection(rows, rows.findIndex((r) => r.session === root.session), isCurrent);
     state.toggle(false, listed);
-    assert.deepEqual([...state.selected], [root.session.path]);
+    assert.deepEqual([...state.selected.keys()], [root.session.path]);
     state.toggle(true, listed);
-    assert.deepEqual([...state.selected].sort(), rows.filter((r) => !isCurrent(r.session.path)).map((r) => r.session.path).sort());
+    assert.deepEqual([...state.selected.keys()].sort(), rows.filter((r) => !isCurrent(r.session.path)).map((r) => r.session.path).sort());
     state.toggle(true, listed);
-    assert.deepEqual([...state.selected], []);
+    assert.equal(state.selected.size, 0);
     state.move(100);
     for (const subtree of [false, true]) assert.equal(state.toggle(subtree, listed), "active");
     assert.equal(state.selected.size, 0);
   });
 }
+
+test("the same canonical mark survives empty rows and aliases, and uses fresh metadata from either scope", (t) => {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "pi-batch-marks-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "session.jsonl");
+  const alias = join(dir, "alias.jsonl");
+  writeFileSync(path, "");
+  symlinkSync(path, alias);
+  const target = { ...root, session: { path, modified: new Date(1), name: "Before" } };
+  const aliased = { ...root, session: { ...target.session, path: alias } };
+  const state = new BatchSelection([aliased], 0, isCurrent);
+  state.toggle(false, []);
+  state.replaceRows([]);
+  assert.equal(state.hiddenCount, 1);
+  const newer = { ...target.session, modified: new Date(2), name: "After" };
+  state.refreshSelected([newer, target.session]);
+  assert.deepEqual([...state.selected.values()], [newer]);
+  state.replaceRows([target, aliased]);
+  assert.equal(state.hiddenCount, 0);
+  state.toggle(false, []);
+  assert.equal(state.selected.size, 0);
+});
 
 test("the cursor inherits its position, follows its row through refresh, and clamps when the row is gone", () => {
   const state = new BatchSelection([root, child, live], 1, isCurrent);

@@ -102,20 +102,13 @@ async function collectOwnedTaskSessions(
 }
 
 export async function planBatchDeletion(
-  listed: SessionInfo[],
-  selected: ReadonlySet<string>,
+  selected: ReadonlyMap<string, SessionInfo>,
   listDir: (dir: string) => Promise<SessionInfo[]>,
   isCurrent: (path: string) => boolean,
 ) {
-  const marked = new Map<string, SessionInfo>();
-  for (const session of listed) {
-    const id = canonicalize(session.path);
-    // Prefer the real file when both it and a symlink to it are listed.
-    if (selected.has(id) && (!marked.has(id) || session.path === id) && !isCurrent(session.path)) {
-      marked.set(id, session);
-    }
-  }
-  const visible = [...marked.values()];
+  // A saved path can stop resolving to the marked file after a scope switch.
+  const visible = [...selected].filter(([id, session]) =>
+    canonicalize(session.path) === id && !isCurrent(session.path)).map(([, session]) => session);
   const namedSessions = visible.filter((s) => s.name?.trim());
   const roots = visible.map((s) => s.path);
   const hiddenSessions = await collectOwnedTaskSessions(roots, listDir, isCurrent);

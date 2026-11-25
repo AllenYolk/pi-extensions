@@ -35,11 +35,18 @@ interface BatchSelector extends Selector {
   sortMode: "threaded" | "recent" | "relevance";
   nameFilter: "all" | "named";
   buildBaseLayout(content: Component, opts?: { showHeader: boolean }): void;
-  header: Selector["header"] & { setScope(scope: Selector["scope"]): void };
+  toggleScope(): void;
+  header: Selector["header"] & {
+    setScope(scope: Selector["scope"]): void;
+    loading: boolean;
+    loadProgress: { loaded: number; total: number } | null;
+    statusMessage: { type: string; message: string } | null;
+  };
   sessionList: Selector["sessionList"] & Component & {
     filteredSessions: BatchRow[];
     selectedIndex: number;
     searchInput: { getValue(): unknown };
+    showPath?: unknown;
   };
 }
 
@@ -70,17 +77,23 @@ function usableForBatch(s: Record<string, unknown>): s is Record<string, unknown
   const session = (row: unknown) => {
     const info = row as Partial<SessionInfo> | null;
     return info && typeof info.path === "string" && typeof info.firstMessage === "string"
+      && typeof info.id === "string" && typeof info.allMessagesText === "string" && typeof info.cwd === "string"
       && (info.name === undefined || typeof info.name === "string")
       && (info.parentSessionPath === undefined || typeof info.parentSessionPath === "string")
       && Number.isInteger(info.messageCount) && info.modified instanceof Date;
   };
   const sessions = (value: unknown) => value === null || (Array.isArray(value) && value.every(session));
+  const progress = header.loadProgress as BatchSelector["header"]["loadProgress"] | undefined;
+  const status = header.statusMessage as BatchSelector["header"]["statusMessage"] | undefined;
   return s.mode === "list"
-    && typeof s.buildBaseLayout === "function"
+    && typeof s.buildBaseLayout === "function" && typeof s.toggleScope === "function"
     && (s.sortMode === "threaded" || s.sortMode === "recent" || s.sortMode === "relevance")
     && (s.nameFilter === "all" || s.nameFilter === "named")
     && sessions(s.currentSessions) && sessions(s.allSessions)
     && typeof header.setScope === "function" && typeof header.render === "function"
+    && typeof header.loading === "boolean"
+    && (progress === null || (!!progress && Number.isFinite(progress.loaded) && Number.isFinite(progress.total)))
+    && (status === null || (!!status && typeof status.type === "string" && typeof status.message === "string"))
     && typeof list.render === "function" && typeof list.invalidate === "function"
     && list.confirmingDeletePath === null
     && Number.isInteger(list.selectedIndex) && typeof search?.getValue === "function"
@@ -90,8 +103,9 @@ function usableForBatch(s: Record<string, unknown>): s is Record<string, unknown
       && row.ancestorContinues.every((entry: unknown) => typeof entry === "boolean"));
 }
 
+const EMPTY_SESSIONS: SessionInfo[] = [];
 function listedSessions(selector: Selector): SessionInfo[] {
-  return (selector.scope === "all" ? selector.allSessions : selector.currentSessions) ?? [];
+  return (selector.scope === "all" ? selector.allSessions : selector.currentSessions) ?? EMPTY_SESSIONS;
 }
 
 function removePickerSessions(selector: Selector, gone: ReadonlySet<string>): void {
@@ -245,12 +259,23 @@ export function installSelectorPatch(theme: Theme, report: (message: string) => 
         selector.requestRender();
       };
       const view = new BatchView(theme, selection, {
-        scope: selector.scope,
+        get scope() { return selector.scope; },
+        get loading() { return selector.header.loading; },
+        get loadProgress() { return selector.header.loadProgress; },
+        get loadError() {
+          const { statusMessage } = selector.header;
+          return statusMessage?.type === "error" ? statusMessage.message : undefined;
+        },
+        toggleScope: () => selector.toggleScope(),
         sortMode: selector.sortMode,
         nameFilter: selector.nameFilter,
         query,
-        rows: () => sessionList.filteredSessions,
+        showPath: sessionList.showPath === true,
         listed: () => listedSessions(selector),
+        *bothScopes() {
+          yield* (selector.scope === "current" ? selector.allSessions : selector.currentSessions) ?? [];
+          yield* listedSessions(selector);
+        },
         requestRender: () => selector.requestRender(),
         async refreshAfterDelete(gone) {
           removePickerSessions(selector, gone);

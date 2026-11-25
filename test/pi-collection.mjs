@@ -67,21 +67,25 @@ export function activated(agent) {
  */
 const readSessionId = (file) => JSON.parse(readFileSync(file, 'utf8').split('\n')[0]).id;
 
-export function sessionTree(root) {
+export function sessionTree(root, agentDir) {
   mkdirSync(root, { recursive: true });
   const base = realpathSync(root);
   const proj = join(base, 'proj');
-  const sessions = join(base, 'sessions');
+  // Pi's All scope searches sibling project directories only with the default session layout.
+  const sessionDir = (cwd) => agentDir
+    ? join(agentDir, 'sessions', `--${cwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`)
+    : join(base, 'sessions');
+  const sessions = sessionDir(proj);
   for (const dir of [proj, sessions]) mkdirSync(dir, { recursive: true });
   const usage = {
     input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
-  const make = (parentSession, text, dir = sessions) => {
-    const session = SessionManager.create(proj, dir, parentSession ? { parentSession } : undefined);
-    session.appendMessage({ role: 'user', content: text, timestamp: Date.now() });
+  const make = (parentSession, text, dir, { cwd = proj, timestamp = Date.now() } = {}) => {
+    const session = SessionManager.create(cwd, dir ?? sessionDir(cwd), parentSession ? { parentSession } : undefined);
+    session.appendMessage({ role: 'user', content: text, timestamp });
     session.appendMessage({
-      role: 'assistant', content: [{ type: 'text', text: 'ok' }], timestamp: Date.now(),
+      role: 'assistant', content: [{ type: 'text', text: 'ok' }], timestamp,
       provider: 'fixture', model: 'fixture', usage, stopReason: 'stop',
     });
     return session.getSessionFile();

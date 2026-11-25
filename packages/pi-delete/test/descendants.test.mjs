@@ -154,9 +154,8 @@ test("a listing that reaches outside the task dir adds nothing", async () => {
 test("Batch plans only marked owners and their nested tasks, deduplicated by real path", async (t) => {
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "pi-batch-plan-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const [root, alias, fork, live, other] = ["root", "alias", "fork", "live", "other"].map((name) => join(dir, `${name}.jsonl`));
+  const [root, fork, live, other] = ["root", "fork", "live", "other"].map((name) => join(dir, `${name}.jsonl`));
   writeFileSync(root, "");
-  symlinkSync(root, alias);
   mkdirSync(taskDir(root), { recursive: true });
   const hidden = join(taskDir(root), "task.jsonl");
   const hiddenAlias = join(taskDir(root), "alias.jsonl");
@@ -170,11 +169,12 @@ test("Batch plans only marked owners and their nested tasks, deduplicated by rea
     [taskDir(hidden)]: [nested],
     [taskDir(other)]: [taskOfOther],
   });
-  const listed = [
-    session(alias), { ...session(root), name: "  Deliberate work  " }, session(fork, root),
-    session(live, root), { ...session(other), name: "   " },
-  ];
-  const plan = await planBatchDeletion(listed, new Set([root, live, other]), (path) => {
+  const selected = new Map([
+    [root, { ...session(root), name: "  Deliberate work  " }],
+    [live, session(live, root)],
+    [other, { ...session(other), name: "   " }],
+  ]);
+  const plan = await planBatchDeletion(selected, (path) => {
     assert.ok(!forbidden.includes(path), `scanned an unmarked or active owner: ${path}`);
     return listDir(path);
   }, (path) => path === live);
@@ -182,4 +182,15 @@ test("Batch plans only marked owners and their nested tasks, deduplicated by rea
   assert.equal(plan.visibleCount, 2);
   assert.equal(plan.hiddenCount, 3);
   assert.deepEqual(plan.namedSessions.map((s) => s.path), [root]);
+});
+
+test("Batch cannot plan a marked alias that now resolves to another file", async (t) => {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "pi-batch-alias-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const [original, replacement, alias] = ["original", "replacement", "alias"].map((name) => join(dir, `${name}.jsonl`));
+  writeFileSync(original, "");
+  writeFileSync(replacement, "");
+  symlinkSync(replacement, alias);
+  const plan = await planBatchDeletion(new Map([[original, session(alias)]]), async () => [], never);
+  assert.deepEqual(plan.targets, []);
 });

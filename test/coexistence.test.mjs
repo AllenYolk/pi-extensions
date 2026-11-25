@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { findPackageJSON } from 'node:module';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import {
@@ -16,13 +16,14 @@ const isolation = ['--offline', '--no-context-files', '--no-skills', '--no-promp
 const surviving = (dir) => readdirSync(dir).filter(name => name.endsWith('.jsonl')).length;
 
 /** Open one session of a fresh synthetic tree and replay a key script against it. */
-function driveTree(name, active, script, { args = [], env = {}, timeoutSeconds = 60, prepare, cli } = {}) {
+function driveTree(name, active, script, { args = [], env = {}, timeoutSeconds = 60, prepare, cli, allFolders = false } = {}) {
   const agent = profile(`${name}-`);
-  const tree = sessionTree(join(agent, 'tree'));
+  const tree = sessionTree(join(agent, 'tree'), allFolders ? agent : undefined);
   prepare?.(tree);
   const launch = cli ? driveHost.bind(undefined, cli) : drivePi;
   const result = launch(
-    [...(cli ? ['-e', deleteEntry] : entries), ...args, ...isolation, '--session', tree[active], '--session-dir', tree.sessions],
+    [...(cli ? ['-e', deleteEntry] : entries), ...args, ...isolation, '--session', tree[active],
+      ...(allFolders ? [] : ['--session-dir', tree.sessions])],
     script,
     { PI_CODING_AGENT_DIR: agent, ...(typeof env === 'function' ? env(tree) : env) },
     timeoutSeconds,
@@ -151,7 +152,8 @@ test('Batch mode inherits /resume scope, sort, name filter, query and cursor', {
   });
   const screen = withoutMatchMarkers(output);
   assert.match(screen, /scope[^\r\n]+re:<pattern>[^\r\n]+ctrl\+x[^\r\n]+select/);
-  assert.match(screen, /All Folders · Recent · Named · Search: "Batch target"/);
+  assert.match(screen, /All Folders · Recent · Named/);
+  assert.match(screen, /Search: "Batch target"/);
 });
 
 const workspaceCli = (entry) =>
@@ -210,6 +212,70 @@ for (const [host, cli] of [
     for (const key of ['childB', 'keptFork', 'keptTask', 'activeTask']) {
       assert.equal(existsSync(tree[key]), true, `${key} must survive`);
     }
+  });
+
+  test(`Batch filters, marks and deletes across folders, then restores native search (${host})`, { timeout: 40000 }, () => {
+    const escape = '\u001b';
+    const { tree, output } = driveTree('batch-filters', 'main', [
+      { expect: loaded, send: '/resume\r' },
+      { expect: 'synthetic grandchild', send: '\u0013\u000esynthetic\u0018' },
+      { expect: 'Current Folder · Recent · Named', send: 'nnomsp' },
+      { expect: 'Fuzzy · Unnamed · >7d · ≤2 msgs · Paths on', send: '/\u0015"CACHE   TRIM"\r' },
+      { expect: '› [ ] Old cache trim', send: ' ' },
+      { expect: '1 selected', send: '/\u0015cch trm' + escape },
+      { expect: 'Search: cch trm', send: '/\u0015re:stash[0-9]\r' },
+      { expect: 'Search: re:stash[0-9]', send: 'n\t' },
+      { expect: '› [ ] [named] Deliberate remote', send: ' ' },
+      { expect: '2 selected (1 hidden)', send: '\t' },
+      { expect: '2 selected (2 hidden)', send: 'd' },
+      { expect: 'Delete 4 sessions (2 hidden)?', send: '\r' },
+      { expect: 'Deleted 4 sessions (2 hidden)', send: '\t' },
+      { expect: 'All Folders · Fuzzy · Named', send: escape },
+      { expect: 'Away kept', send: escape },
+      { expect: '\u001b[?2026l', send: '\u0004' },
+    ], {
+      cli,
+      allFolders: true,
+      timeoutSeconds: 25,
+      prepare: (tree) => {
+        const timestamp = Date.now() - 45 * 86_400_000;
+        tree.oldShort = tree.make(undefined, 'Old cache trim', undefined, { timestamp });
+        tree.newShort = tree.make(undefined, 'New cache trim');
+        tree.oldLong = tree.make(undefined, 'Old cache trim log', undefined, { timestamp });
+        SessionManager.open(tree.oldLong).appendMessage({ role: 'user', content: 'third message', timestamp });
+        SessionManager.open(tree.childA).appendSessionInfo('Here kept');
+        const cwd = join(dirname(tree.proj), 'second-folder');
+        mkdirSync(cwd);
+        tree.remote = tree.make(undefined, 'stash42', undefined, { cwd, timestamp });
+        SessionManager.open(tree.remote).appendSessionInfo('Deliberate remote');
+        tree.remoteTask = tree.taskOf(tree.remote, 'hidden remote work');
+        tree.remoteNested = tree.taskOf(tree.remoteTask, 'nested remote work');
+        tree.remoteFork = tree.make(tree.remote, 'Unmarked remote fork', undefined, { cwd, timestamp });
+        const retained = tree.make(undefined, 'synthetic remote retained', undefined, { cwd });
+        SessionManager.open(retained).appendSessionInfo('Away kept');
+        const ignored = tree.make(undefined, 'unrelated remote retained', undefined, { cwd });
+        SessionManager.open(ignored).appendSessionInfo('Skip name');
+      },
+    });
+    const screen = withoutMatchMarkers(output);
+    const phraseScreen = withoutMatchMarkers(output.slice(
+      output.indexOf('\nPI_DRIVE_MATCHED Fuzzy · Unnamed · >7d · ≤2 msgs · Paths on\n'),
+      output.indexOf('\nPI_DRIVE_MATCHED › [ ] Old cache trim\n'),
+    ));
+    assert.match(phraseScreen, /Search: "CACHE   TRIM"/);
+    assert.doesNotMatch(phraseScreen, /New cache trim|Old cache trim log/);
+    assert.match(screen, /\[x\] Old cache trim[^\r\n]+/);
+    assert.ok(screen.includes(basename(tree.oldShort).slice(-16)), 'p shows the session path');
+    assert.match(screen, /2 listed · 2 hidden/);
+    assert.match(screen, /Warning: named sessions/);
+    const restored = screen.slice(screen.lastIndexOf('Resume Session (All)'));
+    assert.match(restored, /Resume Session \(All\)/);
+    assert.match(restored, /Recent/);
+    assert.match(restored, /> synthetic/);
+    assert.match(restored, /Away kept/);
+    assert.doesNotMatch(restored, /Skip name|Unmarked|Deliberate|Old cache|Paths on|>7d|≤2 msgs/);
+    for (const key of ['oldShort', 'remote', 'remoteTask', 'remoteNested']) assert.equal(existsSync(tree[key]), false, key);
+    for (const key of ['main', 'newShort', 'oldLong', 'remoteFork']) assert.equal(existsSync(tree[key]), true, key);
   });
 }
 

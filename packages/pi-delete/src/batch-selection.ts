@@ -9,16 +9,49 @@ export interface BatchRow {
 }
 
 export class BatchSelection {
-  readonly selected = new Set<string>();
+  readonly #selected = new Map<string, SessionInfo>();
+  #visiblePaths?: Set<string>;
+  #rows: readonly BatchRow[];
   cursor: number;
-  rows: readonly BatchRow[];
   readonly isCurrent: (path: string) => boolean;
 
   constructor(rows: readonly BatchRow[], cursor: number, isCurrent: (path: string) => boolean) {
-    this.rows = rows;
+    this.#rows = rows;
     this.cursor = cursor;
     this.isCurrent = isCurrent;
     this.move(0);
+  }
+
+  get selected(): ReadonlyMap<string, SessionInfo> {
+    return this.#selected;
+  }
+
+  get hiddenCount(): number {
+    if (!this.#selected.size) return 0;
+    const visible = this.#visiblePaths ??= new Set(this.rows.map(({ session }) => canonicalize(session.path)));
+    let hidden = 0;
+    for (const id of this.#selected.keys()) if (!visible.has(id)) hidden++;
+    return hidden;
+  }
+
+  refreshSelected(sessions: Iterable<SessionInfo>): void {
+    for (const session of sessions) {
+      const id = canonicalize(session.path);
+      const previous = this.#selected.get(id);
+      if (!previous) continue;
+      // Keep the freshest metadata, but plan against the real file if it was listed.
+      const latest = session.modified >= previous.modified ? session : previous;
+      const path = session.path === id || previous.path === id ? id : latest.path;
+      this.#selected.set(id, latest.path === path ? latest : { ...latest, path });
+    }
+  }
+
+  unmark(id: string): void {
+    this.#selected.delete(id);
+  }
+
+  get rows(): readonly BatchRow[] {
+    return this.#rows;
   }
 
   get cursorRow(): BatchRow | undefined {
@@ -28,10 +61,14 @@ export class BatchSelection {
   replaceRows(rows: readonly BatchRow[]): void {
     if (rows === this.rows) return;
     const previous = this.cursorRow?.session.path;
-    this.rows = rows;
+    this.#rows = rows;
+    this.#visiblePaths = undefined;
     if (previous !== undefined) {
-      const path = canonicalize(previous);
-      const index = rows.findIndex(({ session }) => canonicalize(session.path) === path);
+      let index = rows.findIndex(({ session }) => session.path === previous);
+      if (index < 0) {
+        const path = canonicalize(previous);
+        index = rows.findIndex(({ session }) => canonicalize(session.path) === path);
+      }
       if (index >= 0) this.cursor = index;
     }
     this.move(0);
@@ -42,23 +79,24 @@ export class BatchSelection {
   }
 
   toggle(subtree: boolean, listed: SessionInfo[]): "active" | undefined {
-    const path = this.cursorRow?.session.path;
-    if (!path) return;
-    if (this.isCurrent(path)) return "active";
-    const root = canonicalize(path);
-    const paths = new Set([root]);
+    const root = this.cursorRow?.session;
+    if (!root) return;
+    if (this.isCurrent(root.path)) return "active";
+    const sessions = new Map([[canonicalize(root.path), root]]);
     if (subtree) {
       // A flat/filtered view may hide intermediate links, but only visible rows are marked.
-      const descendants = new Set(collectDescendants(listed, path).map(({ session }) => canonicalize(session.path)));
+      const descendants = new Set(collectDescendants(listed, root.path).map(({ session }) => canonicalize(session.path)));
       for (const { session } of this.rows) {
         const child = canonicalize(session.path);
-        if (descendants.has(child) && !this.isCurrent(session.path)) paths.add(child);
+        if (descendants.has(child) && !this.isCurrent(session.path) && (!sessions.has(child) || session.path === child)) {
+          sessions.set(child, session);
+        }
       }
     }
-    const unmark = [...paths].every((p) => this.selected.has(p));
-    for (const p of paths) {
-      if (unmark) this.selected.delete(p);
-      else this.selected.add(p);
+    const unmark = [...sessions.keys()].every((id) => this.#selected.has(id));
+    for (const [id, session] of sessions) {
+      if (unmark) this.#selected.delete(id);
+      else if (!this.#selected.has(id)) this.#selected.set(id, session);
     }
   }
 }

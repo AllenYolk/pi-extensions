@@ -72,12 +72,22 @@ scope, sort, name filter, search query, and cursor. Use **↑/↓** or **PgUp/Pg
 If any selectable row in the subtree is unmarked, `t` marks them all; otherwise it clears them.
 The active session cannot be marked.
 
+Press **`/`** to edit the search. Use fuzzy terms, a `"quoted phrase"`, or a case-insensitive
+`re:<pattern>`. **Enter** or **Esc** returns to the list and keeps the edited query. In the list,
+**Tab** switches between Current Folder and All Folders, **`n`** cycles All/Unnamed/Named,
+**`o`** cycles Any age/older than 7 days/older than 30 days, and **`m`** limits the list to
+sessions with at most two messages. **`s`** cycles Threaded/Recent/Fuzzy and **`p`** toggles paths.
+The controls compose. Marks survive every filter and scope change; the heading counts any marked
+sessions hidden from the list.
+
 Press **`d`** or **Enter** to review the selection. The review counts listed sessions and hidden
 `<session>/tasks/` transcripts separately and highlights named sessions at the top. Each marked
-row brings only its own tasks (including nested tasks), not those of an unmarked fork.
+session brings only its own tasks (including nested tasks), not those of an unmarked fork.
+The review and deletion include every mark, even from another folder or hidden by a filter.
 Use **↑/↓** or **PgUp/PgDn** to scroll the review. **Esc** returns to the list without clearing marks.
 **Enter** deletes, refreshes in place, and keeps any listed sessions that failed to delete marked.
-**Esc** from the Batch list returns to the native picker.
+**Esc** from the Batch list returns to the native picker in the last-used scope with the
+refreshed sessions. Native search, sort, name filter, and path visibility are unchanged.
 
 Neither picker extension is available in the picker that `pi --resume` opens at startup.
 That picker returns before Pi loads extensions, so resume into a session first, then use `/resume`.

@@ -43,6 +43,73 @@ test("an incompatible picker forwards ctrl+x unchanged and warns only once", (t)
   assert.doesNotMatch(malformed.render(80).join("\n"), /Batch Delete/);
 });
 
+test("a missing scope toggle keeps Batch disabled without intercepting native input", (t) => {
+  const { warnings } = start(t);
+  const picker = selector();
+  const forwarded = [];
+  picker.toggleScope = undefined;
+  picker.sessionList.handleInput = (key) => forwarded.push(key);
+  picker.handleInput("\x18");
+  assert.deepEqual(forwarded, ["\x18"]);
+  assert.equal(warnings.length, 1);
+  assert.doesNotMatch(picker.render(80).join("\n"), /Batch Delete/);
+});
+
+test("Batch follows Pi's async scope progress and returns to the loaded native scope", async (t) => {
+  start(t);
+  const session = (id) => ({
+    id, path: `/${id}.jsonl`, cwd: "/project", created: new Date(), modified: new Date(),
+    messageCount: 2, firstMessage: id, allMessagesText: id,
+  });
+  const current = session("current-row");
+  const partial = session("first-other-row");
+  const complete = session("second-other-row");
+  let reportProgress, finish;
+  let picker;
+  let frame;
+  picker = new SessionSelectorComponent(async () => [current], (progress) => {
+    reportProgress = progress;
+    return new Promise((resolve) => { finish = resolve; });
+  }, () => {}, () => {}, () => {}, () => { frame = picker?.render(100).join("\n"); });
+  await Promise.resolve();
+  picker.handleInput("\x18");
+  picker.handleInput("\t");
+  assert.match(frame, /All Folders/);
+  assert.match(frame, /Loading sessions…/);
+  assert.doesNotMatch(frame, /current-row/);
+  reportProgress(1, 2, [partial]);
+  assert.match(frame, /Loading sessions… 1\/2/);
+  assert.match(frame, /first-other-row/);
+  assert.doesNotMatch(frame, /second-other-row/);
+  picker.handleInput("\t");
+  assert.match(frame, /current-row/);
+  assert.doesNotMatch(frame, /Loading sessions|first-other-row/);
+  picker.handleInput("\t");
+  finish([partial, complete]);
+  await Promise.resolve();
+  assert.match(frame, /second-other-row/);
+  assert.doesNotMatch(frame, /Loading sessions/);
+  picker.handleInput("\x1b");
+  assert.match(frame, /Resume Session \(All\)/);
+  assert.match(frame, /second-other-row/);
+  assert.doesNotMatch(frame, /Batch Delete/);
+});
+
+test("Batch shows a failed scope load and can return to the working scope", async (t) => {
+  start(t);
+  const picker = new SessionSelectorComponent(async () => [], async () => { throw new Error("fixture unavailable"); },
+    () => {}, () => {}, () => {}, () => {});
+  await Promise.resolve();
+  picker.handleInput("\x18");
+  picker.handleInput("\t");
+  await Promise.resolve();
+  assert.match(picker.render(100).join("\n"), /Failed to load sessions: fixture unavailable/);
+  picker.handleInput("\t");
+  assert.match(picker.render(100).join("\n"), /Current Folder/);
+  picker.handleInput("\x1b");
+  picker.handleInput("\x1b");
+});
+
 test("a layout hook that rejects the Batch body falls back to native input and keeps the picker usable", (t) => {
   const { warnings } = start(t);
   const picker = selector();

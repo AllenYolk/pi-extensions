@@ -114,7 +114,8 @@ Paths below are relative to `packages/` unless stated otherwise.
 | Descendant traversal and picker target planning | `pi-delete/src/descendants.ts` | Derives targets from Pi session listings, handles cycles and excludes the active picker session. |
 | File removal and failure reporting | `pi-delete/src/delete-sessions.ts` | Prefers `trash`, falls back to unlink and reports surviving files. |
 | Session-picker patches | `pi-delete/src/selector-patch.ts` | Owns selector/header wrappers, native-shape checks and picker refresh after mutation. |
-| Batch selection and cursor | `pi-delete/src/batch-selection.ts` | Tracks marked paths and the cursor over the rows supplied by the picker. |
+| Batch selection and cursor | `pi-delete/src/batch-selection.ts` | Owns canonical marks and their session snapshots across scopes, hidden-mark counts, and the cursor. |
+| Batch row projection | `pi-delete/src/batch-rows.ts` | Applies search and cleanup filters, then ranks sessions or orders the filtered tree by subtree activity. |
 | Batch view | `pi-delete/src/batch-view.ts` | Owns Batch keys, rendering, confirmation and the bulk-delete interaction. |
 | Display activation and configuration | `pi-minimal-display/src/index.ts`, `pi-minimal-display/src/config.ts` | The entry owns the disposer/status; config is read from Pi's actual agent directory. |
 | Display projection and private host access | `pi-minimal-display/src/presentation.ts` | Owns fingerprint checks and presentation/mouse/expansion wrappers; execution and saved data remain Pi-owned. |
