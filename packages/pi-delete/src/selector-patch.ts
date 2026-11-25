@@ -202,6 +202,8 @@ export function installSelectorPatch(theme: Theme, report: (message: string) => 
   };
   const handleInput = function (this: Record<string, unknown>, data: unknown) {
     const forward = () => original.call(this, data);
+    // A host without the layout hook can still advertise the native cascade.
+    if (!disposeHint && this.header) disposeHint = patchHeaderHint(this.header as object);
     const batch = batches.get(this);
     if (batch && typeof data === "string") return batch.handleInput(data);
     if (this.mode === "rename" || typeof data !== "string") return forward();

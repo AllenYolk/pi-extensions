@@ -63,6 +63,18 @@ test("a layout hook that rejects the Batch body falls back to native input and k
   assert.match(picker.render(80).join("\n"), /re:<pattern>/);
 });
 
+test("the native cascade hint still attaches on input without buildBaseLayout", (t) => {
+  const picker = selector();
+  delete prototype.buildBaseLayout;
+  t.after(() => Object.defineProperty(prototype, "buildBaseLayout", originalSelector.buildBaseLayout));
+  const { warnings } = start(t);
+  picker.handleInput("\x18");
+  assert.deepEqual(warnings, [["pi-delete: session picker internals changed; Batch mode disabled", "warning"]]);
+
+  picker.sessionList.setConfirmingDeletePath("/synthetic.jsonl");
+  assert.match(picker.header.render(100)[1], /Delete session\?.*subtree/);
+});
+
 test("shutdown restores the live layout and both native prototypes", (t) => {
   const { shutdown } = start(t);
   const picker = selector();

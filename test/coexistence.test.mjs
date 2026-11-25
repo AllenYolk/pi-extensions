@@ -129,6 +129,9 @@ test('a picker subtree cascade holds back the active session', { timeout: 120000
   );
 });
 
+// Match markers can land inside a word or escape sequence at a PTY read boundary.
+const withoutMatchMarkers = (output) => output.replace(/\nPI_DRIVE_MATCHED [^\r\n]*\n/g, '');
+
 test('Batch mode inherits /resume scope, sort, name filter, query and cursor', { timeout: 30000 }, () => {
   const { output } = driveTree('batch-entry', 'main', [
     { expect: loaded, send: '/resume\r' },
@@ -146,8 +149,9 @@ test('Batch mode inherits /resume scope, sort, name filter, query and cursor', {
       newer.appendMessage({ role: 'user', content: 'ensure B sorts first', timestamp: Date.now() + 1000 });
     },
   });
-  assert.match(output, /scope[^\r\n]+re:<pattern>[^\r\n]+ctrl\+x[^\r\n]+select/);
-  assert.match(output, /All Folders · Recent · Named · Search: "Batch target"/);
+  const screen = withoutMatchMarkers(output);
+  assert.match(screen, /scope[^\r\n]+re:<pattern>[^\r\n]+ctrl\+x[^\r\n]+select/);
+  assert.match(screen, /All Folders · Recent · Named · Search: "Batch target"/);
 });
 
 const workspaceCli = (entry) =>
@@ -192,12 +196,13 @@ for (const [host, cli] of [
         tree.nestedTask = tree.taskOf(tree.childATask, 'nested hidden task');
       },
     });
-    assert.match(output, /Warning: named sessions/);
+    const screen = withoutMatchMarkers(output);
+    assert.match(screen, /Warning: named sessions/);
     const color = /\x1b\[38;2;(\d+);(\d+);(\d+)m[^\r\n\x1b]*\[named\] Deliberate batch target/.exec(
-      output.slice(output.indexOf('Delete 6 sessions (3 hidden)?')),
+      screen.slice(screen.indexOf('Delete 6 sessions (3 hidden)?')),
     );
     assert.ok(color && Number(color[1]) > Math.max(Number(color[2]), Number(color[3])), 'the confirmation names deliberate work in red');
-    const afterConfirm = output.slice(output.lastIndexOf('PI_DRIVE_MATCHED Delete 6 sessions (3 hidden)?'));
+    const afterConfirm = withoutMatchMarkers(output.slice(output.lastIndexOf('\nPI_DRIVE_MATCHED Delete 6 sessions (3 hidden)?\n')));
     assert.match(afterConfirm, /Batch Delete · 0 selected/, 'deletion refreshes Batch mode with the marks cleared');
     for (const key of ['main', 'childA', 'grandchild', 'mainTask', 'childATask', 'nestedTask']) {
       assert.equal(existsSync(tree[key]), false, `${key} must be deleted`);
