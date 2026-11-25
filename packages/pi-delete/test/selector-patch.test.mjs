@@ -57,8 +57,9 @@ test("a missing scope toggle keeps Batch disabled without intercepting native in
 
 test("Batch follows Pi's async scope progress and returns to the loaded native scope", async (t) => {
   start(t);
+  const now = new Date();
   const session = (id) => ({
-    id, path: `/${id}.jsonl`, cwd: "/project", created: new Date(), modified: new Date(),
+    id, path: `/${id}.jsonl`, cwd: "/project", created: now, modified: now,
     messageCount: 2, firstMessage: id, allMessagesText: id,
   });
   const current = session("current-row");

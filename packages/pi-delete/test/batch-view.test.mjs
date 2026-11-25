@@ -8,8 +8,9 @@ import { BatchSelection } from "../src/batch-selection.ts";
 import { BatchView } from "../src/batch-view.ts";
 
 const theme = { bold: (text) => text, fg: (color, text) => color === "error" ? `\x1b[31m${text}\x1b[39m` : text };
+const defaultModified = new Date();
 const row = (path, firstMessage, name) => ({
-  session: { path, id: path, cwd: "/project", firstMessage, allMessagesText: firstMessage, name, messageCount: 1, modified: new Date() },
+  session: { path, id: path, cwd: "/project", firstMessage, allMessagesText: firstMessage, name, messageCount: 1, modified: defaultModified },
   depth: 0,
   isLast: true,
   ancestorContinues: [],
@@ -156,7 +157,8 @@ test("search edits the inherited query without invoking Batch actions and keeps 
 test("name, age, message, sort, and path controls compose in Batch list mode", () => {
   const rows = [row("/sessions/old.jsonl", "old short"), row("/sessions/long.jsonl", "old long"),
     row("/sessions/named.jsonl", "named", "deliberate"), row("/sessions/new.jsonl", "new short")];
-  for (const r of rows.slice(0, 3)) r.session.modified = new Date(Date.now() - 10 * 86_400_000);
+  const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000);
+  for (const r of rows.slice(0, 3)) r.session.modified = tenDaysAgo;
   rows[1].session.messageCount = 3;
   const { view } = batch(rows, { mark: false });
   const frame = () => stripTerminalSequences(view.render(100).join("\n"));
