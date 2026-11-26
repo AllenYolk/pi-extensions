@@ -31,7 +31,7 @@ type Phase = { kind: "list" | "search" | "planning" | "deleting" | "closed" }
 type Hint = readonly [key: string, description: string];
 interface HintGroup {
   /** Shown once, before the group's first hint. */
-  readonly label: string;
+  readonly label?: string;
   readonly accent?: boolean;
   readonly hints: readonly Hint[];
 }
@@ -46,13 +46,13 @@ const LIST_HINTS: readonly HintGroup[] = [
 const RANGE_HINTS: readonly HintGroup[] = [
   { label: "Range anchor", accent: true, hints: [["│", "preview"], ["Space/v", "mark"], ["Esc", "cancel"]] },
 ];
-const SEARCH_HINTS: readonly HintGroup[] = [{ label: "", hints: [["Enter/Esc", "back to list"]] }];
+const SEARCH_HINTS: readonly HintGroup[] = [{ hints: [["Enter/Esc", "back to list"]] }];
 const CONFIRM_HINTS: readonly HintGroup[] = [
-  { label: "", hints: [["↑↓/PgUp/PgDn", "review"], ["Enter", "delete"], ["Esc", "back"]] },
+  { hints: [["↑↓/PgUp/PgDn", "review"], ["Enter", "delete"], ["Esc", "back"]] },
 ];
 
 /** Pi's own hint styling: a dim key, a muted description, muted separators. */
-function keyHint(theme: Theme, [key, description]: Hint): string {
+function styledHint(theme: Theme, [key, description]: Hint): string {
   return theme.fg("dim", key) + theme.fg("muted", ` ${description}`);
 }
 
@@ -66,7 +66,7 @@ function hintLines(theme: Theme, groups: readonly HintGroup[], width: number, ma
   let line = "";
   for (const { label, accent, hints } of groups) {
     for (const [index, hint] of hints.entries()) {
-      const chunk = (index === 0 && label ? theme.fg(accent ? "accent" : "muted", `${label} `) : "") + keyHint(theme, hint);
+      const chunk = (index === 0 && label ? theme.fg(accent ? "accent" : "muted", `${label} `) : "") + styledHint(theme, hint);
       const joined = line ? line + separator + chunk : chunk;
       if (visibleWidth(joined) <= width) {
         line = joined;
