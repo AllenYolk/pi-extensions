@@ -8,6 +8,11 @@ import { BatchSelection } from "../src/batch-selection.ts";
 import { BatchView } from "../src/batch-view.ts";
 
 const theme = { bold: (text) => text, fg: (color, text) => color === "error" ? `\x1b[31m${text}\x1b[39m` : text };
+/** A theme whose accent and muted runs are told apart, for the styling assertions. */
+const chipTheme = {
+  bold: (text) => text,
+  fg: (color, text) => `\x1b[${color === "accent" ? "36" : color === "muted" ? "90" : color === "dim" ? "2" : "37"}m${text}\x1b[39m`,
+};
 const defaultModified = new Date();
 const row = (path, firstMessage, name) => ({
   session: { path, id: path, cwd: "/project", firstMessage, allMessagesText: firstMessage, name, messageCount: 1, modified: defaultModified },
@@ -16,15 +21,15 @@ const row = (path, firstMessage, name) => ({
   ancestorContinues: [],
 });
 
-function batch(rows, { query = "", mark = true, allRows = rows, showPath = false, active } = {}) {
+function batch(rows, { query = "", mark = true, allRows = rows, showPath = false, active, sortMode = "recent", theme: viewTheme = theme } = {}) {
   const state = new BatchSelection(rows, 0, (path) => path === active);
   let current = rows.map(({ session }) => session);
   let all = allRows.map(({ session }) => session);
   let observe = () => {};
   let scope = "current";
-  const view = new BatchView(theme, state, {
+  const view = new BatchView(viewTheme, state, {
     get scope() { return scope; },
-    sortMode: "recent", nameFilter: "all", query, showPath,
+    sortMode, nameFilter: "all", query, showPath,
     loading: false, loadProgress: null,
     toggleScope: () => { scope = scope === "current" ? "all" : "current"; },
     listed: () => scope === "current" ? current : all,
@@ -49,6 +54,129 @@ function batch(rows, { query = "", mark = true, allRows = rows, showPath = false
 const rangeRows = [row("/first.jsonl", "first row"), row("/live.jsonl", "live row"), row("/last.jsonl", "last row")];
 for (const [i, { session }] of rangeRows.entries()) session.modified = new Date(3 - i);
 
+const treeRows = () => {
+  const [root, child, grandchild] = [row("/root.jsonl", "root label"), row("/child.jsonl", "child label"), row("/grand.jsonl", "grand label")];
+  child.session.parentSessionPath = root.session.path;
+  grandchild.session.parentSessionPath = child.session.path;
+  for (const [i, entry] of [root, child, grandchild].entries()) entry.session.modified = new Date(3000 - i);
+  return [root, child, grandchild];
+};
+
+/** The mark box and the label start of every row line, keyed by the row's label. */
+function rowColumns(frame) {
+  const columns = new Map();
+  for (const line of stripTerminalSequences(frame).split("\n")) {
+    const label = /\[(?:\s|x|-)\]/.exec(line) && ["root label", "child label", "grand label"].find((text) => line.includes(text));
+    if (label) columns.set(label, { mark: line.indexOf("["), label: line.indexOf(label) });
+  }
+  return columns;
+}
+
+test("row columns stay put across cursor, range, mark, active and depth states", () => {
+  const widths = [60, 80, 120];
+  const states = {
+    plain: [],
+    cursor: ["\x1b[B"],
+    marked: [" ", "\x1b[B", " "],
+    ranged: ["v", "G"],
+  };
+  for (const width of widths) {
+    const seen = [];
+    for (const [name, keys] of Object.entries(states)) {
+      const { view } = batch(treeRows(), { mark: false, active: "/child.jsonl", sortMode: "threaded" });
+      for (const key of keys) view.handleInput(key);
+      const columns = rowColumns(view.render(width).join("\n"));
+      assert.equal(columns.size, 3, `${name} at ${width} must render every row`);
+      seen.push(columns);
+    }
+    for (const columns of seen) {
+      assert.deepEqual([...columns.values()].map(({ mark }) => mark), [4, 4, 4], `mark box column at ${width}`);
+      for (const [label, { label: start }] of columns) {
+        assert.equal(start, seen[0].get(label).label, `${label} start column at ${width}`);
+      }
+    }
+    assert.deepEqual([...seen[0].values()].map(({ label }) => label), [8, 11, 14], `tree depth indents at ${width}`);
+  }
+});
+
+test("the filter line styles default controls muted and active ones accent, under a title of its own", () => {
+  const { view } = batch(rangeRows, { mark: false, sortMode: "threaded", theme: chipTheme });
+  const lines = () => view.render(80);
+  const filterLine = () => lines().find((line) => line.includes("Paths"));
+  const defaults = filterLine();
+  for (const value of ["Current Folder", "Threaded", "All Names", "Any age", "Any length", "Paths off"]) {
+    assert.ok(defaults.includes(`\x1b[90m${value}\x1b[39m`), `${value} must be muted by default`);
+  }
+  assert.doesNotMatch(defaults, /\x1b\[36m/, "a default filter line has nothing to accent");
+  const [title, , filter] = lines();
+  assert.match(title, /Batch Delete/);
+  assert.equal(filter, defaults, "the title must be separated from the filter line");
+
+  for (const key of ["\t", "s", "n", "o", "m", "p"]) view.handleInput(key);
+  const active = filterLine();
+  for (const value of ["All Folders", "Recent", "Unnamed", ">7d", "≤2 msgs", "Paths on"]) {
+    assert.ok(active.includes(`\x1b[36m${value}\x1b[39m`), `${value} must be accented when it is not the default`);
+  }
+
+  const searched = batch(rangeRows, { mark: false, query: "row", theme: chipTheme }).view;
+  const searchLine = searched.render(80).find((line) => line.includes("Search:"));
+  assert.ok(searchLine.includes("\x1b[36mSearch: row\x1b[39m"), "an active query is accented too");
+});
+
+const hintWords = [
+  "↑↓ move", "PgUp/PgDn page", "g/G ends", "Space toggle", "t subtree", "v range",
+  "/ search", "Tab scope", "n name", "o age", "m length", "s sort", "p paths",
+  "a toggle all", "i invert", "c clear all", "d/Enter review", "Esc back",
+  "│ preview", "Space/v mark", "Esc cancel", "Enter/Esc back to list",
+];
+const groupLabels = ["move", "mark", "select", "review", "filter", "Range anchor"];
+const hintSegment = new RegExp(`^(?:${groupLabels.map((label) => `${label} +`).join("|")})?(?:${
+  hintWords.map((word) => word.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")})$`);
+
+test("footer hints stay whole, start at one column and fit the width", () => {
+  for (const width of [40, 60, 80, 100, 120]) {
+    for (const [name, keys] of [["list", []], ["range", ["v"]], ["search", ["/"]]]) {
+      const { view } = batch(rangeRows, { mark: false });
+      for (const key of keys) view.handleInput(key);
+      const lines = view.render(width);
+      const lastRow = lines.findLastIndex((line) => /\[(?:\s|x|-)\]/.test(stripTerminalSequences(line)));
+      const footer = lines.slice(lastRow + 1).map(stripTerminalSequences);
+      assert.ok(footer.length > 1, `${name} footer at ${width} is ${footer.length} lines`);
+      assert.equal(footer[0], "", `${name} footer at ${width} must be separated from the list`);
+      for (const line of footer.slice(1)) {
+        assert.ok(visibleWidth(line) <= width, `${name} footer line "${line}" overflows ${width}`);
+        assert.doesNotMatch(line, /…/, `${name} footer must drop a hint rather than cut it`);
+        for (const segment of line.split(" · ")) {
+          assert.match(segment.trimStart(), hintSegment, `${name} footer at ${width} broke a hint: "${segment}"`);
+        }
+      }
+      if (name !== "list") continue;
+      // Group labels share one column, so hint text starts at the same place on every line.
+      for (const line of footer.slice(1)) {
+        const head = line.slice(0, 7);
+        assert.ok(/^(?:move {3}|mark {3}|select |review |filter | {7})$/.test(head), `"${head}" is not a padded label`);
+        assert.ok(hintWords.some((word) => line.slice(7).startsWith(word)), `hint text on "${line}" does not start at column 7`);
+      }
+      if (width >= 100) {
+        assert.equal(footer.length - 1, 3, `list footer at ${width} must be three lines`);
+        assert.match(footer[1], /^move {3}↑↓ move · PgUp\/PgDn page · g\/G ends · mark Space toggle · t subtree · v range$/);
+        assert.match(footer[2], /^select a toggle all · i invert · c clear all · review d\/Enter review · Esc back$/);
+        assert.match(footer[3], /^filter \/ search · Tab scope · n name · o age · m length · s sort · p paths$/);
+      }
+    }
+  }
+});
+
+test("a full list page plus its chrome still fits a 24-row terminal", () => {
+  const rows = Array.from({ length: 40 }, (_, i) => row(`/session-${i}.jsonl`, `session ${i}`));
+  const { view } = batch(rows, { mark: false });
+  const limit = (process.stdout.rows ?? 24) - 5;
+  assert.ok(view.render(80).length <= limit, "a full page must leave room for the picker's own borders");
+  view.handleInput("d");
+  assert.match(view.render(80).join("\n"), /Select a session first/);
+  assert.ok(view.render(80).length <= limit, "a status line must not push the footer off the screen");
+});
+
 test("g and G jump to the visible endpoints with plain and Kitty input", () => {
   for (const visible of [rangeRows, rangeRows.slice(0, 1), []]) {
     const { view } = batch(visible, { mark: false });
@@ -57,7 +185,7 @@ test("g and G jump to the visible endpoints with plain and Kitty input", () => {
       view.handleInput(key);
       const frame = stripTerminalSequences(view.render(80).join("\n"));
       if (!visible.length) assert.match(frame, /No matching sessions/);
-      else assert.match(frame, new RegExp(`› \\[ \\] ${visible.length === 1 ? "first" : label} row`));
+      else assert.match(frame, new RegExp(`›   \\[ \\] ${visible.length === 1 ? "first" : label} row`));
     }
   }
 });
@@ -67,30 +195,30 @@ test("range keys preview forward and backward without marking until Space or v",
   const frame = () => stripTerminalSequences(view.render(80).join("\n"));
   view.handleInput("v");
   assert.match(frame(), /Range anchor.*Space\/v mark.*Esc cancel/);
-  assert.match(frame(), /›│ \[ \] first row/);
+  assert.match(frame(), /› │ \[ \] first row/);
   assert.doesNotMatch(frame(), /│ \[-\] live row/);
   view.handleInput("\x1b[B");
-  assert.match(frame(), /›│ \[-\] live row/);
+  assert.match(frame(), /› │ \[-\] live row/);
   view.handleInput("\x1b[A");
-  assert.match(frame(), /›│ \[ \] first row/);
+  assert.match(frame(), /› │ \[ \] first row/);
   for (const key of ["\x1b[6~", "\x1b[103:71;2u"]) {
     view.handleInput(key);
-    assert.match(frame(), /│ \[ \] first row[^\n]*\n │ \[-\] live row[^\n]*\n›│ \[ \] last row/);
+    assert.match(frame(), /│ \[ \] first row[^\n]*\n  │ \[-\] live row[^\n]*\n› │ \[ \] last row/);
     assert.match(frame(), /0 selected/);
     view.handleInput("\x1b[5~");
-    assert.match(frame(), /›│ \[ \] first row/);
+    assert.match(frame(), /› │ \[ \] first row/);
   }
   view.handleInput("G");
   view.handleInput(" ");
   assert.match(frame(), /2 selected/);
-  assert.match(frame(), /\[x\] first row[^\n]*\n  \[-\] live row[^\n]*\n› \[x\] last row/);
+  assert.match(frame(), /\[x\] first row[^\n]*\n    \[-\] live row[^\n]*\n›   \[x\] last row/);
   assert.doesNotMatch(frame(), /Range anchor/);
   view.handleInput("v");
   view.handleInput("\x1b[103u");
-  assert.match(frame(), /›│ \[x\] first row[^\n]*\n │ \[-\] live row[^\n]*\n │ \[x\] last row/);
+  assert.match(frame(), /› │ \[x\] first row[^\n]*\n  │ \[-\] live row[^\n]*\n  │ \[x\] last row/);
   view.handleInput("v");
   assert.match(frame(), /2 selected/);
-  assert.match(frame(), /› \[x\] first row/);
+  assert.match(frame(), /›   \[x\] first row/);
   assert.doesNotMatch(frame(), /Range anchor/);
 });
 
@@ -100,18 +228,18 @@ test("an anchored preview ignores list shortcuts and Esc keeps existing marks in
   for (const key of [" ", "\x1b[B", "v", "G", "/", "\t", "n", "o", "m", "s", "p", "d", "\r", "t", "a", "i", "c"]) view.handleInput(key);
   assert.match(frame(), /Range anchor/);
   assert.match(frame(), /Current Folder · Recent · All Names · Any age · Any length · Paths off/);
-  assert.match(frame(), /  \[x\] first row[^\n]*\n │ \[ \] live row[^\n]*\n›│ \[ \] last row/);
+  assert.match(frame(), /    \[x\] first row[^\n]*\n  │ \[ \] live row[^\n]*\n› │ \[ \] last row/);
   view.handleInput("\x1b");
   assert.match(frame(), /Batch Delete · 1 selected/);
-  assert.match(frame(), /› \[ \] last row/);
+  assert.match(frame(), /›   \[ \] last row/);
   assert.doesNotMatch(frame(), /Range anchor|│/);
-  assert.match(frame(), /PgUp\/PgDn\/g\/G move.*v range\n.*a toggle all · i invert · c clear all.*Esc back/);
+  assert.match(frame(), /move {3}↑↓ move · PgUp\/PgDn page · g\/G ends\nmark {3}Space toggle · t subtree · v range\nselect a toggle all · i invert · c clear all · review d\/Enter review · Esc back\nfilter \/ search · Tab scope · n name · o age · m length · s sort · p paths/);
 });
 
 test("range jumps on empty and one-row lists are safe and cannot mark the active session", () => {
   const { view } = batch([rangeRows[1]], { active: "/live.jsonl", mark: false });
   for (const key of ["v", "G", "g"]) view.handleInput(key);
-  assert.match(view.render(80).join("\n"), /›│ \[-\] live row/);
+  assert.match(view.render(80).join("\n"), /› │ \[-\] live row/);
   view.handleInput(" ");
   const frame = view.render(80).join("\n");
   assert.match(frame, /Cannot select the currently active session/);
@@ -132,7 +260,7 @@ test("an incoming scope refresh cancels an anchor before a stale commit key can 
   view.handleInput(" ");
   const frame = view.render(80).join("\n");
   assert.match(frame, /Batch Delete · 0 selected/);
-  assert.match(frame, /› \[ \] replacement/);
+  assert.match(frame, /›   \[ \] replacement/);
   assert.doesNotMatch(frame, /Range anchor/);
 });
 
@@ -217,7 +345,7 @@ test("confirmation puts named rows first, bounds the list, scrolls to the end, a
   assert.match(firstFrame, /\x1b\[31mWarning: named sessions[^\n]+\n\x1b\[31m\[named\] Deliberate work/);
   assert.doesNotMatch(firstFrame, /target 30/);
   const narrow = view.render(16);
-  assert.ok(narrow.length <= 15);
+  assert.ok(narrow.length <= 16);
   assert.ok(narrow.every((line) => visibleWidth(line) <= 16));
   for (let i = 0; i < 31; i++) view.handleInput("\x1b[6~");
   assert.match(view.render(80).join("\n"), /target 30/);

@@ -5,6 +5,7 @@ import { findPackageJSON } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { stripTerminalSequences } from '@earendil-works/pi-tui';
 import {
   compactionEntry, compactionFixtures, deleteEntry, displayEntry, driveHost, drivePi, longSession, profile, repoRoot, sessionTree, workspace,
 } from './pi-collection.mjs';
@@ -149,7 +150,7 @@ test('Batch mode inherits /resume scope, sort, name filter, query and cursor', {
     { expect: loaded, send: '/resume\r' },
     { expect: 'synthetic child B', send: '\t' },
     { expect: 'Resume Session (All)', send: '\u0013\u000e"Batch target"\u001b[6~\u0018' },
-    { expect: '› [ ] [named] Batch target A', send: '\u001b' },
+    { expect: '›   [ ] [named] Batch target A', send: '\u001b' },
     { expect: 'Resume Session (All)', send: '\u001b' },
     exitPi,
   ], {
@@ -163,7 +164,7 @@ test('Batch mode inherits /resume scope, sort, name filter, query and cursor', {
   });
   const screen = withoutMatchMarkers(output);
   assert.match(screen, /scope[^\r\n]+re:<pattern>[^\r\n]+ctrl\+x[^\r\n]+select/);
-  assert.match(screen, /All Folders · Recent · Named/);
+  assert.match(stripTerminalSequences(screen), /All Folders · Recent · Named/);
   assert.match(screen, /Search: "Batch target"/);
 });
 
@@ -176,7 +177,7 @@ for (const [host, cli] of hosts) {
       { expect: loaded, send: '/resume\r' },
       { expect: 'synthetic grandchild', send: '\u0018' },
       { expect: '0 selected', send: down + down },
-      { expect: '› [-]', send: ' ' },
+      { expect: '›   [-]', send: ' ' },
       { expect: 'Cannot select the currently active session', send: up + up + ' ' },
       { expect: '1 selected', send: '\u001b[6~' + up + 't' },
       { expect: '3 selected', send: 'd' },
@@ -221,15 +222,15 @@ for (const [host, cli] of hosts) {
   test(`Batch previews ranges, then filters and bulk-marks only visible rows (${host})`, { timeout: 35000 }, () => {
     const escape = '\u001b';
     const first = 'coexistence root session';
-    const lastPreview = '›│ [ ]    └─ synthetic grandchild';
+    const lastPreview = '› │ [ ]    └─ synthetic grandchild';
     const { tree, output } = driveTree('batch-range', 'childB', [
       { expect: loaded, send: '/resume\r' },
       { expect: 'synthetic grandchild', send: '\u0018' },
       { expect: '0 selected', send: 'gv' },
       { expect: 'Range anchor', send: 'G' },
       { expect: lastPreview, send: 'g' },
-      { expect: `›│ [ ] ${first}`, send: escape },
-      { expect: `› [ ] ${first}`, send: 'vG' },
+      { expect: `› │ [ ] ${first}`, send: escape },
+      { expect: `›   [ ] ${first}`, send: 'vG' },
       { expect: lastPreview, send: ' ' },
       { expect: '3 selected', send: '/"synthetic"\r' },
       { expect: '3 selected (1 hidden)', send: 'a' },
@@ -262,18 +263,19 @@ for (const [host, cli] of hosts) {
     const { tree, output } = driveTree('batch-filters', 'main', [
       { expect: loaded, send: '/resume\r' },
       { expect: 'synthetic grandchild', send: '\u0013\u000esynthetic\u0018' },
-      { expect: 'Current Folder · Recent · Named', send: 'nnomsp' },
-      { expect: 'Fuzzy · Unnamed · >7d · ≤2 msgs · Paths on', send: '/\u0015"CACHE   TRIM"\r' },
-      { expect: '› [ ] Old cache trim', send: ' ' },
+      // Each filter control is its own colour span now, so a step waits on one batch-only value.
+      { expect: 'Any age', send: 'nnomsp' },
+      { expect: '≤2 msgs', send: '/\u0015"CACHE   TRIM"\r' },
+      { expect: '›   [ ] Old cache trim', send: ' ' },
       { expect: '1 selected', send: '/\u0015cch trm' + escape },
       { expect: 'Search: cch trm', send: '/\u0015re:stash[0-9]\r' },
       { expect: 'Search: re:stash[0-9]', send: 'n\t' },
-      { expect: '› [ ] [named] Deliberate remote', send: ' ' },
+      { expect: '›   [ ] [named] Deliberate remote', send: ' ' },
       { expect: '2 selected (1 hidden)', send: '\t' },
       { expect: '2 selected (2 hidden)', send: 'd' },
       { expect: 'Delete 4 sessions (2 hidden)?', send: '\r' },
       { expect: 'Deleted 4 sessions (2 hidden)', send: '\t' },
-      { expect: 'All Folders · Fuzzy · Named', send: escape },
+      { expect: 'All Folders', send: escape },
       { expect: 'Away kept', send: escape },
       { expect: '\u001b[?2026l', send: '\u0004' },
     ], {
@@ -301,10 +303,11 @@ for (const [host, cli] of hosts) {
       },
     });
     const screen = withoutMatchMarkers(output);
-    const phraseScreen = withoutMatchMarkers(output.slice(
-      output.indexOf('\nPI_DRIVE_MATCHED Fuzzy · Unnamed · >7d · ≤2 msgs · Paths on\n'),
-      output.indexOf('\nPI_DRIVE_MATCHED › [ ] Old cache trim\n'),
-    ));
+    const phraseStart = output.indexOf('\nPI_DRIVE_MATCHED ≤2 msgs\n');
+    const phraseEnd = output.indexOf('\nPI_DRIVE_MATCHED ›   [ ] Old cache trim\n', phraseStart);
+    assert.ok(phraseStart >= 0 && phraseEnd > phraseStart, 'phrase-search frame markers must bound the window');
+    const phraseScreen = withoutMatchMarkers(output.slice(phraseStart, phraseEnd));
+    assert.match(stripTerminalSequences(screen), /Fuzzy · Unnamed · >7d · ≤2 msgs · Paths on/);
     assert.match(phraseScreen, /Search: "CACHE   TRIM"/);
     assert.doesNotMatch(phraseScreen, /New cache trim|Old cache trim log/);
     assert.match(screen, /\[x\] Old cache trim[^\r\n]+/);

@@ -27,7 +27,99 @@ interface BatchPicker {
 type Phase = { kind: "list" | "search" | "planning" | "deleting" | "closed" }
   | { kind: "confirm"; plan: BatchPlan; offset: number };
 
+/** A key and what it does, in Pi's own hint shape. */
+type Hint = readonly [key: string, description: string];
+interface HintGroup {
+  /** Shown once, before the group's first hint, in a column every footer line shares. */
+  readonly label?: string;
+  readonly accent?: boolean;
+  readonly hints: readonly Hint[];
+}
+
+/** Grouped by purpose, most useful first: a short terminal drops the tail of the last group. */
+const LIST_HINTS: readonly HintGroup[] = [
+  { label: "move", hints: [["↑↓", "move"], ["PgUp/PgDn", "page"], ["g/G", "ends"]] },
+  { label: "mark", hints: [["Space", "toggle"], ["t", "subtree"], ["v", "range"]] },
+  { label: "select", hints: [["a", "toggle all"], ["i", "invert"], ["c", "clear all"]] },
+  { label: "review", hints: [["d/Enter", "review"], ["Esc", "back"]] },
+  { label: "filter", hints: [["/", "search"], ["Tab", "scope"], ["n", "name"], ["o", "age"], ["m", "length"], ["s", "sort"], ["p", "paths"]] },
+];
+const RANGE_HINTS: readonly HintGroup[] = [
+  { label: "Range anchor", accent: true, hints: [["│", "preview"], ["Space/v", "mark"], ["Esc", "cancel"]] },
+];
+const SEARCH_HINTS: readonly HintGroup[] = [{ hints: [["Enter/Esc", "back to list"]] }];
+const CONFIRM_HINTS: readonly HintGroup[] = [
+  { hints: [["↑↓/PgUp/PgDn", "review"], ["Enter", "delete"], ["Esc", "back"]] },
+];
+
+/** Pi's own hint styling: a dim key, a muted description, muted separators. */
+function styledHint(theme: Theme, [key, description]: Hint): string {
+  return theme.fg("dim", key) + theme.fg("muted", ` ${description}`);
+}
+
+/**
+ * Lay hint groups out with their labels in one column, so hint text starts at the same place on
+ * every line. Groups join a line whole or start their own; only a group too wide for a line of
+ * its own continues on indented lines, and hints that no longer fit are dropped from its end
+ * rather than cut in half.
+ */
+function hintLines(theme: Theme, groups: readonly HintGroup[], width: number, maxLines: number): string[] {
+  const separator = theme.fg("muted", " · ");
+  const labelWidth = Math.max(0, ...groups.map((group) => group.label?.length ?? 0));
+  const column = labelWidth ? labelWidth + 1 : 0;
+  const indent = " ".repeat(column);
+  const lines: string[] = [];
+  let line = "";
+
+  for (const group of groups) {
+    const label = group.label ?? "";
+    const styled = label ? theme.fg(group.accent ? "accent" : "muted", label) : "";
+    const head = styled + " ".repeat(column - label.length);
+    const inline = styled ? `${styled} ` : "";
+    const hints = group.hints.map((hint) => styledHint(theme, hint));
+    const whole = (prefix: string) => prefix + hints.join(separator);
+
+    if (line && visibleWidth(`${line}${separator}${whole(inline)}`) <= width) {
+      line = `${line}${separator}${whole(inline)}`;
+      continue;
+    }
+    if (line) {
+      lines.push(line);
+      line = "";
+    }
+    if (lines.length >= maxLines) continue;
+    if (visibleWidth(whole(head)) <= width) {
+      line = whole(head);
+      continue;
+    }
+    for (const [index, hint] of hints.entries()) {
+      const prefix = index === 0 ? head : indent;
+      const joined = line ? `${line}${separator}${hint}` : prefix + hint;
+      if (visibleWidth(joined) <= width) {
+        line = joined;
+        continue;
+      }
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+      if (lines.length >= maxLines) break;
+      if (visibleWidth(prefix + hint) <= width) line = prefix + hint;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
 const activeSelectionError = { text: "Cannot select the currently active session", error: true };
+
+/** The spacer, border, spacer, spacer and border `buildBaseLayout` wraps the Batch body in. */
+const CONTAINER_ROWS = 5;
+
+/** The rows a footer may use, so a short terminal drops hints instead of overflowing. */
+function footerRoom(used: number): number {
+  return Math.max(1, (process.stdout.rows ?? 24) - CONTAINER_ROWS - used);
+}
 
 function clean(text: string): string {
   return stripTerminalSequences(text).replace(/[\x00-\x1f\x7f-\x9f]/g, " ").trim();
@@ -73,7 +165,8 @@ function rowMetadata(session: SessionInfo, width: number, showPath: boolean, sho
   return `${display} · ${meta}`;
 }
 
-// Leave room for the picker borders, badges, status and key hints.
+// Leave room for the picker borders and spacers, the header block, the row counter and the
+// footer; the footer itself takes whatever the terminal has left over.
 function pageSize(): number {
   return Math.max(1, Math.min(10, (process.stdout.rows ?? 24) - 14));
 }
@@ -142,7 +235,7 @@ export class BatchView implements Component {
         }
       }
       if (total > page) lines.push(theme.fg("muted", `${offset + 1}–${Math.min(offset + page, total)} / ${total}`));
-      lines.push(theme.fg("muted", "↑↓/PgUp/PgDn review · Enter delete · Esc back"));
+      lines.push(...hintLines(theme, CONFIRM_HINTS, width, footerRoom(lines.length)));
     } else {
       // Keep the cursor against the old list until Pi's incremental refresh finishes.
       if (phase.kind !== "deleting") this.#updateRows();
@@ -151,14 +244,24 @@ export class BatchView implements Component {
       const query = this.#search.getValue();
       const hidden = state.hiddenCount;
       lines.push(theme.bold(`Batch Delete · ${state.selected.size} selected${hidden ? ` (${hidden} hidden)` : ""}`));
+      lines.push("");
       const sort = sortMode === "threaded" ? "Threaded" : sortMode === "recent" ? "Recent" : "Fuzzy";
       const names = nameFilter === "all" ? "All Names" : nameFilter === "unnamed" ? "Unnamed" : "Named";
       const ageFilter = olderThanDays ? `>${olderThanDays}d` : "Any age";
-      lines.push(theme.fg("muted", `${scope === "current" ? "Current Folder" : "All Folders"} · ${sort} · ${names} · ${ageFilter} · ${shortOnly ? "≤2 msgs" : "Any length"} · Paths ${this.#showPath ? "on" : "off"}`));
+      // Every control reads as its own item; the ones that are not at their default say so in accent.
+      const chips: readonly (readonly [string, boolean])[] = [
+        [scope === "current" ? "Current Folder" : "All Folders", scope !== "current"],
+        [sort, sortMode !== "threaded"],
+        [names, nameFilter !== "all"],
+        [ageFilter, olderThanDays !== 0],
+        [shortOnly ? "≤2 msgs" : "Any length", shortOnly],
+        [`Paths ${this.#showPath ? "on" : "off"}`, this.#showPath],
+      ];
+      lines.push(chips.map(([text, active]) => theme.fg(active ? "accent" : "muted", text)).join(theme.fg("muted", " · ")));
       if (phase.kind === "search") {
         this.#search.focused = true;
         lines.push(...this.#search.render(width));
-      } else if (query) lines.push(theme.fg("muted", `Search: ${clean(query)}`));
+      } else if (query) lines.push(theme.fg("accent", `Search: ${clean(query)}`));
       if (this.#status) lines.push(theme.fg(this.#status.error ? "error" : "accent", this.#status.text));
       else if (phase.kind === "planning") lines.push(theme.fg("muted", "Planning deletion…"));
       else if (phase.kind === "deleting") lines.push(theme.fg("muted", "Deleting sessions and refreshing…"));
@@ -174,8 +277,9 @@ export class BatchView implements Component {
         const live = state.isCurrent(session.path);
         const mark = live ? "[-]" : state.selected.has(canonicalize(session.path)) ? "[x]" : "[ ]";
         const tree = depth ? ancestorContinues.slice(1).map((continues) => continues ? "│  " : "   ").join("") + (isLast ? "└─ " : "├─ ") : "";
-        const preview = range && i >= range[0] && i <= range[1] ? "│ " : " ";
-        const left = `${i === state.cursor ? "›" : " "}${preview}${mark} ${tree}${label(session)}`;
+        // The range preview lives in a gutter that is always there, so no row ever shifts.
+        const gutter = range && i >= range[0] && i <= range[1] ? "│" : " ";
+        const left = `${i === state.cursor ? "› " : "  "}${gutter} ${mark} ${tree}${label(session)}`;
         const meta = rowMetadata(session, width, this.#showPath, scope === "all");
         const maxLeft = width - visibleWidth(meta) - 1;
         const text = truncateToWidth(left, maxLeft > 4 ? maxLeft : width, "…");
@@ -183,13 +287,11 @@ export class BatchView implements Component {
         lines.push(maxLeft > 4 ? styled + " ".repeat(width - visibleWidth(text) - visibleWidth(meta)) + theme.fg("dim", meta) : styled);
       }
       if (state.rows.length > page) lines.push(theme.fg("muted", `${state.cursor + 1} / ${state.rows.length}`));
-      if (phase.kind === "search") lines.push(theme.fg("muted", "Enter/Esc back to list"));
-      else if (range) lines.push(theme.fg("accent", "Range anchor · │ preview · Space/v mark · Esc cancel"));
-      else {
-        lines.push(theme.fg("muted", "/ search · Tab scope · n name · o age · m length · s sort · p paths"));
-        lines.push(theme.fg("muted", "↑↓/PgUp/PgDn/g/G move · Space toggle · t subtree · v range"));
-        lines.push(theme.fg("muted", "a toggle all · i invert · c clear all · d/Enter review · Esc back"));
-      }
+      lines.push("");
+      const room = footerRoom(lines.length);
+      if (phase.kind === "search") lines.push(...hintLines(theme, SEARCH_HINTS, width, room));
+      else if (range) lines.push(...hintLines(theme, RANGE_HINTS, width, room));
+      else lines.push(...hintLines(theme, LIST_HINTS, width, room));
     }
     return lines.map((line) => truncateToWidth(line, width, "…"));
   }
