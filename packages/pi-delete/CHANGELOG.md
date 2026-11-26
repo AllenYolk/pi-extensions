@@ -1,5 +1,11 @@
 # @allenyolk/pi-delete
 
+## 0.4.2
+
+### Patch Changes
+
+- 9acc8fe: Drop `[named]` prefix from named sessions in Batch mode in favor of warning color distinction.
+
 ## 0.4.1
 
 ### Patch Changes
