@@ -93,7 +93,7 @@ score, breaking ties by recency. The controls compose. Marks survive every filte
 change; the heading counts any marked sessions hidden from the list.
 
 Press **`d`** or **Enter** to review the selection. The review counts listed sessions and hidden
-`<session>/tasks/` transcripts separately and puts red **`[named]`** warnings at the top. Each
+`<session>/tasks/` transcripts separately and puts red named session warnings at the top. Each
 marked session brings only its own tasks (including nested tasks). Unmarked forks and their
 files stay untouched. Review and deletion include every mark, even from another folder or hidden
 by a filter.

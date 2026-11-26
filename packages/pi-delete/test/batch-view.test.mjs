@@ -342,7 +342,7 @@ test("confirmation puts named rows first, bounds the list, scrolls to the end, a
   const ready = waitFor("Delete 31 sessions?");
   view.handleInput("d");
   const firstFrame = await ready;
-  assert.match(firstFrame, /\x1b\[31mWarning: named sessions[^\n]+\n\x1b\[31m\[named\] Deliberate work/);
+  assert.match(firstFrame, /\x1b\[31mWarning: named sessions[^\n]+\n\x1b\[31mDeliberate work/);
   assert.doesNotMatch(firstFrame, /target 30/);
   const narrow = view.render(16);
   assert.ok(narrow.length <= 16);
@@ -385,7 +385,7 @@ test("confirmation deletes the full selection across scope and search with the l
   assert.match(frame(), /2 selected \(2 hidden\)/);
   const ready = waitFor("Delete 4 sessions (2 hidden)?");
   view.handleInput("d");
-  assert.match(await ready, /\x1b\[31m\[named\] Latest deliberate name[^\n]+\nmarked local/);
+  assert.match(await ready, /\x1b\[31mLatest deliberate name[^\n]+\nmarked local/);
   const deleted = waitFor("Deleted 4 sessions (2 hidden)");
   view.handleInput("\r");
   assert.match(await deleted, /0 selected/);

@@ -150,7 +150,7 @@ test('Batch mode inherits /resume scope, sort, name filter, query and cursor', {
     { expect: loaded, send: '/resume\r' },
     { expect: 'synthetic child B', send: '\t' },
     { expect: 'Resume Session (All)', send: '\u0013\u000e"Batch target"\u001b[6~\u0018' },
-    { expect: '›   [ ] [named] Batch target A', send: '\u001b' },
+    { expect: '›   [ ] Batch target A', send: '\u001b' },
     { expect: 'Resume Session (All)', send: '\u001b' },
     exitPi,
   ], {
@@ -205,7 +205,7 @@ for (const [host, cli] of hosts) {
     });
     const screen = withoutMatchMarkers(output);
     assert.match(screen, /Warning: named sessions/);
-    const color = /\x1b\[38;2;(\d+);(\d+);(\d+)m[^\r\n\x1b]*\[named\] Deliberate batch target/.exec(
+    const color = /\x1b\[38;2;(\d+);(\d+);(\d+)m[^\r\n\x1b]*Deliberate batch target/.exec(
       screen.slice(screen.indexOf('Delete 6 sessions (3 hidden)?')),
     );
     assert.ok(color && Number(color[1]) > Math.max(Number(color[2]), Number(color[3])), 'the confirmation names deliberate work in red');
@@ -270,7 +270,7 @@ for (const [host, cli] of hosts) {
       { expect: '1 selected', send: '/\u0015cch trm' + escape },
       { expect: 'Search: cch trm', send: '/\u0015re:stash[0-9]\r' },
       { expect: 'Search: re:stash[0-9]', send: 'n\t' },
-      { expect: '›   [ ] [named] Deliberate remote', send: ' ' },
+      { expect: '›   [ ] Deliberate remote', send: ' ' },
       { expect: '2 selected (1 hidden)', send: '\t' },
       { expect: '2 selected (2 hidden)', send: 'd' },
       { expect: 'Delete 4 sessions (2 hidden)?', send: '\r' },
