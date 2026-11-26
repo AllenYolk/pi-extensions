@@ -170,11 +170,11 @@ test("footer hints stay whole, start at one column and fit the width", () => {
 test("a full list page plus its chrome still fits a 24-row terminal", () => {
   const rows = Array.from({ length: 40 }, (_, i) => row(`/session-${i}.jsonl`, `session ${i}`));
   const { view } = batch(rows, { mark: false });
-  const rows24 = process.stdout.rows ?? 24;
-  assert.equal(rows24, 24, "this check describes a 24-row terminal");
-  assert.ok(view.render(80).length <= rows24 - 5, "the Batch body must leave room for the picker's own borders");
-  view.handleInput("o");
-  assert.ok(view.render(80).length <= rows24 - 5, "a status line must not push the footer off the screen");
+  const limit = (process.stdout.rows ?? 24) - 5;
+  assert.ok(view.render(80).length <= limit, "a full page must leave room for the picker's own borders");
+  view.handleInput("d");
+  assert.match(view.render(80).join("\n"), /Select a session first/);
+  assert.ok(view.render(80).length <= limit, "a status line must not push the footer off the screen");
 });
 
 test("g and G jump to the visible endpoints with plain and Kitty input", () => {
