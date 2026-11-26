@@ -73,6 +73,8 @@ scope, sort, name filter, search query, and cursor.
 - **Space** toggles one row. **`t`** toggles that row and its visible descendants: if any
   selectable row in the subtree is unmarked, `t` marks them all; otherwise it unmarks them.
 - **`v`** starts a range at the cursor. Move with the same navigation keys to preview it.
+  The preview is drawn in a gutter column that every row reserves, so no row shifts while a
+  range is open.
   **Space** or **`v`** adds the range to the selection without clearing existing marks.
   **Esc** cancels the preview and stays in Batch mode. A list refresh also cancels the preview.
 - **`a`** marks all visible selectable rows, or unmarks them if they're all marked.
