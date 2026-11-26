@@ -30,17 +30,18 @@ type Phase = { kind: "list" | "search" | "planning" | "deleting" | "closed" }
 /** A key and what it does, in Pi's own hint shape. */
 type Hint = readonly [key: string, description: string];
 interface HintGroup {
-  /** Shown once, before the group's first hint. */
+  /** Shown once, before the group's first hint, in a column every footer line shares. */
   readonly label?: string;
   readonly accent?: boolean;
   readonly hints: readonly Hint[];
 }
 
-/** Grouped by purpose, in the order that survives a narrow terminal best. */
+/** Grouped by purpose, most useful first: a short terminal drops the tail of the last group. */
 const LIST_HINTS: readonly HintGroup[] = [
   { label: "move", hints: [["↑↓", "move"], ["PgUp/PgDn", "page"], ["g/G", "ends"]] },
   { label: "mark", hints: [["Space", "toggle"], ["t", "subtree"], ["v", "range"]] },
-  { label: "act", hints: [["a", "toggle all"], ["i", "invert"], ["c", "clear all"], ["d/Enter", "review"], ["Esc", "back"]] },
+  { label: "select", hints: [["a", "toggle all"], ["i", "invert"], ["c", "clear all"]] },
+  { label: "review", hints: [["d/Enter", "review"], ["Esc", "back"]] },
   { label: "filter", hints: [["/", "search"], ["Tab", "scope"], ["n", "name"], ["o", "age"], ["m", "length"], ["s", "sort"], ["p", "paths"]] },
 ];
 const RANGE_HINTS: readonly HintGroup[] = [
@@ -57,24 +58,53 @@ function styledHint(theme: Theme, [key, description]: Hint): string {
 }
 
 /**
- * Pack hint groups into at most `maxLines` lines of `width`. A hint that no longer fits is
- * dropped whole rather than cut, so a narrow terminal never shows half a key.
+ * Lay hint groups out with their labels in one column, so hint text starts at the same place on
+ * every line. Groups join a line whole or start their own; only a group too wide for a line of
+ * its own continues on indented lines, and hints that no longer fit are dropped from its end
+ * rather than cut in half.
  */
 function hintLines(theme: Theme, groups: readonly HintGroup[], width: number, maxLines: number): string[] {
   const separator = theme.fg("muted", " · ");
+  const labelWidth = Math.max(0, ...groups.map((group) => group.label?.length ?? 0));
+  const column = labelWidth ? labelWidth + 1 : 0;
+  const indent = " ".repeat(column);
   const lines: string[] = [];
   let line = "";
-  for (const { label, accent, hints } of groups) {
+
+  for (const group of groups) {
+    const label = group.label ?? "";
+    const styled = label ? theme.fg(group.accent ? "accent" : "muted", label) : "";
+    const head = styled + " ".repeat(column - label.length);
+    const inline = styled ? `${styled} ` : "";
+    const hints = group.hints.map((hint) => styledHint(theme, hint));
+    const whole = (prefix: string) => prefix + hints.join(separator);
+
+    if (line && visibleWidth(`${line}${separator}${whole(inline)}`) <= width) {
+      line = `${line}${separator}${whole(inline)}`;
+      continue;
+    }
+    if (line) {
+      lines.push(line);
+      line = "";
+    }
+    if (lines.length >= maxLines) continue;
+    if (visibleWidth(whole(head)) <= width) {
+      line = whole(head);
+      continue;
+    }
     for (const [index, hint] of hints.entries()) {
-      const chunk = (index === 0 && label ? theme.fg(accent ? "accent" : "muted", `${label} `) : "") + styledHint(theme, hint);
-      const joined = line ? line + separator + chunk : chunk;
+      const prefix = index === 0 ? head : indent;
+      const joined = line ? `${line}${separator}${hint}` : prefix + hint;
       if (visibleWidth(joined) <= width) {
         line = joined;
         continue;
       }
-      if (line) lines.push(line);
-      if (lines.length >= maxLines) return lines;
-      line = visibleWidth(chunk) <= width ? chunk : "";
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+      if (lines.length >= maxLines) break;
+      if (visibleWidth(prefix + hint) <= width) line = prefix + hint;
     }
   }
   if (line) lines.push(line);
@@ -82,6 +112,14 @@ function hintLines(theme: Theme, groups: readonly HintGroup[], width: number, ma
 }
 
 const activeSelectionError = { text: "Cannot select the currently active session", error: true };
+
+/** The spacer, border, spacer, spacer and border `buildBaseLayout` wraps the Batch body in. */
+const CONTAINER_ROWS = 5;
+
+/** The rows a footer may use, so a short terminal drops hints instead of overflowing. */
+function footerRoom(used: number): number {
+  return Math.max(1, (process.stdout.rows ?? 24) - CONTAINER_ROWS - used);
+}
 
 function clean(text: string): string {
   return stripTerminalSequences(text).replace(/[\x00-\x1f\x7f-\x9f]/g, " ").trim();
@@ -127,9 +165,10 @@ function rowMetadata(session: SessionInfo, width: number, showPath: boolean, sho
   return `${display} · ${meta}`;
 }
 
-// Leave room for the picker borders, badges, status, the header gap and key hints.
+// Leave room for the picker borders and spacers, the header block, the row counter and the
+// footer; the footer itself takes whatever the terminal has left over.
 function pageSize(): number {
-  return Math.max(1, Math.min(10, (process.stdout.rows ?? 24) - 15));
+  return Math.max(1, Math.min(10, (process.stdout.rows ?? 24) - 14));
 }
 
 export class BatchView implements Component {
@@ -196,7 +235,7 @@ export class BatchView implements Component {
         }
       }
       if (total > page) lines.push(theme.fg("muted", `${offset + 1}–${Math.min(offset + page, total)} / ${total}`));
-      lines.push(...hintLines(theme, CONFIRM_HINTS, width, 2));
+      lines.push(...hintLines(theme, CONFIRM_HINTS, width, footerRoom(lines.length)));
     } else {
       // Keep the cursor against the old list until Pi's incremental refresh finishes.
       if (phase.kind !== "deleting") this.#updateRows();
@@ -248,9 +287,11 @@ export class BatchView implements Component {
         lines.push(maxLeft > 4 ? styled + " ".repeat(width - visibleWidth(text) - visibleWidth(meta)) + theme.fg("dim", meta) : styled);
       }
       if (state.rows.length > page) lines.push(theme.fg("muted", `${state.cursor + 1} / ${state.rows.length}`));
-      if (phase.kind === "search") lines.push(...hintLines(theme, SEARCH_HINTS, width, 1));
-      else if (range) lines.push(...hintLines(theme, RANGE_HINTS, width, 2));
-      else lines.push(...hintLines(theme, LIST_HINTS, width, 3));
+      lines.push("");
+      const room = footerRoom(lines.length);
+      if (phase.kind === "search") lines.push(...hintLines(theme, SEARCH_HINTS, width, room));
+      else if (range) lines.push(...hintLines(theme, RANGE_HINTS, width, room));
+      else lines.push(...hintLines(theme, LIST_HINTS, width, room));
     }
     return lines.map((line) => truncateToWidth(line, width, "…"));
   }

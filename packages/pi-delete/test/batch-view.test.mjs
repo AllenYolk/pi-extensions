@@ -129,27 +129,52 @@ const hintWords = [
   "a toggle all", "i invert", "c clear all", "d/Enter review", "Esc back",
   "│ preview", "Space/v mark", "Esc cancel", "Enter/Esc back to list",
 ];
-const hintSegment = new RegExp(`^(?:move |mark |act |filter |Range anchor )?(?:${
+const groupLabels = ["move", "mark", "select", "review", "filter", "Range anchor"];
+const hintSegment = new RegExp(`^(?:${groupLabels.map((label) => `${label} +`).join("|")})?(?:${
   hintWords.map((word) => word.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")})$`);
 
-test("footer hints stay whole and inside the width at 40, 60, 80 and 120", () => {
-  for (const width of [40, 60, 80, 120]) {
+test("footer hints stay whole, start at one column and fit the width", () => {
+  for (const width of [40, 60, 80, 100, 120]) {
     for (const [name, keys] of [["list", []], ["range", ["v"]], ["search", ["/"]]]) {
       const { view } = batch(rangeRows, { mark: false });
       for (const key of keys) view.handleInput(key);
       const lines = view.render(width);
       const lastRow = lines.findLastIndex((line) => /\[(?:\s|x|-)\]/.test(stripTerminalSequences(line)));
       const footer = lines.slice(lastRow + 1).map(stripTerminalSequences);
-      assert.ok(footer.length > 0 && footer.length <= 3, `${name} footer at ${width} is ${footer.length} lines`);
-      for (const line of footer) {
+      assert.ok(footer.length > 1, `${name} footer at ${width} is ${footer.length} lines`);
+      assert.equal(footer[0], "", `${name} footer at ${width} must be separated from the list`);
+      for (const line of footer.slice(1)) {
         assert.ok(visibleWidth(line) <= width, `${name} footer line "${line}" overflows ${width}`);
         assert.doesNotMatch(line, /…/, `${name} footer must drop a hint rather than cut it`);
         for (const segment of line.split(" · ")) {
-          assert.match(segment, hintSegment, `${name} footer at ${width} broke a hint: "${segment}"`);
+          assert.match(segment.trimStart(), hintSegment, `${name} footer at ${width} broke a hint: "${segment}"`);
         }
+      }
+      if (name !== "list") continue;
+      // Group labels share one column, so hint text starts at the same place on every line.
+      for (const line of footer.slice(1)) {
+        const head = line.slice(0, 7);
+        assert.ok(/^(?:move {3}|mark {3}|select |review |filter | {7})$/.test(head), `"${head}" is not a padded label`);
+        assert.ok(hintWords.some((word) => line.slice(7).startsWith(word)), `hint text on "${line}" does not start at column 7`);
+      }
+      if (width >= 100) {
+        assert.equal(footer.length - 1, 3, `list footer at ${width} must be three lines`);
+        assert.match(footer[1], /^move {3}↑↓ move · PgUp\/PgDn page · g\/G ends · mark Space toggle · t subtree · v range$/);
+        assert.match(footer[2], /^select a toggle all · i invert · c clear all · review d\/Enter review · Esc back$/);
+        assert.match(footer[3], /^filter \/ search · Tab scope · n name · o age · m length · s sort · p paths$/);
       }
     }
   }
+});
+
+test("a full list page plus its chrome still fits a 24-row terminal", () => {
+  const rows = Array.from({ length: 40 }, (_, i) => row(`/session-${i}.jsonl`, `session ${i}`));
+  const { view } = batch(rows, { mark: false });
+  const rows24 = process.stdout.rows ?? 24;
+  assert.equal(rows24, 24, "this check describes a 24-row terminal");
+  assert.ok(view.render(80).length <= rows24 - 5, "the Batch body must leave room for the picker's own borders");
+  view.handleInput("o");
+  assert.ok(view.render(80).length <= rows24 - 5, "a status line must not push the footer off the screen");
 });
 
 test("g and G jump to the visible endpoints with plain and Kitty input", () => {
@@ -208,7 +233,7 @@ test("an anchored preview ignores list shortcuts and Esc keeps existing marks in
   assert.match(frame(), /Batch Delete · 1 selected/);
   assert.match(frame(), /›   \[ \] last row/);
   assert.doesNotMatch(frame(), /Range anchor|│/);
-  assert.match(frame(), /move ↑↓ move · PgUp\/PgDn page · g\/G ends · mark Space toggle · t subtree\nv range · act a toggle all · i invert · c clear all · d\/Enter review · Esc back\nfilter \/ search · Tab scope · n name · o age · m length · s sort · p paths/);
+  assert.match(frame(), /move {3}↑↓ move · PgUp\/PgDn page · g\/G ends\nmark {3}Space toggle · t subtree · v range\nselect a toggle all · i invert · c clear all · review d\/Enter review · Esc back\nfilter \/ search · Tab scope · n name · o age · m length · s sort · p paths/);
 });
 
 test("range jumps on empty and one-row lists are safe and cannot mark the active session", () => {
@@ -320,7 +345,7 @@ test("confirmation puts named rows first, bounds the list, scrolls to the end, a
   assert.match(firstFrame, /\x1b\[31mWarning: named sessions[^\n]+\n\x1b\[31m\[named\] Deliberate work/);
   assert.doesNotMatch(firstFrame, /target 30/);
   const narrow = view.render(16);
-  assert.ok(narrow.length <= 15);
+  assert.ok(narrow.length <= 16);
   assert.ok(narrow.every((line) => visibleWidth(line) <= 16));
   for (let i = 0; i < 31; i++) view.handleInput("\x1b[6~");
   assert.match(view.render(80).join("\n"), /target 30/);
