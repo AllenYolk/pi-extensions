@@ -126,7 +126,7 @@ function clean(text: string): string {
 }
 
 function label(session: SessionInfo): string {
-  if (session.name?.trim()) return `[named] ${clean(session.name) || "(empty name)"}`;
+  if (session.name?.trim()) return clean(session.name) || "(empty name)";
   return clean(session.firstMessage) || "(empty)";
 }
 
