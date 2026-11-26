@@ -5,6 +5,7 @@ import { findPackageJSON } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { stripTerminalSequences } from '@earendil-works/pi-tui';
 import {
   compactionEntry, compactionFixtures, deleteEntry, displayEntry, driveHost, drivePi, longSession, profile, repoRoot, sessionTree, workspace,
 } from './pi-collection.mjs';
@@ -163,10 +164,7 @@ test('Batch mode inherits /resume scope, sort, name filter, query and cursor', {
   });
   const screen = withoutMatchMarkers(output);
   assert.match(screen, /scope[^\r\n]+re:<pattern>[^\r\n]+ctrl\+x[^\r\n]+select/);
-  // Each filter control is its own colour span now, so only one value at a time is matchable.
-  assert.match(screen, /All Folders/);
-  assert.match(screen, /Recent/);
-  assert.match(screen, /Named/);
+  assert.match(stripTerminalSequences(screen), /All Folders · Recent · Named/);
   assert.match(screen, /Search: "Batch target"/);
 });
 
@@ -305,10 +303,11 @@ for (const [host, cli] of hosts) {
       },
     });
     const screen = withoutMatchMarkers(output);
-    const phraseScreen = withoutMatchMarkers(output.slice(
-      output.indexOf('\nPI_DRIVE_MATCHED ≤2 msgs\n'),
-      output.indexOf('\nPI_DRIVE_MATCHED › [ ] Old cache trim\n'),
-    ));
+    const phraseStart = output.indexOf('\nPI_DRIVE_MATCHED ≤2 msgs\n');
+    const phraseEnd = output.indexOf('\nPI_DRIVE_MATCHED ›   [ ] Old cache trim\n', phraseStart);
+    assert.ok(phraseStart >= 0 && phraseEnd > phraseStart, 'phrase-search frame markers must bound the window');
+    const phraseScreen = withoutMatchMarkers(output.slice(phraseStart, phraseEnd));
+    assert.match(stripTerminalSequences(screen), /Fuzzy · Unnamed · >7d · ≤2 msgs · Paths on/);
     assert.match(phraseScreen, /Search: "CACHE   TRIM"/);
     assert.doesNotMatch(phraseScreen, /New cache trim|Old cache trim log/);
     assert.match(screen, /\[x\] Old cache trim[^\r\n]+/);
