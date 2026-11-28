@@ -1,6 +1,6 @@
 # Validation
 
-Version: `0.2.6`. Questionnaire cards default to compact; the actual `@juicesharp/rpiv-ask-user-question@2.13.8` answer/cancel and collapse/reopen paths were checked on Linux x64 with Node 24.19.0 and Pi 1.2.0. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds completed-failure cards with local failure counts and render-time model-request event folding. The Pi 1.7.0 compatibility update pins that development host for CI. The earlier Pi 1.2.0 change also passed the package check on Pi 0.99.1 and 1.1.0 before its host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+Version: `0.2.7`. Questionnaire cards default to compact; the actual `@juicesharp/rpiv-ask-user-question@2.13.8` answer/cancel and collapse/reopen paths were checked on Linux x64 with Node 24.19.0 and Pi 1.2.0. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds completed-failure cards with local failure counts and render-time model-request event folding. The Pi 1.7.0 compatibility update pins that development host for CI. The earlier Pi 1.2.0 change also passed the package check on Pi 0.99.1 and 1.1.0 before its host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
 
 ## Pi 1.7.0 host
 
