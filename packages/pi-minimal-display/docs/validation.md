@@ -1,6 +1,39 @@
 # Validation
 
-Version: `0.2.6`. Questionnaire cards default to compact; the actual `@juicesharp/rpiv-ask-user-question@2.13.8` answer/cancel and collapse/reopen paths were checked on Linux x64 with Node 24.19.0 and Pi 1.2.0. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds completed-failure cards with local failure counts and render-time model-request event folding. The Pi 1.6.0 compatibility update pins that development host for CI. The earlier Pi 1.2.0 change also passed the package check on Pi 0.99.1 and 1.1.0 before its host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+Version: `0.2.6`. Questionnaire cards default to compact; the actual `@juicesharp/rpiv-ask-user-question@2.13.8` answer/cancel and collapse/reopen paths were checked on Linux x64 with Node 24.19.0 and Pi 1.2.0. Accepts Pi 1.2.0's model-request event handler; 0.2.x adds completed-failure cards with local failure counts and render-time model-request event folding. The Pi 1.7.0 compatibility update pins that development host for CI. The earlier Pi 1.2.0 change also passed the package check on Pi 0.99.1 and 1.1.0 before its host pin moved. Thinking display follows Pi's native `hideThinkingBlock` setting; the plugin has no corresponding setting. Older evidence below is historical.
+
+## Pi 1.7.0 host
+
+[Issue #60](https://github.com/AllenYolk/pi-extensions/issues/60) adds two `InteractiveMode.handleEvent` signatures and nothing else, without changing the adapter's rendering, grouping, lifecycle or configuration logic. Pi 1.6.1 was measured in the same pass: its SDK and bundled-CLI seams are byte-identical to the allowlisted Pi 1.6.0 entries, so 1.6.1 already activated before this change and needed none of its own.
+
+Every hash below was measured on this machine (macOS arm64, Node 24.18.0), the SDK ones from the package's own development host and the CLI ones from inside the real `dist/bundle` with only a measuring extension loaded that patches nothing, so no seam was patched when they were taken.
+
+| Seam | Pi 1.6.1 SDK | Pi 1.7.0 SDK | Pi 1.6.1 CLI | Pi 1.7.0 CLI |
+| --- | --- | --- | --- | --- |
+| 7-method presentation signature | `f7a85113…:…:8bb49631…` | unchanged | `74e886d0…:…:ceb99f44…` | unchanged |
+| `InteractiveMode.handleEvent` | `bbd5aa0d…` | `0f8dffb4…` | `083d0f1e…` | `dfacb8c3…` |
+| `AgentSession.abortRetry` | `bb861a58…` | unchanged | `c4d7c104…` | unchanged |
+
+Only `handleEvent` changed. The full SDK source diff of `handleEvent` from 1.6.1 to 1.7.0 is one added block at the top:
+
+```js
+// The session file, and with it the resume command, appears when the first prompt is written, which
+// happens after its message_end reaches listeners. The reply's message_start or the run's end sees it.
+if (event.type === "message_start" || event.type === "agent_settled")
+    this.programResume?.reportIfNone();
+```
+
+The adapter's `handleEvent` wrapper only observes the event and then delegates to the original, so this side effect is orthogonal to retry-chain classification; the allowlisted 1.6.0 presentation and `abortRetry` signatures still match, so no other allowlist changed and the compatibility gate was neither removed nor weakened.
+
+### Checks on the 1.7.0 host
+
+Before the change, on the 1.7.0 host, model-request folding failed closed exactly as the owner reported: `node --test test/model-errors.test.mjs` ran 8 tests, 2 passed and 6 failed, every failure an unfolded native error where a `model request · …` summary was expected (the process exited; no hang).
+
+After adding the two verified signatures, `npm --workspace @allenyolk/pi-minimal-display run check` passes 52/52 with a clean typecheck and exit 0, and neither `presentation methods are incompatible` nor `Model-request presentation is incompatible` appears anywhere in its output or in the root run. That covers the real bundled CLI with ten reloads, regular and fullscreen first paint, replay/branch/stream/image behavior, native keyboard and mouse expansion, retry success/failure/cancellation, and the packed tarball loading without installed peers. No test fixture needed changing. The root `npm run check` passes all 286 checks (143 compaction, 56 delete, 52 display, 35 repository integration).
+
+### Not covered
+
+These checks covered macOS arm64 and Node 24.18.0 only. Linux, Windows and other Node versions were not rerun locally, no provider-backed or model-account run was made, the extension was not activated in the daily profile, and publication is not part of this verification. Git-collection fixtures serve committed `HEAD`, so the repository-integration checks must be rerun against the committed candidate. CI re-verifies on its own matrix in `.github/workflows/check.yml`.
 
 ## Pi 1.6.0 host
 
@@ -238,4 +271,4 @@ npm run benchmark -- work/upstream-large-session.jsonl
 
 ## Certification limits
 
-Pi 0.85.0, 0.85.1, 0.99.1, 1.1.0, 1.2.0, 1.5.0 and 1.5.1 are historically tested hosts; Pi 1.5.2 activates on the allowlisted 1.5.1 signatures without an entry of its own, and the current development host that CI re-verifies is 1.6.0. A future Pi version is accepted only while its presentation seam matches an allowlisted tested signature; matching is compatibility evidence, not full release certification. The historical four-job CI matrix (retired-repository run 33959587401) passed on Linux/macOS with Node 22.19.0/24.12.0 at commit `bc3c8b2`; the Pi 0.99.1 release evidence is recorded in issue pi-minimal-display#26. Windows and alternative Pi runtimes are not tested by this candidate. The adapter's per-frame projection rebuild gives up pi-tui 1.6.0's cross-frame line caching and costs about 17% on compact expanded rendering; see the Pi 1.6.0 host section for the measured numbers.
+Pi 0.85.0, 0.85.1, 0.99.1, 1.1.0, 1.2.0, 1.5.0, 1.5.1 and 1.6.0 are historically tested hosts; Pi 1.5.2 activates on the allowlisted 1.5.1 signatures and Pi 1.6.1 on the allowlisted 1.6.0 signatures without entries of their own, and the current development host that CI re-verifies is 1.7.0. A future Pi version is accepted only while its presentation seam matches an allowlisted tested signature; matching is compatibility evidence, not full release certification. The historical four-job CI matrix (retired-repository run 33959587401) passed on Linux/macOS with Node 22.19.0/24.12.0 at commit `bc3c8b2`; the Pi 0.99.1 release evidence is recorded in issue pi-minimal-display#26. Windows and alternative Pi runtimes are not tested by this candidate. The adapter's per-frame projection rebuild gives up pi-tui 1.6.0's cross-frame line caching and costs about 17% on compact expanded rendering; see the Pi 1.6.0 host section for the measured numbers.
