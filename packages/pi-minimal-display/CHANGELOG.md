@@ -1,5 +1,11 @@
 # @allenyolk/pi-minimal-display
 
+## 0.2.7
+
+### Patch Changes
+
+- 45e1100: Accept Pi 1.7.0's tested SDK and bundled-CLI `InteractiveMode.handleEvent` so model-request error folding activates on that host instead of falling back to native model errors. Pi 1.6.1 already activates on the allowlisted Pi 1.6.0 signatures.
+
 ## 0.2.6
 
 ### Patch Changes
